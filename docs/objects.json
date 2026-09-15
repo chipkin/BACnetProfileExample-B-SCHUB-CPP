@@ -1,0 +1,69 @@
+{
+  "objects": [
+    {
+      "type": "Device",
+      "instance": 389022,
+      "name": "Rainbow",
+      "app": ["Object_Name", "Vendor_Name", "Vendor_Identifier", "Model_Name",
+              "Firmware_Revision", "Application_Software_Version", "Description"],
+      "enabled": ["Description"],
+      "writable": [],
+      "accepted": ["System_Status", "Protocol_Version", "Protocol_Revision",
+                   "Protocol_Services_Supported", "Protocol_Object_Types_Supported",
+                   "Object_List", "Max_APDU_Length_Accepted", "Segmentation_Supported",
+                   "APDU_Timeout", "Number_Of_APDU_Retries", "Device_Address_Binding",
+                   "Database_Revision"],
+      "note": "vendor 389 (Chipkin Automation Systems); instance configurable with --deviceID. The properties in 'accepted' are not served from a GetProperty callback because the stack itself is the source of truth for them - Protocol_Revision/Protocol_Version are stack build constants, Protocol_Services_Supported/Protocol_Object_Types_Supported are computed from the BACnetStack_SetServiceEnabled/AddObject calls this example already makes, Object_List and Device_Address_Binding are live stack-maintained tables, System_Status/Database_Revision/Max_APDU_Length_Accepted/Segmentation_Supported/APDU_Timeout/Number_Of_APDU_Retries are the stack's own configuration defaults for a device this example does not override"
+    },
+    {
+      "type": "Analog Input",
+      "instance": 1,
+      "name": "Bronze",
+      "app": ["Present_Value", "Object_Name", "Units", "Out_Of_Service"],
+      "enabled": [],
+      "writable": [],
+      "accepted": ["Event_State"],
+      "note": "REAL, degrees Celsius; starts at 21.5; read-only"
+    },
+    {
+      "type": "Binary Input",
+      "instance": 1,
+      "name": "Emerald",
+      "app": ["Present_Value", "Object_Name", "Polarity", "Out_Of_Service"],
+      "enabled": [],
+      "writable": [],
+      "accepted": ["Event_State"],
+      "note": "starts inactive; read-only"
+    },
+    {
+      "type": "Multi-state Input",
+      "instance": 1,
+      "name": "Hot Pink",
+      "app": ["Present_Value", "Object_Name", "Number_Of_States", "Out_Of_Service", "State_Text"],
+      "enabled": ["State_Text"],
+      "writable": [],
+      "accepted": ["Event_State"],
+      "note": "state 1 of 3: On, Off, Auto; read-only"
+    },
+    {
+      "type": "Network Port",
+      "instance": 1,
+      "name": "Vermilion",
+      "app": ["Object_Name", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
+      "enabled": [],
+      "writable": [],
+      "accepted": ["Reliability"],
+      "note": "BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal)"
+    },
+    {
+      "type": "Network Port",
+      "instance": 2,
+      "name": "Vermilion 2",
+      "app": ["Object_Name", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
+      "enabled": [],
+      "writable": [],
+      "accepted": ["Reliability"],
+      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function - see README \"BACnet/SC support\". The hub function's BACnet-level configuration (UUID, accept URI, SetBACnetSCHubFunctionConfig) is real and stack-verified; the underlying WebSocket/TLS transport is a documented stub (RegisterCallbackInitiateWebsocket/DisconnectWebsocket/SCStartListening/SCStopListening all log and decline - see main.cpp section 2c and TODO.md), so this Network Port never reaches a connected SC node in this build. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability is accepted at the generic default (normal) for the same reason as Network Port 1"
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+# Build the B-SCHUB example against the CAS BACnet Stack STATIC library and publish a GitHub
+# Release (binaries + metrics.json) when a vX.Y.Z tag is pushed. PRs and pushes to main run
+# the same build + smoke test without publishing.
+#
+# The CAS BACnet Stack is a PRIVATE git submodule: the repository secret CAS_STACK_PAT must
+# hold a PAT with read access to chipkin/cas-bacnet-stack.
+name: build-and-release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-2022, not windows-latest: the stack's vcxproj names the v143 (VS 2022)
+          # toolset; newer images may not carry it.
+          - os: windows-2022
+            artifact: BACnetExampleBSCHUB-windows-x64
+            exe: build/Release/BACnetExampleBSCHUB.exe
+            lib: submodules/cas-bacnet-stack/bin/CASBACnetStack_x64_Release.lib
+            metrics: metrics-windows.json
+          - os: ubuntu-latest
+            artifact: BACnetExampleBSCHUB-linux-x64
+            exe: build/BACnetExampleBSCHUB
+            lib: submodules/cas-bacnet-stack/bin/libCASBACnetStack_x64_Release.a
+            metrics: metrics-linux.json
+    steps:
+      - name: Enable git long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout (with the CAS BACnet Stack submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CAS_STACK_PAT || github.token }}
+
+      - name: Stack commit (cache key)
+        id: stack
+        shell: bash
+        run: echo "sha=$(git -C submodules/cas-bacnet-stack rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The static library depends only on the stack commit, so it is cached on that SHA.
+      # A moved pin therefore always rebuilds it - a stale library against a new header is
+      # an ABI mismatch that links and misbehaves.
+      - name: Restore the prebuilt static library
+        id: libcache
+        uses: actions/cache@v4
+        with:
+          path: submodules/cas-bacnet-stack/bin
+          key: cas-stack-static-${{ runner.os }}-${{ steps.stack.outputs.sha }}
+
+      - name: Build the CAS BACnet Stack static library (ReleaseLib, customer surface only)
+        if: steps.libcache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -e
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # microsoft/setup-msbuild's PATH update does not reach this Git-Bash step
+            # (msbuild: command not found even after that step ran), so resolve it
+            # directly the same way tools/build-stack-static.sh does locally.
+            vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+            MSBUILD=$("$vswhere" -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | head -1)
+            # The vcxproj names PlatformToolset=v145; windows-2022 only carries the VS 2022
+            # v143 build tools, so force v143 (MSB8020 otherwise: "build tools for v145 ...
+            # cannot be found"). CMake's own "Visual Studio 17 2022" generator resolves to
+            # the same v143 toolset on this runner, so the two stay compiler-matched.
+            "$MSBUILD" submodules/cas-bacnet-stack/projects/msvs/CASBACnetStack/CASBACnetStack.vcxproj -p:Configuration=ReleaseLib -p:Platform=x64 -p:PlatformToolset=v143 -m -v:minimal
+          else
+            make -C submodules/cas-bacnet-stack/projects/linux/Release/x64 -j"$(nproc)" all
+            make -C submodules/cas-bacnet-stack/projects/linux/Release/x64 install
+          fi
+          ls -l "${{ matrix.lib }}"
+
+      - name: Configure (STATIC link mode)
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCAS_BACNET_STACK_LINK=STATIC
+
+      - name: Confirm the link mode CMake actually used
+        shell: bash
+        run: |
+          mode=$(grep -E '^CAS_BACNET_STACK_LINK:' build/CMakeCache.txt | cut -d= -f2)
+          echo "CAS_BACNET_STACK_LINK=$mode"
+          [ "$mode" = "STATIC" ] || { echo "FAIL: expected STATIC, got '$mode'"; exit 1; }
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Smoke test + metrics (starts, binds, stays up; measures time to 'ready')
+        shell: bash
+        run: |
+          start=$(date +%s%3N)
+          "${{ matrix.exe }}" --port 47821 > smoke.log 2>&1 &
+          PID=$!
+          ready_ms=""
+          for i in $(seq 1 100); do
+            if grep -q "ready" smoke.log; then ready_ms=$(( $(date +%s%3N) - start )); break; fi
+            sleep 0.1
+          done
+          sleep 2
+          if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null || true; else echo "FAIL: device exited early"; cat smoke.log; exit 1; fi
+          [ -n "$ready_ms" ] || { echo "FAIL: no 'ready' line"; cat smoke.log; exit 1; }
+          cat smoke.log
+          bytes=$(stat -c %s "${{ matrix.exe }}" 2>/dev/null || wc -c < "${{ matrix.exe }}")
+          sha=$(sha256sum "${{ matrix.exe }}" | cut -c1-16)
+          stackver=$(grep -oE 'CAS BACnet Stack version: [0-9.]+' smoke.log | head -1 | grep -oE '[0-9.]+' || true)
+          appver=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' smoke.log | head -1 || true)
+          # CMAKE_CXX_COMPILER is not a CMakeCache.txt entry under the multi-config Visual
+          # Studio generator (only single-config generators like the Linux Unix Makefiles
+          # one cache it directly) - grep finding nothing here is expected on Windows, and
+          # with pipefail that makes the pipeline's exit status non-zero, so `|| true` keeps
+          # a genuinely missing compiler string from aborting the whole metrics step.
+          compiler=$(grep -E '^CMAKE_CXX_COMPILER_VERSION|^CMAKE_CXX_COMPILER:' build/CMakeCache.txt | head -2 | tr '\n' ' ' || true)
+          [ -n "$compiler" ] || compiler="$(grep -E '^CMAKE_GENERATOR:' build/CMakeCache.txt | cut -d= -f2 || true) ${{ matrix.os }}"
+          cat > "${{ matrix.metrics }}" <<EOF
+          {
+            "example": "BACnetExampleBSCHUB",
+            "app_version": "$appver",
+            "os": "${{ matrix.os }}",
+            "link_mode": "STATIC",
+            "stack_commit": "${{ steps.stack.outputs.sha }}",
+            "stack_version": "$stackver",
+            "binary_bytes": $bytes,
+            "binary_sha256_prefix": "$sha",
+            "startup_ms_to_ready": $ready_ms,
+            "compiler": "$compiler",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "git_ref": "${{ github.ref_name }}"
+          }
+          EOF
+          cat "${{ matrix.metrics }}"
+          { echo '### metrics (${{ matrix.os }})'; echo '```json'; cat "${{ matrix.metrics }}"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
+          cp README.md LICENSE dist/ 2>/dev/null || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/**/*
