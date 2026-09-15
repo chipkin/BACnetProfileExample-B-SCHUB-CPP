@@ -686,10 +686,10 @@ run (`metrics-windows.json` / `metrics-linux.json`), both built with
 <!-- METRICS -->
 | Platform | Binary | Size | SHA-256 (prefix) | Start-up to `ready` | Stack commit | Link mode | Compiler |
 |---|---|---|---|---|---|---|---|
-| Windows x64 (windows-2022) | `BACnetExampleBSCHUB.exe` | not yet released | - | - | `abd4cee1` | STATIC | - |
-| Linux x64 (ubuntu-latest) | `BACnetExampleBSCHUB` | not yet released | - | - | `abd4cee1` | STATIC | - |
+| Windows x64 (windows-2022) | `BACnetExampleBSCHUB.exe` | 3,255,296 bytes (~3.1 MiB) | `1636501694af33da` | 63 ms | `abd4cee1` | STATIC | Visual Studio 17 2022 |
+| Linux x64 (ubuntu-latest) | `BACnetExampleBSCHUB` | 39,992 bytes (~39 KiB) | `53e2acfb77d8102c` | 8 ms | `abd4cee1` | STATIC | `/usr/bin/c++` |
 
-Filled in at the first tagged release (§8 step 4 of the series runbook).
+From release [v1.0.0](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases/tag/v1.0.0) (`metrics-windows.json` / `metrics-linux.json`).
 
 ## References
 
