@@ -12,6 +12,74 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-09-15
+
+### Added
+
+- `PROPERTY_IDENTIFIER_ROUTING_TABLE = 428` in `CASBACnetStackExampleConstants.h`
+  (Network Port's `Routing_Table`, optional - `BACnetStack_SetPropertyEnabled`
+  first). Matches `BACnetPropertyIdentifier.h`'s `routingTable = 428`. First
+  consumer: `BACnetProfileExample-B-RTR-CPP` (F-ROUTER, Wave 2), which enables
+  it on both its Network Port objects so a client can read back the routing
+  table it configures with `AddRouterPort`/`AddRouterRoute`.
+
+## [2.4.0] - 2026-09-15
+
+### Added
+
+- `KeyCommand::RouterAnnounce` (key `r` / `R`), wired in `PollKey()` on both the
+  Windows (`_getch`) and POSIX (raw-terminal `read`) code paths. Non-breaking,
+  purely additive: existing `switch (CASExampleHelper::PollKey())` call sites
+  with a `default:` case (every current example) build unchanged.
+- Claimed in the series-wide `docs/menu-keys.md`: manually (re-)send
+  I-Am-Router-To-Network now, instead of waiting for the one sent at start-up,
+  so routing can be demonstrated on demand. First consumer:
+  `BACnetProfileExample-B-RTR-CPP`'s F-ROUTER demo (Wave 2); any later
+  routing/gateway example (e.g. B-GW) reuses this same key rather than
+  claiming a new one.
+
+## [2.3.0] - 2026-09-15
+
+### Added
+
+- Multi-port UDP support: `SetupUDP(uint16_t port, uint32_t networkPortInstance)`
+  and `SendIAm(uint32_t deviceInstance, uint32_t networkPortInstance)` overloads,
+  backed by a small internal table of UDP socket bindings keyed by Network Port
+  instance (`CASExampleHelper.cpp`, `UdpBinding` / `g_udpBindings`), replacing the
+  single file-local `SimpleUDP g_udp`. `HelperReceiveMessage` now polls every
+  bound socket in round-robin order and reports the instance a datagram actually
+  arrived on; `HelperSendMessage` looks up the socket bound to the instance the
+  stack names instead of comparing against one "the" instance.
+- First consumer: `BACnetProfileExample-B-RTR-CPP` (Wave 2, F-ROUTER /
+  F-MULTIPORT canonical example), which owns two Network Port objects ("Vermilion"
+  and "Vermilion 2") on two UDP ports and needs the receive/send callbacks to
+  dispatch on `networkPortInstance` per ANSI/ASHRAE 135 routing (`AddRouterPort`,
+  `AddRouterRoute`, `SendIAmRouterToNetwork`).
+
+### Non-breaking for every single-port example
+
+- `SetupUDP(uint16_t port)` and `SendIAm(uint32_t deviceInstance)` keep their
+  existing signatures and now simply forward to the two-argument overloads with
+  `networkPortInstance` = whatever `SetNetworkPortInstance()` last set (instance 1
+  by default, unchanged). A single-port example therefore ends up with exactly one
+  entry in the internal binding table, and every codepath (receive round-robin
+  over one entry, send lookup against one entry) collapses back to the same work
+  the old single-`SimpleUDP` implementation did. See the "WHY THIS IS SAFE FOR
+  SINGLE-PORT EXAMPLES" comment above `struct UdpBinding` in
+  `CASExampleHelper.cpp`.
+- Verified directly against `BACnetProfileExample-B-SS-CPP` itself (single Network
+  Port, instance 1): rebuilt STATIC against the pinned stack, smoke-tested on a
+  non-default port — startup, `Listening for BACnet/IP on UDP port ...`, the
+  broadcast I-Am, and a Who-Is/I-Am/ReadProperty exchange with an external client
+  all matched the pre-change baseline byte-for-byte in content (only the RX/TX log
+  lines gained a trailing `(Network Port N)` annotation).
+- The `RX`/`TX` console log lines gained a trailing `(Network Port N)` annotation;
+  no gate script or CI step matches those lines verbatim (checked:
+  `tools/check-series.sh`, `tools/*.sh` contain no `RX %u bytes` / `TX %u bytes`
+  pattern), and the existing substring checks in the runbook's smoke-test step
+  (`Listening for BACnet/IP on UDP port ...`, `... (broadcast)`) still match as
+  prefixes of the new lines.
+
 ## [2.2.0] - 2026-09-15
 
 ### Added

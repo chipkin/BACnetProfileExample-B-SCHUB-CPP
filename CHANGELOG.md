@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered.
 - Pinned to CAS BACnet Stack `6.x` @ `abd4cee1` (6.0.21), linked as a prebuilt
   **STATIC** library (`CAS_BACNET_STACK_LINK=STATIC`), built by
-  `tools/build-stack-static.sh`. `common/` vendored from B-SS-CPP at 2.2.0.
+  `tools/build-stack-static.sh`. `common/` vendored from B-SS-CPP at 2.5.0.
 - `docs/objects.json` + the generated `## Objects and properties` README block
   (zero ⚠ rows), the series profile-table block, and a footprint placeholder
   (filled at first release).

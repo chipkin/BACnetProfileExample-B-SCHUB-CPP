@@ -21,7 +21,7 @@ example in the series and [B-ASC (Application Specific Controller)](https://gith
 > **Versions:** this document describes **example v1.0.0**, built and verified
 > against **CAS BACnet Stack 6.0.21** (`6.x` @ `abd4cee1`), linked as a static
 > library, at **Protocol_Revision 24**, with the vendored `common/` helper at
-> **v2.2.0**. Running the example prints all three - if what it prints
+> **v2.5.0**. Running the example prints all three - if what it prints
 > disagrees with this line, trust the program and check `CHANGELOG.md`.
 
 ## BACnet/SC support: read this first
@@ -374,7 +374,7 @@ Expected output:
 ```
 BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.0.0
 CAS BACnet Stack version: 6.0.21.0
-Common helper (common/) version: 2.2.0
+Common helper (common/) version: 2.5.0
 FYI: Listening for BACnet/IP on UDP port 47808.
 TX 21 bytes to 192.168.3.255:47808 (broadcast)
 FYI: Device 389022 ("Rainbow") ready. Vendor ID 389. Press 'h' for help.

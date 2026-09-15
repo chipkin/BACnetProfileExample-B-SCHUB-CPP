@@ -40,7 +40,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "2.2.0";
+static const char* COMMON_VERSION = "2.5.0";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.
@@ -73,33 +73,67 @@ uint16_t ParsePortArg(int argc, char** argv, uint16_t defaultPort);
 uint32_t ParseDeviceIdArg(int argc, char** argv, uint32_t defaultDeviceId);
 
 // --- Networking ------------------------------------------------------------
-// Bind the shared UDP socket to the BACnet/IP port (default 47808 / 0xBAC0).
+// Bind the UDP socket used by the CURRENT Network Port instance (the one last
+// named by SetNetworkPortInstance(), or instance 1 if that was never called -
+// the series convention for a single-port example). This is the entry point
+// every single-port example has always used; its behaviour is unchanged by
+// the multi-port support below: it binds exactly one socket, keyed to exactly
+// one Network Port instance, exactly as before 2.3.0.
 bool SetupUDP(uint16_t port);
 
-// Close the shared UDP socket.
+// Bind an ADDITIONAL UDP socket for a SPECIFIC Network Port object instance -
+// added in common/ 2.3.0 for examples that own more than one BACnet/IP link
+// (e.g. a router example with a Network Port per side). Call once per port,
+// each with a different networkPortInstance. Internally this is the same
+// per-instance binding SetupUDP(port) uses for the "current" instance; the
+// two overloads share one small table (CASExampleHelper.cpp), so mixing them
+// is safe - SetupUDP(port) is exactly SetupUDP(port, <current instance>).
+//
+// The receive callback polls every bound socket in round-robin order each
+// tick (so one busy port cannot starve another) and reports the instance the
+// datagram arrived on; the send callback looks up the socket whose instance
+// matches the one the stack names. A single-port example has exactly one
+// entry in that table, so both callbacks collapse back to "the one socket" -
+// see the "WHY THIS IS SAFE FOR SINGLE-PORT EXAMPLES" comment in
+// CASExampleHelper.cpp.
+bool SetupUDP(uint16_t port, uint32_t networkPortInstance);
+
+// Close every UDP socket bound by SetupUDP() (all instances).
 void ShutdownUDP();
 
-// Tell the helper which Network Port object instance owns the UDP socket.
+// Tell the helper which Network Port object instance is "current" - the one
+// the single-argument SetupUDP(port) and SendIAm(deviceInstance) overloads
+// act on.
 //
 // The stack identifies a link by the INSTANCE of its Network Port object, not
 // by a transport network type: the receive callback reports the instance a
-// datagram arrived on, the send callback is told the instance to send from, and
-// SendIAm is told which port to announce on. The helper serves one port, so it
-// needs to know its instance.
+// datagram arrived on, the send callback is told the instance to send from,
+// and SendIAm is told which port to announce on.
 //
 // Call this once, after BACnetStack_AddNetworkPortObject() and before
 // RegisterCommonCallbacks(). It defaults to 1 - the series convention - so an
 // example that uses instance 1 need not call it, but calling it explicitly
-// keeps main.cpp's Network Port instance the single source of truth.
+// keeps main.cpp's Network Port instance the single source of truth. A
+// multi-port example (SetupUDP(port, instance) for two or more instances)
+// still calls this once, for whichever instance should be "current" for the
+// single-argument SetupUDP()/SendIAm() overloads - typically its first port.
 void SetNetworkPortInstance(uint32_t networkPortInstance);
 
 // Register the transport + system-time callbacks (backed by the UDP socket
 // created in SetupUDP, so call SetupUDP first).
 void RegisterCommonCallbacks();
 
-// Broadcast an unsolicited I-Am for the given device. ANSI/ASHRAE 135 requires
-// a device to announce itself with I-Am on start-up.
+// Broadcast an unsolicited I-Am for the given device on the CURRENT Network
+// Port instance (see SetNetworkPortInstance). ANSI/ASHRAE 135 requires a
+// device to announce itself with I-Am on start-up. Unchanged since before
+// 2.3.0 for a single-port example.
 void SendIAm(uint32_t deviceInstance);
+
+// Broadcast an unsolicited I-Am for the given device on a SPECIFIC Network
+// Port instance - added in common/ 2.3.0 for a multi-port example that must
+// announce itself once per port/network it serves. SendIAm(deviceInstance) is
+// exactly SendIAm(deviceInstance, <current instance>).
+void SendIAm(uint32_t deviceInstance, uint32_t networkPortInstance);
 
 // Get the primary IPv4 interface's address and subnet mask (each as 4 octets).
 // These are the values a BACnet/IP Network Port object reports (IP_Address,
@@ -175,8 +209,11 @@ enum class KeyCommand {
     WriteGroupDemo,// 'w' - manually fire a demo WriteGroup (or other outbound
                    //       SendWriteProperty) instead of waiting for whatever
                    //       triggers it normally
-    DiscoverRemote // 'd' - send a demo SendWhoIs to discover a remote device
-                   //       this example writes to or reads from
+    DiscoverRemote, // 'd' - send a demo SendWhoIs to discover a remote device
+                    //       this example writes to or reads from
+    RouterAnnounce  // 'r' - manually (re-)send I-Am-Router-To-Network now, instead
+                     //       of waiting for the one sent at start-up, so routing
+                     //       can be demonstrated on demand
 };
 
 // Non-blocking: returns a pending key command, or None if nothing was pressed.
