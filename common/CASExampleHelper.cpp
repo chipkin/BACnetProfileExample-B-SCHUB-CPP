@@ -41,20 +41,61 @@
 
 namespace {
 
-// The single UDP socket shared by the transport callbacks. The stack calls the
-// callbacks as plain C function pointers (no user-data argument), so the socket
-// lives here as a file-local singleton rather than being passed in. This is a
-// deliberate simplification for the example; an application that needs multiple
-// datalinks would route through its own context object instead.
-SimpleUDP g_udp;
+// ---------------------------------------------------------------------------
+// Multi-port UDP support (common/ 2.3.0).
+//
+// The stack calls the transport callbacks as plain C function pointers (no
+// user-data argument), so the socket(s) live here as file-local state rather
+// than being passed in. Originally that state was exactly one SimpleUDP - one
+// example, one BACnet/IP link. A routing example (B-RTR, the first canonical
+// user of this) owns TWO Network Port objects, each with its own UDP socket
+// and port number, and the stack must be told - on every receive and every
+// send - WHICH Network Port instance the datagram belongs to. This small
+// table generalizes "the one socket" to "up to MAX_UDP_BINDINGS sockets, each
+// keyed by the Network Port instance it belongs to".
+//
+// WHY THIS IS SAFE FOR SINGLE-PORT EXAMPLES.
+// Every example that only ever calls the single-argument SetupUDP(port) gets
+// exactly one entry in g_udpBindings, keyed to whatever SetNetworkPortInstance
+// set (instance 1 if it was never called - unchanged default). With one
+// entry, HelperReceiveMessage's round-robin loop below always starts at and
+// checks that one entry (nothing to rotate to), and HelperSendMessage's
+// lookup always finds that one entry for the one networkPortInstance the
+// stack will ever name. The code path is byte-for-byte the same work the
+// old single-g_udp implementation did; only the storage changed from "a bare
+// SimpleUDP" to "a SimpleUDP inside a one-element table". No single-port
+// example's on-the-wire behaviour changes.
+struct UdpBinding {
+    SimpleUDP udp;
+    uint16_t port = 0;
+    uint32_t networkPortInstance = 0;
+    bool bound = false;
+};
 
-// The BACnet/IP port the device is bound to (used to address broadcast I-Am).
+// Generous headroom over B-RTR's two ports; a small fixed table avoids a heap
+// allocation in example code that otherwise has none.
+const size_t MAX_UDP_BINDINGS = 4;
+UdpBinding g_udpBindings[MAX_UDP_BINDINGS];
+size_t g_udpBindingCount = 0;
+
+UdpBinding* FindUdpBindingByInstance(uint32_t networkPortInstance) {
+    for (size_t i = 0; i < g_udpBindingCount; ++i) {
+        if (g_udpBindings[i].networkPortInstance == networkPortInstance) {
+            return &g_udpBindings[i];
+        }
+    }
+    return NULL;
+}
+
+// The BACnet/IP port of the CURRENT Network Port instance (used to address
+// broadcast I-Am for the single-argument SendIAm()).
 uint16_t g_port = 47808;
 
-// The instance of the Network Port object that owns this UDP socket. The stack
+// The instance of the Network Port object that the single-argument
+// SetupUDP(port) / SendIAm(deviceInstance) overloads act on. The stack
 // identifies a link by its Network Port object INSTANCE, not by a transport
 // network type, so the transport callbacks and SendIAm all have to name it.
-// The example's main() tells us which one it added, via
+// The example's main() tells us which one is "current" via
 // SetNetworkPortInstance(); the default matches the series convention of a
 // single Network Port at instance 1.
 uint32_t g_networkPortInstance = 1;
@@ -76,22 +117,48 @@ uint16_t HelperReceiveMessage(uint8_t* message, const uint16_t maxMessageLength,
                               uint32_t* networkPortInstance) {
     (void)destinationConnectionString;
     (void)destinationConnectionStringLength;
-    if (maxConnectionStringLength < 6) {
+    if (maxConnectionStringLength < 6 || g_udpBindingCount == 0) {
         return 0;
     }
 
-    uint8_t fromIp[4];
+    // Poll the bound sockets in round-robin order, starting from the one after
+    // whichever was serviced (or checked) last call. For a single-port example
+    // (g_udpBindingCount == 1) this always checks binding 0, same as the old
+    // single-g_udp implementation. For a multi-port example it means a socket
+    // with continuous traffic cannot starve the others: each call to this
+    // function looks at a different starting socket, and the stack calls it
+    // repeatedly per tick until it returns 0.
+    static size_t s_nextBindingToCheck = 0;
+    const size_t n = g_udpBindingCount;
+    uint16_t bytesRead = 0;
+    uint8_t fromIp[4] = { 0, 0, 0, 0 };
     uint16_t fromPort = 0;
-    // Receive() copies at most maxMessageLength bytes; a datagram larger than the
-    // stack's buffer is truncated to that length (fine for UDP - the stack will
-    // simply fail to decode and ignore an over-length frame).
-    const uint16_t bytesRead = g_udp.Receive(message, maxMessageLength, fromIp, &fromPort);
+    uint32_t servicedInstance = 0;
+
+    for (size_t k = 0; k < n; ++k) {
+        const size_t i = (s_nextBindingToCheck + k) % n;
+        UdpBinding& binding = g_udpBindings[i];
+        if (!binding.bound) {
+            continue;
+        }
+        // Receive() copies at most maxMessageLength bytes; a datagram larger than
+        // the stack's buffer is truncated to that length (fine for UDP - the
+        // stack will simply fail to decode and ignore an over-length frame).
+        bytesRead = binding.udp.Receive(message, maxMessageLength, fromIp, &fromPort);
+        if (bytesRead > 0) {
+            servicedInstance = binding.networkPortInstance;
+            s_nextBindingToCheck = (i + 1) % n;
+            break;
+        }
+    }
     if (bytesRead == 0) {
-        return 0; // no datagram waiting
+        s_nextBindingToCheck = (s_nextBindingToCheck + 1) % n; // keep rotating even when idle
+        return 0; // no datagram waiting on any bound port
     }
 
-    printf("RX %u bytes from %u.%u.%u.%u:%u\n", (unsigned)bytesRead,
-           fromIp[0], fromIp[1], fromIp[2], fromIp[3], (unsigned)fromPort);
+    printf("RX %u bytes from %u.%u.%u.%u:%u (Network Port %u)\n", (unsigned)bytesRead,
+           fromIp[0], fromIp[1], fromIp[2], fromIp[3], (unsigned)fromPort,
+           (unsigned)servicedInstance);
 
     // Fill the 6-byte BACnet/IP connection string: IP[4] + port[2] (big-endian).
     sourceConnectionString[0] = fromIp[0];
@@ -106,9 +173,11 @@ uint16_t HelperReceiveMessage(uint8_t* message, const uint16_t maxMessageLength,
     // stack used to ask only for the transport's network TYPE here; since the
     // per-port work (CAS BACnet Stack issue #822/#556) it wants the instance of
     // the Network Port object that owns this link, so a multi-port device can
-    // answer on the port a request came in on. This example has exactly one
-    // port, so it always reports that one - see SetNetworkPortInstance().
-    *networkPortInstance = g_networkPortInstance;
+    // answer on the port a request came in on. A single-port example reports
+    // its one bound instance every time, same as before common/ 2.3.0; a
+    // multi-port example reports whichever bound socket the datagram actually
+    // arrived on.
+    *networkPortInstance = servicedInstance;
     return bytesRead;
 }
 
@@ -124,10 +193,12 @@ uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
                            const uint8_t connectionStringLength,
                            const uint32_t networkPortInstance, const bool broadcast) {
     // The stack names the Network Port object the message is to leave by (it
-    // used to name the transport's network type). This example serves exactly
-    // one port, so anything else is not ours to send.
-    if (networkPortInstance != g_networkPortInstance ||
-        connectionStringLength < 6) {
+    // used to name the transport's network type). Look up the socket bound to
+    // that instance; a single-port example has exactly one, so this always
+    // resolves to it - same effect as the old "!= g_networkPortInstance" check,
+    // just expressed as a table lookup instead of a single comparison.
+    UdpBinding* binding = FindUdpBindingByInstance(networkPortInstance);
+    if (binding == NULL || !binding->bound || connectionStringLength < 6) {
         return 0;
     }
 
@@ -135,10 +206,10 @@ uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
                             connectionString[2], connectionString[3] };
     const uint16_t port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
 
-    const uint16_t sent = g_udp.Send(ip, port, message, messageLength);
-    printf("TX %u bytes to %u.%u.%u.%u:%u%s\n", (unsigned)sent,
+    const uint16_t sent = binding->udp.Send(ip, port, message, messageLength);
+    printf("TX %u bytes to %u.%u.%u.%u:%u%s (Network Port %u)\n", (unsigned)sent,
            ip[0], ip[1], ip[2], ip[3], (unsigned)port,
-           broadcast ? " (broadcast)" : "");
+           broadcast ? " (broadcast)" : "", (unsigned)networkPortInstance);
     return sent;
 }
 
@@ -426,18 +497,45 @@ uint32_t ParseDeviceIdArg(const int argc, char** argv, const uint32_t defaultDev
     return defaultDeviceId;
 }
 
-bool SetupUDP(const uint16_t port) {
-    g_port = port;
-    if (!g_udp.Connect(port)) {
-        printf("Error: Failed to bind UDP port %u.\n", (unsigned)port);
+bool SetupUDP(const uint16_t port, const uint32_t networkPortInstance) {
+    UdpBinding* binding = FindUdpBindingByInstance(networkPortInstance);
+    if (binding == NULL) {
+        if (g_udpBindingCount >= MAX_UDP_BINDINGS) {
+            printf("Error: SetupUDP: MAX_UDP_BINDINGS (%u) already bound; "
+                   "raise it in CASExampleHelper.cpp if you need more ports.\n",
+                   (unsigned)MAX_UDP_BINDINGS);
+            return false;
+        }
+        binding = &g_udpBindings[g_udpBindingCount++];
+        binding->networkPortInstance = networkPortInstance;
+    }
+    if (!binding->udp.Connect(port)) {
+        printf("Error: Failed to bind UDP port %u (Network Port %u).\n",
+               (unsigned)port, (unsigned)networkPortInstance);
         return false;
     }
-    printf("FYI: Listening for BACnet/IP on UDP port %u.\n", (unsigned)port);
+    binding->port = port;
+    binding->bound = true;
+    if (networkPortInstance == g_networkPortInstance) {
+        // Keep g_port in step for the single-argument SendIAm(deviceInstance).
+        g_port = port;
+    }
+    printf("FYI: Listening for BACnet/IP on UDP port %u (Network Port %u).\n",
+           (unsigned)port, (unsigned)networkPortInstance);
     return true;
 }
 
+bool SetupUDP(const uint16_t port) {
+    return SetupUDP(port, g_networkPortInstance);
+}
+
 void ShutdownUDP() {
-    g_udp.Disconnect();
+    for (size_t i = 0; i < g_udpBindingCount; ++i) {
+        if (g_udpBindings[i].bound) {
+            g_udpBindings[i].udp.Disconnect();
+            g_udpBindings[i].bound = false;
+        }
+    }
 }
 
 void SetNetworkPortInstance(const uint32_t networkPortInstance) {
@@ -454,11 +552,17 @@ bool GetLocalIPv4(uint8_t ipAddress[4], uint8_t subnetMask[4]) {
     return GetPrimaryIPv4(ipAddress, subnetMask);
 }
 
-void SendIAm(const uint32_t deviceInstance) {
+void SendIAm(const uint32_t deviceInstance, const uint32_t networkPortInstance) {
     // Target the LOCAL subnet broadcast (the device's own network) rather than
     // the global 255.255.255.255 / network 0xFFFF. The broadcast is ip | ~mask
     // of the primary IPv4 interface - the same network the Network Port object
     // represents - falling back to the limited broadcast if it can't be found.
+    //
+    // NOTE for multi-port examples: every Network Port in this series' examples
+    // runs on the SAME host interface (different UDP ports simulate different
+    // BACnet/IP networks), so the primary-interface broadcast address is the
+    // right target for every instance; only the port differs, taken from that
+    // instance's own binding below.
     uint8_t bcast[4] = { 255, 255, 255, 255 };
     uint8_t ip[4], mask[4];
     if (GetPrimaryIPv4(ip, mask)) {
@@ -468,14 +572,21 @@ void SendIAm(const uint32_t deviceInstance) {
         bcast[3] = (uint8_t)(ip[3] | ~mask[3]);
     }
 
+    const UdpBinding* binding = FindUdpBindingByInstance(networkPortInstance);
+    const uint16_t port = (binding != NULL && binding->bound) ? binding->port : g_port;
+
     const uint8_t connectionString[6] = {
         bcast[0], bcast[1], bcast[2], bcast[3],
-        (uint8_t)((g_port >> 8) & 0xFF), (uint8_t)(g_port & 0xFF)
+        (uint8_t)((port >> 8) & 0xFF), (uint8_t)(port & 0xFF)
     };
     // destinationNetwork 0 = the local network only (not the global 0xFFFF).
     BACnetStack_SendIAm(deviceInstance, connectionString, 6,
-                        g_networkPortInstance,
+                        networkPortInstance,
                         true /*broadcast*/, 0 /*local network*/, NULL, 0);
+}
+
+void SendIAm(const uint32_t deviceInstance) {
+    SendIAm(deviceInstance, g_networkPortInstance);
 }
 
 KeyCommand PollKey() {
@@ -495,6 +606,7 @@ KeyCommand PollKey() {
     if (c == 's' || c == 'S') return KeyCommand::DemoAdvance;
     if (c == 'w' || c == 'W') return KeyCommand::WriteGroupDemo;
     if (c == 'd' || c == 'D') return KeyCommand::DiscoverRemote;
+    if (c == 'r' || c == 'R') return KeyCommand::RouterAnnounce;
     return KeyCommand::None;
 #else
     EnableRawInput();
@@ -513,6 +625,7 @@ KeyCommand PollKey() {
     if (buf[0] == 's' || buf[0] == 'S') return KeyCommand::DemoAdvance;
     if (buf[0] == 'w' || buf[0] == 'W') return KeyCommand::WriteGroupDemo;
     if (buf[0] == 'd' || buf[0] == 'D') return KeyCommand::DiscoverRemote;
+    if (buf[0] == 'r' || buf[0] == 'R') return KeyCommand::RouterAnnounce;
     return KeyCommand::None;
 #endif
 }
