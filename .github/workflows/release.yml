@@ -1,5 +1,5 @@
 # Build the B-SCHUB example and publish a GitHub Release (binaries + metrics.json) when a
-# vX.Y.Z tag is pushed. PRs and pushes to main run the same build + smoke test without
+# vX.Y.Z tag is pushed. PRs run the same build + smoke test without
 # publishing. The build is exactly what README.md tells a customer to run: plain CMake in
 # the adapter's default SOURCE mode, which compiles the stack into the executable.
 #
@@ -10,7 +10,6 @@ name: build-and-release
 on:
   pull_request:
   push:
-    branches: [main]
     tags: ["v*.*.*"]
   workflow_dispatch:
 
