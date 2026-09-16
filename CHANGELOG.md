@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Restructured documentation to match the series' README/TUTORIAL/PICS split
+  (see `BACnetProfileExample-B-SS-CPP`): `README.md` is cut down to this
+  example only (device tree, BIBBs/services/object types, licensing, build,
+  run, verify, footprint, series table, references); the "Before you ship"
+  table moved into per-field comments in `main.cpp`'s
+  `CHANGE ALL OF THIS BEFORE YOU SHIP` block; "Extending the example",
+  "Troubleshooting" and the `BACnetStack_Tick()` contract moved into a new
+  `TUTORIAL.md`; the "Objects and properties" block moved into a new
+  `docs/PICS.md` (ANSI/ASHRAE 135 Annex A shape), regenerated with zero ⚠
+  rows; `docs/objects.json`'s Device entry now splits `stack` (device-wide
+  facts the stack computes) from `accepted` (stack defaults the app
+  deliberately leaves alone), matching the series convention.
+- **Build switched from STATIC to the adapter's default SOURCE mode**: the
+  documented build is now the same two commands as every other example in the
+  series (`cmake -B build -S .` / `cmake --build build --config Release`), with
+  no `tools/build-stack-static.sh` pre-step and no `-DCAS_BACNET_STACK_LINK=...`
+  flag. `.github/workflows/release.yml` drops the static-library cache/build
+  steps and the matrix `lib:` entries, configures without a link-mode flag,
+  asserts `CAS_BACNET_STACK_LINK=SOURCE`, records `"link_mode": "SOURCE"` in
+  `metrics-*.json`, and packages `TUTORIAL.md` / `docs/PICS.md` into the
+  release artifact. The v1.0.0 footprint numbers in README.md were measured
+  from the old STATIC build; the next release refreshes them under SOURCE.
+
 ## [1.0.0] - unreleased
 
 ### Added

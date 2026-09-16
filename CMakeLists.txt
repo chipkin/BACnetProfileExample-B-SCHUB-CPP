@@ -3,16 +3,15 @@
 #
 # This example links the CAS BACnet Stack through the CASBACnetStack::Adapter CMake
 # target (submodules/cas-bacnet-stack/adapters/cpp) and calls the stack's C API
-# (BACnetStack_*, via CASBACnetStackAdapter.h) directly. This example builds and
-# ships in STATIC mode: CAS_BACNET_STACK_LINK=STATIC links a prebuilt
-# CASBACnetStack_x64_Release.lib / libCASBACnetStack_x64_Release.a, built first by
-# tools/build-stack-static.sh from the stack's own project files. (The adapter also
-# offers a SOURCE mode that compiles the stack's source/ straight into the
-# executable with no separate library build; this example is not built that way.)
+# (BACnetStack_*, via CASBACnetStackAdapter.h) directly. It builds and ships in the
+# adapter's default SOURCE mode: the stack's source/*.cpp are compiled straight into
+# the executable, so there is no library or DLL to build, ship, or install first and
+# the build is the same two commands on every platform. (The adapter also offers
+# STATIC and DLL modes - see its CMakeLists.txt - but they need a prebuilt library
+# and this example does not use them.)
 #
 # Build:
-#   tools/build-stack-static.sh BACnetProfileExample-B-SCHUB-CPP   (from the series root)
-#   cmake -B build -S . -DCAS_BACNET_STACK_LINK=STATIC
+#   cmake -B build -S .
 #   cmake --build build --config Release --parallel
 # Run (from the example folder):
 #   ./build/BACnetExampleBSCHUB          (Linux/macOS)

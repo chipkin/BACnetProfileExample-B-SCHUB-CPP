@@ -1,6 +1,7 @@
-# Build the B-SCHUB example against the CAS BACnet Stack STATIC library and publish a GitHub
-# Release (binaries + metrics.json) when a vX.Y.Z tag is pushed. PRs and pushes to main run
-# the same build + smoke test without publishing.
+# Build the B-SCHUB example and publish a GitHub Release (binaries + metrics.json) when a
+# vX.Y.Z tag is pushed. PRs and pushes to main run the same build + smoke test without
+# publishing. The build is exactly what README.md tells a customer to run: plain CMake in
+# the adapter's default SOURCE mode, which compiles the stack into the executable.
 #
 # The CAS BACnet Stack is a PRIVATE git submodule: the repository secret CAS_STACK_PAT must
 # hold a PAT with read access to chipkin/cas-bacnet-stack.
@@ -24,17 +25,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # windows-2022, not windows-latest: the stack's vcxproj names the v143 (VS 2022)
-          # toolset; newer images may not carry it.
+          # windows-2022 pins the VS 2022 (v143) toolset the released binaries are built
+          # with, so the published metrics stay comparable release to release.
           - os: windows-2022
             artifact: BACnetExampleBSCHUB-windows-x64
             exe: build/Release/BACnetExampleBSCHUB.exe
-            lib: submodules/cas-bacnet-stack/bin/CASBACnetStack_x64_Release.lib
             metrics: metrics-windows.json
           - os: ubuntu-latest
             artifact: BACnetExampleBSCHUB-linux-x64
             exe: build/BACnetExampleBSCHUB
-            lib: submodules/cas-bacnet-stack/bin/libCASBACnetStack_x64_Release.a
             metrics: metrics-linux.json
     steps:
       - name: Enable git long paths (Windows)
@@ -47,52 +46,23 @@ jobs:
           submodules: recursive
           token: ${{ secrets.CAS_STACK_PAT || github.token }}
 
-      - name: Stack commit (cache key)
+      - name: Stack commit (recorded in metrics.json)
         id: stack
         shell: bash
         run: echo "sha=$(git -C submodules/cas-bacnet-stack rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # The static library depends only on the stack commit, so it is cached on that SHA.
-      # A moved pin therefore always rebuilds it - a stale library against a new header is
-      # an ABI mismatch that links and misbehaves.
-      - name: Restore the prebuilt static library
-        id: libcache
-        uses: actions/cache@v4
-        with:
-          path: submodules/cas-bacnet-stack/bin
-          key: cas-stack-static-${{ runner.os }}-${{ steps.stack.outputs.sha }}
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build the CAS BACnet Stack static library (ReleaseLib, customer surface only)
-        if: steps.libcache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -e
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # microsoft/setup-msbuild's PATH update does not reach this Git-Bash step
-            # (msbuild: command not found even after that step ran), so resolve it
-            # directly the same way tools/build-stack-static.sh does locally.
-            vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
-            MSBUILD=$("$vswhere" -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | head -1)
-            # The vcxproj names PlatformToolset=v145; windows-2022 only carries the VS 2022
-            # v143 build tools, so force v143 (MSB8020 otherwise: "build tools for v145 ...
-            # cannot be found"). CMake's own "Visual Studio 17 2022" generator resolves to
-            # the same v143 toolset on this runner, so the two stay compiler-matched.
-            "$MSBUILD" submodules/cas-bacnet-stack/projects/msvs/CASBACnetStack/CASBACnetStack.vcxproj -p:Configuration=ReleaseLib -p:Platform=x64 -p:PlatformToolset=v143 -m -v:minimal
-          else
-            make -C submodules/cas-bacnet-stack/projects/linux/Release/x64 -j"$(nproc)" all
-            make -C submodules/cas-bacnet-stack/projects/linux/Release/x64 install
-          fi
-          ls -l "${{ matrix.lib }}"
-
-      - name: Configure (STATIC link mode)
-        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCAS_BACNET_STACK_LINK=STATIC
-
+      # The README documents `cmake -B build -S .` with no link-mode flag, so assert the
+      # adapter's default really is SOURCE. If that default ever changes, the documented
+      # build silently starts needing a prebuilt library and fails for customers first.
       - name: Confirm the link mode CMake actually used
         shell: bash
         run: |
           mode=$(grep -E '^CAS_BACNET_STACK_LINK:' build/CMakeCache.txt | cut -d= -f2)
           echo "CAS_BACNET_STACK_LINK=$mode"
-          [ "$mode" = "STATIC" ] || { echo "FAIL: expected STATIC, got '$mode'"; exit 1; }
+          [ "$mode" = "SOURCE" ] || { echo "FAIL: expected SOURCE, got '$mode'"; exit 1; }
 
       - name: Build
         run: cmake --build build --config Release
@@ -128,7 +98,7 @@ jobs:
             "example": "BACnetExampleBSCHUB",
             "app_version": "$appver",
             "os": "${{ matrix.os }}",
-            "link_mode": "STATIC",
+            "link_mode": "SOURCE",
             "stack_commit": "${{ steps.stack.outputs.sha }}",
             "stack_version": "$stackver",
             "binary_bytes": $bytes,
@@ -147,7 +117,8 @@ jobs:
         run: |
           mkdir -p dist
           cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
-          cp README.md LICENSE dist/ 2>/dev/null || true
+          cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
+          cp docs/PICS.md dist/ 2>/dev/null || true
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
