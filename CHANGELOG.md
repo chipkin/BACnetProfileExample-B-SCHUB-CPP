@@ -92,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - STATIC build, zero warnings from `main.cpp`/`common/`.
 - Smoke test: `--port`, `--help`, `--version` all exit 0 and print the expected
   version/ready lines; `--deviceID` overrides the announced instance.
-- Real BACnet/IP wire verification with `bacpypes3`: Who-Is → I-Am from
+- Real BACnet/IP wire verification with a live BACnet client: Who-Is → I-Am from
   instance 389022; ReadProperty of Device `Object_Name`/`Vendor_Identifier`/
   `Model_Name`; Analog Input 1 `Present_Value` = 21.5; Network Port 2
   `Object_Name` = "Vermilion 2" and `Network_Type` = 11 (`secureConnect`).
