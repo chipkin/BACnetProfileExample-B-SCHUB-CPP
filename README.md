@@ -372,85 +372,85 @@ The CAS BACnet Stack supports every standardized device profile in ASHRAE 135-20
 
 ### Controllers (Annex L.4)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-SS** Smart Sensor | [B-SS-CPP](https://github.com/chipkin/BACnetProfileExample-B-SS-CPP) | Ask | Ask | Ask | Ask |
-| **B-SA** Smart Actuator | [B-SA-CPP](https://github.com/chipkin/BACnetProfileExample-B-SA-CPP) | Ask | Ask | Ask | Ask |
-| **B-ASC** Application Specific Controller | [B-ASC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ASC-CPP) | [B-ASC-Node](https://github.com/chipkin/BACnetProfileExample-B-ASC-Node) | Ask | Ask | Ask |
-| **B-AAC** Advanced Application Controller | [B-AAC-CPP](https://github.com/chipkin/BACnetProfileExample-B-AAC-CPP) | Ask | Ask | Ask | Ask |
-| **B-BC** Building Controller | [B-BC-CPP](https://github.com/chipkin/BACnetProfileExample-B-BC-CPP) | Ask | Ask | Ask | Ask |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-SS** Smart Sensor | [B-SS-CPP](https://github.com/chipkin/BACnetProfileExample-B-SS-CPP) | [B-SS-Node](https://github.com/chipkin/BACnetProfileExample-B-SS-Node) | [B-SS-CS](https://github.com/chipkin/BACnetProfileExample-B-SS-CS) | [B-SS-Rust](https://github.com/chipkin/BACnetProfileExample-B-SS-Rust) | [B-SS-Python](https://github.com/chipkin/BACnetProfileExample-B-SS-Python) | [B-SS-Go](https://github.com/chipkin/BACnetProfileExample-B-SS-Go) |
+| **B-SA** Smart Actuator | [B-SA-CPP](https://github.com/chipkin/BACnetProfileExample-B-SA-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-ASC** Application Specific Controller | [B-ASC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ASC-CPP) | [B-ASC-Node](https://github.com/chipkin/BACnetProfileExample-B-ASC-Node) | Ask | Ask | Ask | Ask |
+| **B-AAC** Advanced Application Controller | [B-AAC-CPP](https://github.com/chipkin/BACnetProfileExample-B-AAC-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-BC** Building Controller | [B-BC-CPP](https://github.com/chipkin/BACnetProfileExample-B-BC-CPP) | Ask | Ask | Ask | Ask | Ask |
 
 ### Life safety controllers (Annex L.5)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-LSC** Life Safety Controller | [B-LSC-CPP](https://github.com/chipkin/BACnetProfileExample-B-LSC-CPP) 🚧 | Ask | Ask | Ask | Ask |
-| **B-ALSC** Advanced Life Safety Controller | [B-ALSC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ALSC-CPP) | Ask | Ask | Ask | Ask |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-LSC** Life Safety Controller | [B-LSC-CPP](https://github.com/chipkin/BACnetProfileExample-B-LSC-CPP) 🚧 | Ask | Ask | Ask | Ask | Ask |
+| **B-ALSC** Advanced Life Safety Controller | [B-ALSC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ALSC-CPP) | Ask | Ask | Ask | Ask | Ask |
 
 ### Access control controllers (Annex L.6)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-ACC** Access Control Controller | [B-ACC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ACC-CPP) | Ask | Ask | Ask | Ask |
-| **B-AACC** Advanced Access Control Controller | [B-AACC-CPP](https://github.com/chipkin/BACnetProfileExample-B-AACC-CPP) | Ask | Ask | Ask | Ask |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-ACC** Access Control Controller | [B-ACC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ACC-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-AACC** Advanced Access Control Controller | [B-AACC-CPP](https://github.com/chipkin/BACnetProfileExample-B-AACC-CPP) | Ask | Ask | Ask | Ask | Ask |
 
 ### Lighting controllers (Annex L.11)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-LD** Lighting Device | [B-LD-CPP](https://github.com/chipkin/BACnetProfileExample-B-LD-CPP) | Ask | Ask | Ask | Ask |
-| **B-LS** Lighting Supervisor | [B-LS-CPP](https://github.com/chipkin/BACnetProfileExample-B-LS-CPP) | Ask | Ask | Ask | Ask |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-LD** Lighting Device | [B-LD-CPP](https://github.com/chipkin/BACnetProfileExample-B-LD-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-LS** Lighting Supervisor | [B-LS-CPP](https://github.com/chipkin/BACnetProfileExample-B-LS-CPP) | Ask | Ask | Ask | Ask | Ask |
 
 ### Elevator controllers (Annex L.13)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-EM** Elevator Monitor | [B-EM-CPP](https://github.com/chipkin/BACnetProfileExample-B-EM-CPP) | Ask | Ask | Ask | Ask |
-| **B-EC** Elevator Controller | [B-EC-CPP](https://github.com/chipkin/BACnetProfileExample-B-EC-CPP) | Ask | Ask | Ask | Ask |
-| **B-AEC** Advanced Elevator Controller | [B-AEC-CPP](https://github.com/chipkin/BACnetProfileExample-B-AEC-CPP) | Ask | Ask | Ask | Ask |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-EM** Elevator Monitor | [B-EM-CPP](https://github.com/chipkin/BACnetProfileExample-B-EM-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-EC** Elevator Controller | [B-EC-CPP](https://github.com/chipkin/BACnetProfileExample-B-EC-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-AEC** Advanced Elevator Controller | [B-AEC-CPP](https://github.com/chipkin/BACnetProfileExample-B-AEC-CPP) | Ask | Ask | Ask | Ask | Ask |
 
 ### Authentication and authorization (Annex L.14)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-AS** Authorization Server | [B-AS-CPP](https://github.com/chipkin/BACnetProfileExample-B-AS-CPP) | Ask | Ask | Ask | Ask |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-AS** Authorization Server | [B-AS-CPP](https://github.com/chipkin/BACnetProfileExample-B-AS-CPP) | Ask | Ask | Ask | Ask | Ask |
 
 ### Miscellaneous (Annex L.7, combinable with any one family)
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-BBMD** Broadcast Management Device | [B-BBMD-CPP](https://github.com/chipkin/BACnetProfileExample-B-BBMD-CPP) | Ask | Ask | Ask | Ask |
-| **B-ACDC** Access Control Door Controller | [B-ACDC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ACDC-CPP) | Ask | Ask | Ask | Ask |
-| **B-ACCR** Access Control Credential Reader | [B-ACCR-CPP](https://github.com/chipkin/BACnetProfileExample-B-ACCR-CPP) | Ask | Ask | Ask | Ask |
-| **B-RTR** Router | [B-RTR-CPP](https://github.com/chipkin/BACnetProfileExample-B-RTR-CPP) | Ask | Ask | Ask | Ask |
-| **B-GW** Gateway | [B-GW-CPP](https://github.com/chipkin/BACnetProfileExample-B-GW-CPP) | Ask | Ask | Ask | Ask |
-| **B-DAP** Device Address Proxy | [B-DAP-CPP](https://github.com/chipkin/BACnetProfileExample-B-DAP-CPP) | Ask | Ask | Ask | Ask |
-| **B-SCHUB** BACnet/SC Hub | [B-SCHUB-CPP](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP) | Ask | Ask | Ask | Ask |
-| **B-GENERAL** General device (Annex L.8) | *(satisfied by every example above)* | — | — | — | — |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-BBMD** Broadcast Management Device | [B-BBMD-CPP](https://github.com/chipkin/BACnetProfileExample-B-BBMD-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-ACDC** Access Control Door Controller | [B-ACDC-CPP](https://github.com/chipkin/BACnetProfileExample-B-ACDC-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-ACCR** Access Control Credential Reader | [B-ACCR-CPP](https://github.com/chipkin/BACnetProfileExample-B-ACCR-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-RTR** Router | [B-RTR-CPP](https://github.com/chipkin/BACnetProfileExample-B-RTR-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-GW** Gateway | [B-GW-CPP](https://github.com/chipkin/BACnetProfileExample-B-GW-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-DAP** Device Address Proxy | [B-DAP-CPP](https://github.com/chipkin/BACnetProfileExample-B-DAP-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-SCHUB** BACnet/SC Hub | [B-SCHUB-CPP](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-GENERAL** General device (Annex L.8) | *(satisfied by every example above)* | — | — | — | — | — |
 
 ### Operator interfaces and workstations (Annex L.1–L.3, L.9–L.10, L.12)
 
 Client-side profiles.
 
-| Profile | C++ | Node.js | C# | Rust | Python |
-|---|---|---|---|---|---|
-| **B-OD** Operator Display | [B-OD-CPP](https://github.com/chipkin/BACnetProfileExample-B-OD-CPP) | Ask | Ask | Ask | Ask |
-| **B-OWS** Operator Workstation | planned | — | — | — | — |
-| **B-AWS** Advanced Operator Workstation | planned | — | — | — | — |
-| **B-XAWS** Extended Advanced Operator Workstation | planned | — | — | — | — |
-| **B-LSAP** Life Safety Annunciator Panel | planned | — | — | — | — |
-| **B-LSWS** Life Safety Workstation | planned | — | — | — | — |
-| **B-ALSWS** Advanced Life Safety Workstation | planned | — | — | — | — |
-| **B-ACSD** Access Control Security Display | planned | — | — | — | — |
-| **B-ACWS** Access Control Workstation | planned | — | — | — | — |
-| **B-AACWS** Advanced Access Control Workstation | planned | — | — | — | — |
-| **B-LOD** Lighting Operator Display | planned | — | — | — | — |
-| **B-ALWS** Advanced Lighting Workstation | planned | — | — | — | — |
-| **B-LCS** Lighting Control Station | planned | — | — | — | — |
-| **B-ALCS** Advanced Lighting Control Station | planned | — | — | — | — |
-| **B-ED** Elevator Display | planned | — | — | — | — |
-| **B-EWS** Elevator Workstation | planned | — | — | — | — |
-| **B-AEWS** Advanced Elevator Workstation | planned | — | — | — | — |
+| Profile | C++ | Node.js | C# | Rust | Python | Go |
+|---|---|---|---|---|---|---|
+| **B-OD** Operator Display | [B-OD-CPP](https://github.com/chipkin/BACnetProfileExample-B-OD-CPP) | Ask | Ask | Ask | Ask | Ask |
+| **B-OWS** Operator Workstation | planned | — | — | — | — | — |
+| **B-AWS** Advanced Operator Workstation | planned | — | — | — | — | — |
+| **B-XAWS** Extended Advanced Operator Workstation | planned | — | — | — | — | — |
+| **B-LSAP** Life Safety Annunciator Panel | planned | — | — | — | — | — |
+| **B-LSWS** Life Safety Workstation | planned | — | — | — | — | — |
+| **B-ALSWS** Advanced Life Safety Workstation | planned | — | — | — | — | — |
+| **B-ACSD** Access Control Security Display | planned | — | — | — | — | — |
+| **B-ACWS** Access Control Workstation | planned | — | — | — | — | — |
+| **B-AACWS** Advanced Access Control Workstation | planned | — | — | — | — | — |
+| **B-LOD** Lighting Operator Display | planned | — | — | — | — | — |
+| **B-ALWS** Advanced Lighting Workstation | planned | — | — | — | — | — |
+| **B-LCS** Lighting Control Station | planned | — | — | — | — | — |
+| **B-ALCS** Advanced Lighting Control Station | planned | — | — | — | — | — |
+| **B-ED** Elevator Display | planned | — | — | — | — | — |
+| **B-EWS** Elevator Workstation | planned | — | — | — | — | — |
+| **B-AEWS** Advanced Elevator Workstation | planned | — | — | — | — | — |
 
 🚧 = in progress. "Ask" = not yet built for that language; contact Chipkin if you need it. Profile definitions: ANSI/ASHRAE 135-2024 Annex L. BIBB definitions: Annex K. Get the stack: <https://store.chipkin.com/services/stacks/bacnet-stack>.
 <!-- PROFILE-TABLE:END -->
