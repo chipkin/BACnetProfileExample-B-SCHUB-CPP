@@ -29,14 +29,39 @@ Checks:
 
 Exit code 0 = every automated check passed.
 
-## `fake_hub_server.py` (V4 - Phase 3, the connector half)
-
-Not created yet - the connector half of `ScTransport` (`Connect()`) is still a
-stub (see `sc_transport/ScTransport.h`'s class-header comment). This script
-lands with Phase 3.
-
 ## V3 (a real peer - `BACnetSCCli.exe`)
 
 Manual, against `C:\dev\chipkin\BACnetSCCli\app\build\Release\BACnetSCCli.exe`
 in `Role=node` mode - see the plan's V3 for the exact config. Not run by any
 script here.
+
+## `fake_hub_server.py` (V4 - Phase 3, the connector half)
+
+A mutual-TLS `websockets` server offering the `hub.bsc.bacnet.org`
+subprotocol, standing in as a fake hub so the CONNECTOR half
+(`ScTransport::Connect()`) can be tested without a second real hub.
+
+```
+pip install -r tests/sc/requirements.txt
+cmake -P scripts/generate-test-certs.cmake   # once, if certs/ is empty
+python tests/sc/fake_hub_server.py --port 47820 --cert-dir certs
+# in a separate terminal:
+./build/BACnetExampleBSCHUB.exe --sc-hub-uri wss://127.0.0.1:47820/ --sc-cert-dir ./certs
+```
+
+Watch `fake_hub_server.py`'s own stdout for `Connect-Request received` /
+`Connect-Accept sent` (it echoes the Connect-Request's own `messageId` back -
+see the script's own docstring for why that specific detail is load-bearing,
+not just "any well-formed Connect-Accept"), and the EXAMPLE's stdout for
+`BACnet/SC: connected to hub` and a `CallbackBACnetSCStateChange` line
+showing a connected state. Stop `fake_hub_server.py` (Ctrl+C, or run it with
+`--once`) and confirm the example logs `BACnet/SC: hub connection "..." closed
+(closeCode=...)` / a Disconnected state, and that the STACK - not
+`ScTransport` - is what re-dials afterwards (`ScTransport::Connect()` never
+calls itself; see `ScTransport.h`'s "NO AUTO-RECONNECT" note).
+
+## V5 (connector vs. a real hub)
+
+Manual, against `BACnetSCCli.exe` in `Role=hub` mode (or a second local
+instance of this same example) - see the plan's V5. Not run by any script
+here.

@@ -6,34 +6,35 @@ the pin, dated, with a stack issue filed [where applicable]." This repository
 is canonical for **F-SC**; the gap below is a deliberate spike outcome (see
 README.md "BACnet/SC support"), not a stack limitation.
 
-## 1. BACnet/SC hub-connector (initiate) transport is not implemented yet (Phase 3, dated 2026-09-20)
+## 1. BACnet/SC File objects (certificate export over BACnet/IP) are not implemented yet (Phase 4, dated 2026-09-20)
 
 **Status update:** the spike roadblock this item used to describe (see
 `CHANGELOG.md`) was cleared - `sc_transport/ScTransport` +
 `sc_transport/ScTransportRouter` (libwebsockets + OpenSSL, via vcpkg) now
-implement the **listener** (hub-function accept role, NM-SCH-B) for real:
-mutual TLS 1.3, subprotocol `hub.bsc.bacnet.org`, and verified end-to-end
-against both a hand-built test client (`tests/sc/hub_listener_test.py`) and a
-real peer (`BACnetSCCli.exe`, `Role=node` - Who-Is/I-Am/ReadProperty discovery
-succeeds). See `docs/bacnet-sc-transport-plan.md` Phase 2 and its V1-V3.
+implement BOTH BACnet/SC transport roles for real: mutual TLS 1.3,
+subprotocol `hub.bsc.bacnet.org`.
 
-**What's still missing:** `ScTransport::Connect()`/`Disconnect()` (the hub
-**connector**/initiate role - `CallbackInitiateWebsocket`/
-`CallbackDisconnectWebsocket` in `main.cpp`) are still honest stubs: they log
-what the stack asked for and return `false`/no-op rather than claiming an
-outbound connection this example does not make. This hub-only example does
-not need a connector to answer a node's own requests (the hub function
-delivers locally - see the plan's open risk #8, proven by V3 above), so this
-gap does not block NM-SCH-B. It is Phase 3 of
-`docs/bacnet-sc-transport-plan.md` ("Connector").
+- **Listener** (hub-function accept role, NM-SCH-B): verified end-to-end
+  against a hand-built test client (`tests/sc/hub_listener_test.py`) and a
+  real peer (`BACnetSCCli.exe`, `Role=node` - Who-Is/I-Am/ReadProperty
+  discovery succeeds). See `docs/bacnet-sc-transport-plan.md` Phase 2 and its
+  V1-V3.
+- **Connector** (hub-connector/initiate role, `ScTransport::Connect()`/
+  `Disconnect()`, `--sc-hub-uri`): verified end-to-end against a hand-built
+  fake hub (`tests/sc/fake_hub_server.py` - Connect-Request/Connect-Accept
+  exchange, `Connected`/`Disconnected` status, and confirmation that the
+  STACK - not `ScTransport` - re-dials after a lost connection) and a real
+  hub (`BACnetSCCli.exe`, `Role=hub` - the example's own hub-connector state
+  reaches `ConnectedPrimary`). See `docs/bacnet-sc-transport-plan.md` Phase 3
+  and its V4-V5.
 
-Also still missing (Phase 4 of the same plan): the four read-only File
-objects serving `hub.crt`/`hub.csr`/`ca.crt` over BACnet/IP
-(`BACnetStack_AddFileObject` + `SetBACnetSCCertificateFileObjects`) and the
-two dead certificate callbacks
+**What's still missing:** the four read-only File objects serving
+`hub.crt`/`hub.csr`/`ca.crt` over BACnet/IP (`BACnetStack_AddFileObject` +
+`SetBACnetSCCertificateFileObjects`) and the two dead certificate callbacks
 (`RegisterCallbackValidateBACnetSCOperationalCertificate`,
 `RegisterCallbackGenerateBACnetSCCertificateSigningRequest`, which have zero
-call sites in the stack - see the plan's fact 10).
+call sites in the stack - see the plan's fact 10). It is Phase 4 of
+`docs/bacnet-sc-transport-plan.md` ("File objects").
 
-**Not filed as a stack issue** - both remaining gaps are this example's own
-scope (Phase 3/4 of the plan), not a stack limitation.
+**Not filed as a stack issue** - this remaining gap is this example's own
+scope (Phase 4 of the plan), not a stack limitation.

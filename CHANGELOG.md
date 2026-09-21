@@ -25,13 +25,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   BVLC-SC Connect-Request getting a Connect-Accept back) and a real peer
   (`BACnetSCCli.exe`, `Role=node`) completing Who-Is/I-Am/ReadProperty
   discovery of this device over BACnet/SC.
-- The connector (hub-connect/initiate) half of `ScTransport` is still a stub
-  (`Connect()`/`Disconnect()` log and return honestly) - that is Phase 3 of
-  the plan, not yet implemented; `CallbackInitiateWebsocket`/
-  `CallbackDisconnectWebsocket` already forward to it so the class shape does
-  not change again when it lands.
 - Removed the Phase 1 spike (`sc_transport_spike.h/.cpp`, the `--sc-spike` CLI
   hook) now that the real `sc_transport/` classes replace it.
+- **BACnet/SC hub-connector (initiate) transport is now real**, not a stub:
+  `ScTransport::Connect()`/`Disconnect()` implement Phase 3 ("Connector") of
+  `docs/bacnet-sc-transport-plan.md` - one client `lws_context` per
+  connection, subprotocol `hub.bsc.bacnet.org`, mutual TLS 1.3, the same
+  binary-frame/reassembly/1497-byte-ingress rules the listener half already
+  enforced (shared via a new `HandleIncomingFragment` helper). No
+  auto-reconnect: the stack owns every retry timer (plan fact 7) - this class
+  only dials when asked. `CallbackInitiateWebsocket`/
+  `CallbackDisconnectWebsocket` in `main.cpp` are now real forwards. New CLI
+  options `--sc-hub-uri <wss://...>` (turns the connector role on; off by
+  default) and `--sc-failover-uri` (optional), wired to
+  `BACnetStack_SetBACnetSCHubConnectorForNetworkPort`.
+- Verified (V4-V5 in the plan): `tests/sc/fake_hub_server.py` (a hand-built
+  mutual-TLS fake hub - Connect-Request/Connect-Accept exchange, `Connected`
+  status, then `Disconnected` on the fake hub's own close, with the STACK -
+  not `ScTransport` - confirmed to be the one re-dialing afterwards) and a
+  real hub (`BACnetSCCli.exe`, `Role=hub`, `AllowLegacyConnectRequestsWithoutHello=false`)
+  - the example's own hub-connector state machine reaches
+  `HubConnectorState_ConnectedPrimary`, independently confirmed by the real
+  hub's own log decoding the example's Connect-Request.
 
 ### Changed
 

@@ -10,31 +10,45 @@
 // file header - and asks the host for a transport through four callbacks. This
 // class IS that transport, for the two roles BACnet/SC defines:
 //
-//   * Listener  (hub function "accept" role) - THIS PHASE implements it fully.
+//   * Listener  (hub function "accept" role) - Phase 2 implements it fully.
 //     StartListening()/StopListening() open/close a server lws_context that
 //     accepts mutually-authenticated TLS 1.3 WebSocket connections offering the
 //     "hub.bsc.bacnet.org" subprotocol (135-2024 AB.7.1 - NOT "hub.bacnet.org",
 //     see docs/bacnet-sc-transport-plan.md fact 1).
-//   * Connector (hub/node "initiate" role) - interface declared here so the
-//     class shape does not change in Phase 3, but Connect()/Disconnect() are
-//     STUBS in this phase: they log and return false/no-op. Do not rely on
-//     them yet.
+//   * Connector (hub/node "initiate" role) - THIS PHASE (3) implements it
+//     fully. Connect()/Disconnect() open/close ONE client lws_context PER
+//     CONNECTION (CONTEXT_PORT_NO_LISTEN), keyed by the exact URI string the
+//     stack passed to CallbackInitiateWebsocket. Same subprotocol, same TLS
+//     1.3-only restriction, same mutual-TLS identity (this device's own
+//     cert/key from Configure()) as the listener half - a BACnet/SC device
+//     presents ONE identity regardless of which role a given socket plays.
 //
 // THREADING / RE-ENTRANCY (plan fact 6): every method here runs on the caller's
 // thread (the main loop's thread, single-threaded in this example) and every
 // libwebsockets callback also runs synchronously on that SAME thread, inside
-// Service(). None of the lws callback handlers below call BACnetStack_* - they
-// only touch the queues (m_rxQueue, m_statusQueue) and lws itself. The stack is
-// told about received frames and status changes only when the MAIN LOOP later
-// drains those queues via PopReceived()/PopStatusEvent() - never synchronously
-// from inside a callback, even though lws itself can invoke a callback
-// re-entrantly (e.g. from inside Connect(), see BACnetSCStartListening's own
-// synchronous-callback note in main.cpp). This is what makes that safe.
+// Service() OR (fact 6's other half) synchronously from INSIDE Connect() itself
+// (lws can invoke CLIENT_CONNECTION_ERROR before lws_client_connect_via_info
+// even returns, for an immediate failure). Neither HandleServerCallback nor
+// HandleClientCallback below call BACnetStack_* - they only touch the queues
+// (m_rxQueue, m_statusQueue) and lws itself. The stack is told about received
+// frames and status changes only when the MAIN LOOP later drains those queues
+// via PopReceived()/PopStatusEvent() - never synchronously from inside a
+// callback. This is what makes the Connect()-calls-back-synchronously case
+// safe: Connect() itself never touches BACnetStack_* either.
 //
 // NON-BLOCKING SERVICE (plan fact 9 / Phase 1 spike finding): Service() pumps
-// each live lws_context with `lws_cancel_service(ctx); lws_service(ctx, 0);` -
-// mechanism (a) from docs/bacnet-sc-transport-plan.md, confirmed non-blocking
-// on Windows by the Phase 1 spike (sc_transport_spike.cpp, now removed).
+// each live lws_context - the listener's, plus one per live client/connector
+// connection - with `lws_cancel_service(ctx); lws_service(ctx, 0);` - mechanism
+// (a) from docs/bacnet-sc-transport-plan.md, confirmed non-blocking on Windows
+// by the Phase 1 spike (sc_transport_spike.cpp, now removed).
+//
+// NO AUTO-RECONNECT (plan fact 7): the stack owns every timer - heartbeat,
+// reconnect, failover. This class NEVER re-dials on its own after a
+// CLIENT_CLOSED/CLIENT_CONNECTION_ERROR; it only dials when the stack calls
+// Connect() again (which it does, on its own retry timer, via
+// CallbackInitiateWebsocket in main.cpp). Connect() unconditionally tears down
+// and replaces any previous lws_context for the same URI, so calling it again
+// after a failure is exactly how the stack's retry is expected to work here.
 //
 // INGRESS CEILING (plan fact 8): BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is
 // 1497 bytes. A reassembled WebSocket message larger than that is discarded
@@ -88,12 +102,23 @@ struct ScReceivedFrame {
 // BACnetStack_SetBACnetSCWebSocketStatus(uri, uriLength, status, closeCode).
 // `status` uses BACnetSCConstants::BACnetSCWebsocketStatus exactly (plan fact
 // 3, verified against source/BACnetSCConstants.h:93-99 - Connecting=1,
-// Connected=2, Disconnected=3, Error=4). This class only ever queues
-// Disconnected/Error for an accepted peer (never Connecting/Connected - an
-// accepted socket does not become a "connection" the stack tracks until its
-// own Connect-Request/Accept exchange finishes, which the stack, not this
-// transport, is responsible for - see docs/bacnet-sc-transport-plan.md open
-// risk #7).
+// Connected=2, Disconnected=3, Error=4).
+//
+// For an ACCEPTED (listener-side) peer this class only ever queues
+// Disconnected/Error (never Connecting/Connected - an accepted socket does not
+// become a "connection" the stack tracks until its own Connect-Request/Accept
+// exchange finishes, which the stack, not this transport, is responsible for -
+// see docs/bacnet-sc-transport-plan.md open risk #7).
+//
+// For an OUTBOUND (connector-side) connection this class queues Connected(2)
+// on LWS_CALLBACK_CLIENT_ESTABLISHED (the WebSocket upgrade itself completing
+// - the connector's own Connect-Request/Accept exchange over that socket is,
+// again, the stack's problem, not this transport's), Error(4) on
+// LWS_CALLBACK_CLIENT_CONNECTION_ERROR (TLS/handshake/upgrade failure), and
+// Disconnected(3) on LWS_CALLBACK_CLIENT_CLOSED (any later close, clean or
+// not - unlike the listener half, the connector does not distinguish an
+// abnormal close as Error here; open risk #7 only covers the accepted-peer
+// case).
 struct ScStatusEvent {
     std::string uri;
     uint8_t status;      // BACnetSCConstants::BACnetSCWebsocketStatus (Connecting=1..Error=4)
@@ -134,11 +159,33 @@ public:
     bool IsListening() const;
     const std::string& ListenUri() const { return m_listenUri; }
 
-    // --- Connector (client) half - INTERFACE ONLY this phase -------------
-    // Declared now so ScTransportRouter/main.cpp can be wired against the
-    // final class shape; Phase 3 replaces the STUB bodies in ScTransport.cpp.
-    // Do not call these expecting a real outbound connection yet.
+    // --- Connector (client) half - real in this phase ---------------------
+
+    // Opens (or, if one is already open/opening/closed-but-not-yet-retried for
+    // this exact URI, tears down and REPLACES) an outbound TLS WebSocket
+    // client connection to `uri` (wss://host:port/path), using ONE dedicated
+    // client lws_context for this connection (plan's Connector subsection).
+    // Requires Configure() to have been called with valid, readable
+    // cert/key/CA files - this device presents the SAME identity as the
+    // listener half (a BACnet/SC device has one identity regardless of role).
+    // Returns false (logs) immediately if not configured, the cert files are
+    // missing/unreadable, `uri` does not parse, or lws fails to create the
+    // context/start the connection attempt. A `true` return means the
+    // connection ATTEMPT started, not that it succeeded - watch for a queued
+    // Connected(2)/Error(4) ScStatusEvent for that (see ScStatusEvent's
+    // comment above). Per plan fact 7, this class never calls Connect() again
+    // on its own after a failure/close - only the caller (ultimately the
+    // stack's own retry timer, via main.cpp's CallbackInitiateWebsocket) does.
     bool Connect(const std::string& uri);
+
+    // Closes a connection identified by `connStr`, which may be either an
+    // outbound URI (as passed to Connect()) or an accepted-peer
+    // "<acceptUri>|client=N" string (the listener half, Phase 2) - a single
+    // lookup tries the accepted-peer table first, then the outbound-connection
+    // table, and closes whichever one matches. Safe to call for an
+    // unknown/already-closed connString (no-op). Does not itself push a
+    // status event - the resulting LWS_CALLBACK_CLIENT_CLOSED/
+    // LWS_CALLBACK_CLOSED callback does that once the close completes.
     void Disconnect(const std::string& connStr);
 
     // --- Shared --------------------------------------------------------
@@ -162,11 +209,19 @@ public:
     // Pops one status event (FIFO). Returns false if the queue is empty.
     bool PopStatusEvent(ScStatusEvent* outEvent);
 
-    // --- lws callback trampoline entry point ------------------------------
-    // Public only because it must be reachable from a free (non-member) C
+    // --- lws callback trampoline entry points -----------------------------
+    // Public only because each must be reachable from a free (non-member) C
     // function pointer handed to lws (struct lws_protocols::callback); not
-    // meant to be called by application code. See ScTransport.cpp.
+    // meant to be called by application code. See ScTransport.cpp. Two
+    // separate entry points (not one) because the listener's lws_context and
+    // every connector lws_context are distinct contexts, each with its own
+    // protocols table/callback - reasons like ESTABLISHED/CLOSED mean
+    // different things (accept vs. dial) on each, so keeping them as two
+    // functions (sharing the fragment-reassembly logic via
+    // HandleIncomingFragment below) is clearer than one function branching
+    // internally on every case.
     int HandleServerCallback(lws* wsi, int reason, void* user, void* in, std::size_t len);
+    int HandleClientCallback(lws* wsi, int reason, void* user, void* in, std::size_t len);
 
 private:
     struct PeerConnection {
@@ -178,9 +233,49 @@ private:
         uint16_t lastCloseCode = 0;        // from LWS_CALLBACK_WS_PEER_INITIATED_CLOSE, if any
     };
 
+    // One outbound (connector-role) connection: its own dedicated lws_context
+    // (plan's Connector subsection - "one client lws_context per connection"),
+    // keyed by the URI string Connect() was called with (m_clients' key, not a
+    // member here - see Send()/Disconnect()'s lookups). Otherwise the same
+    // shape as PeerConnection, reused via HandleIncomingFragment below.
+    struct ClientConnection {
+        lws_context* context = nullptr;
+        lws* wsi = nullptr;                // null before ESTABLISHED and after CLOSED/error
+        std::string uri;
+        std::vector<uint8_t> rxAssembly;
+        bool rxOverflow = false;
+        std::deque<std::vector<uint8_t>> txQueue;
+        uint16_t lastCloseCode = 0;
+    };
+
     void LogListenFailureOnce(const std::string& reason);
     void DestroyListenerContext();
     PeerConnection* FindPeerByWsi(lws* wsi);
+
+    // Builds m_clientProtocols on first use (every ClientConnection's
+    // lws_context shares this one read-only table - lws only requires it stay
+    // valid for each context's lifetime, not that it be unique per context).
+    void EnsureClientProtocolsTable();
+    // Destroys `conn`'s lws_context if it has one. Only ever called OUTSIDE
+    // that context's own callback (from Connect(), replacing a stale entry
+    // for the same URI, or from ~ScTransport()) - lws_context_destroy is not
+    // reentrant-safe from inside its own callback, which is why
+    // HandleClientCallback below never calls this itself.
+    void DestroyClientContext(ClientConnection& conn);
+
+    // Shared by LWS_CALLBACK_RECEIVE (server) and LWS_CALLBACK_CLIENT_RECEIVE
+    // (client) - binary-frame enforcement, reassembly and the 1497-byte
+    // ingress ceiling are IDENTICAL rules for both roles (plan: "reuse that
+    // logic, don't duplicate/diverge it"). `destConnStr` is the bare accept
+    // URI for a listener-side frame, or empty for a connector-side one (see
+    // ScReceivedFrame's comment). Returns true if the frame handling requires
+    // closing the socket (a close reason has already been set via
+    // lws_close_reason - the caller must `return -1` from its own callback);
+    // false otherwise (rxAssembly/rxOverflow updated in place, and a complete
+    // frame - if any - already pushed to m_rxQueue).
+    bool HandleIncomingFragment(lws* wsi, const void* in, std::size_t len,
+                                const std::string& sourceConnStr, const std::string& destConnStr,
+                                std::vector<uint8_t>* rxAssembly, bool* rxOverflow);
 
     ScTlsFiles m_tls;
     std::string m_acceptSubprotocol;
@@ -192,14 +287,19 @@ private:
 
     // Heap-allocated (not a fixed-size member array) so this header does not
     // need the full `struct lws_protocols` definition - see the forward
-    // declarations above. Allocated in StartListening(), freed in
-    // DestroyListenerContext(); must outlive m_listenerContext (lws keeps the
-    // pointer for the vhost's lifetime).
+    // declarations above. m_protocols (listener): allocated in
+    // StartListening(), freed in DestroyListenerContext(); must outlive
+    // m_listenerContext (lws keeps the pointer for the vhost's lifetime).
+    // m_clientProtocols (connector): allocated once in
+    // EnsureClientProtocolsTable(), freed in ~ScTransport(); shared by every
+    // ClientConnection's context (see that method's comment).
     lws_protocols* m_protocols = nullptr;
-    std::string m_protocolNameStorage;  // backing storage for m_protocols[0].name
+    lws_protocols* m_clientProtocols = nullptr;
+    std::string m_protocolNameStorage;  // backing storage for m_protocols[0].name AND m_clientProtocols[0].name - set once, in Configure()
 
     std::map<lws*, PeerConnection> m_peers;              // keyed by lws* (server half)
-    std::map<std::string, lws*> m_connStringToWsi;        // connStr -> wsi, for Send() lookup
+    std::map<std::string, lws*> m_connStringToWsi;        // connStr -> wsi, for Send()/Disconnect() lookup (server half)
+    std::map<std::string, ClientConnection> m_clients;    // uri -> connection (connector half); std::map keeps references stable across inserts elsewhere in the map, which is why ccinfo.opaque_user_data can point directly at a map value (see ScTransport.cpp's Connect())
 
     std::deque<ScReceivedFrame> m_rxQueue;
     std::deque<ScStatusEvent> m_statusQueue;

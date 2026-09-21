@@ -39,8 +39,13 @@ bool FileReadable(const std::string& path) {
 // Parses "wss://host:port/path...". Only wss:// is accepted (BACnet/SC
 // requires it - AddBACnetSCAcceptUri's own doc comment). host may be empty
 // (e.g. "wss://:47819/") or "0.0.0.0", both of which mean "bind all
-// interfaces" - both map to a NULL lws iface.
-bool ParseWssUri(const std::string& uri, std::string* outHost, uint16_t* outPort) {
+// interfaces" - both map to a NULL lws iface (listener use only).
+// outPath is optional (nullptr for the listener, which does not route by
+// path); when non-null it is set to the path component, defaulting to "/"
+// when the URI has none - Connect() (below) needs it for
+// lws_client_connect_info::path.
+bool ParseWssUri(const std::string& uri, std::string* outHost, uint16_t* outPort,
+                 std::string* outPath = nullptr) {
     static const char kScheme[] = "wss://";
     const std::size_t schemeLen = sizeof(kScheme) - 1;
     if (uri.compare(0, schemeLen, kScheme) != 0) {
@@ -51,6 +56,9 @@ bool ParseWssUri(const std::string& uri, std::string* outHost, uint16_t* outPort
     std::string authority = (pathSlash == std::string::npos)
         ? uri.substr(hostStart)
         : uri.substr(hostStart, pathSlash - hostStart);
+    if (outPath != nullptr) {
+        *outPath = (pathSlash == std::string::npos) ? "/" : uri.substr(pathSlash);
+    }
     if (authority.empty()) {
         return false;
     }
@@ -120,17 +128,46 @@ int LwsServerCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* use
     return self->HandleServerCallback(wsi, static_cast<int>(reason), user, in, len);
 }
 
+// Connector-half sibling of the above - every ClientConnection's lws_context
+// also sets info.user = this (Connect(), below), so the same "context user
+// pointer, not a static singleton" pattern applies here too.
+int LwsClientCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user, void* in, std::size_t len) {
+    lws_context* ctx = wsi != nullptr ? lws_get_context(wsi) : nullptr;
+    if (ctx == nullptr) {
+        return 0;
+    }
+    ScTransport* self = static_cast<ScTransport*>(lws_context_user(ctx));
+    if (self == nullptr) {
+        return 0;
+    }
+    return self->HandleClientCallback(wsi, static_cast<int>(reason), user, in, len);
+}
+
 }  // namespace
 
 ScTransport::ScTransport() {}
 
 ScTransport::~ScTransport() {
     DestroyListenerContext();
+    // Outside of any lws callback (this is the destructor) - safe to destroy
+    // every client context directly, unlike HandleClientCallback (see
+    // DestroyClientContext's comment).
+    for (auto& kv : m_clients) {
+        DestroyClientContext(kv.second);
+    }
+    m_clients.clear();
+    delete[] m_clientProtocols;
+    m_clientProtocols = nullptr;
 }
 
 void ScTransport::Configure(const ScTlsFiles& tls, const std::string& acceptSubprotocol) {
     m_tls = tls;
     m_acceptSubprotocol = acceptSubprotocol;
+    // Set once, here, so both m_protocols[0].name (listener, built in
+    // StartListening()) and m_clientProtocols[0].name (connector, built in
+    // EnsureClientProtocolsTable()) point at the SAME backing storage - see
+    // the header's comment on m_protocolNameStorage.
+    m_protocolNameStorage = acceptSubprotocol;
     m_configured = true;
 }
 
@@ -251,19 +288,162 @@ bool ScTransport::IsListening() const {
     return m_listenerContext != nullptr;
 }
 
+void ScTransport::EnsureClientProtocolsTable() {
+    if (m_clientProtocols != nullptr) {
+        return;
+    }
+    // Shared by every ClientConnection's context - see the header comment.
+    // Uses m_protocolNameStorage, the SAME backing string Configure() set for
+    // the listener's table, so both halves always offer the identical
+    // subprotocol name.
+    m_clientProtocols = new lws_protocols[2];
+    std::memset(m_clientProtocols, 0, sizeof(lws_protocols) * 2);
+    m_clientProtocols[0].name = m_protocolNameStorage.c_str();
+    m_clientProtocols[0].callback = &LwsClientCallbackTrampoline;
+    m_clientProtocols[0].per_session_data_size = 0;  // per-connection state lives in ClientConnection, reached via lws_get_opaque_user_data
+    m_clientProtocols[0].rx_buffer_size = 4096;
+    // m_clientProtocols[1] stays all-zero - the required NULL-callback terminator.
+}
+
+void ScTransport::DestroyClientContext(ClientConnection& conn) {
+    if (conn.context != nullptr) {
+        // Synchronously closes the wsi if still open, re-entering
+        // HandleClientCallback with LWS_CALLBACK_CLIENT_CLOSED - harmless
+        // here for the same reason DestroyListenerContext's identical note
+        // gives (a status event for a connection this method's OWN caller is
+        // already tearing down is not useful, but queuing it costs nothing).
+        lws_context_destroy(conn.context);
+        conn.context = nullptr;
+    }
+    conn.wsi = nullptr;
+}
+
 bool ScTransport::Connect(const std::string& uri) {
-    // PHASE 3 STUB - see the class header comment. Never claim a connection
-    // attempt that was not actually made (main.cpp's CallbackInitiateWebsocket
-    // relies on that honesty, same as the Phase-0/1 transport stub did).
-    printf("BACnet/SC: Connect(\"%s\") requested - the connector half is not yet "
-           "implemented (Phase 3 of docs/bacnet-sc-transport-plan.md).\n", uri.c_str());
-    return false;
+    if (!m_configured) {
+        fprintf(stderr, "BACnet/SC: Connect(\"%s\") requested before Configure()\n", uri.c_str());
+        return false;
+    }
+    if (!FileReadable(m_tls.certPath) || !FileReadable(m_tls.keyPath) || !FileReadable(m_tls.caCertPath)) {
+        fprintf(stderr,
+                "BACnet/SC: cannot Connect(\"%s\"): certificate files are missing/unreadable "
+                "(cert=\"%s\" key=\"%s\" ca=\"%s\"). Run: cmake -P scripts/generate-test-certs.cmake\n",
+                uri.c_str(), m_tls.certPath.c_str(), m_tls.keyPath.c_str(), m_tls.caCertPath.c_str());
+        return false;
+    }
+
+    std::string host;
+    std::string path;
+    uint16_t port = 0;
+    if (!ParseWssUri(uri, &host, &port, &path) || host.empty()) {
+        // Unlike the listener, an empty/omitted host is NOT valid here - a
+        // connector must dial a specific hub, never "0.0.0.0" (that is a bind
+        // address, meaningless as a dial target).
+        fprintf(stderr, "BACnet/SC: cannot Connect(): \"%s\" is not a valid wss://host:port/path URI\n",
+                uri.c_str());
+        return false;
+    }
+
+    // A fresh dial every time Connect() is called for this URI - tear down
+    // any stale context first (a previous attempt that already closed/errored;
+    // per plan fact 7 this class itself never re-dials, so reaching this line
+    // again for the same URI only ever happens because the CALLER - ultimately
+    // the stack's own retry/reconnect timer - asked for it again).
+    auto existing = m_clients.find(uri);
+    if (existing != m_clients.end()) {
+        DestroyClientContext(existing->second);
+        m_clients.erase(existing);
+    }
+
+    EnsureClientProtocolsTable();
+
+    // std::map<std::string, ClientConnection>::operator[] gives a reference
+    // that stays valid across later inserts/erases of OTHER keys (see the
+    // header's comment on m_clients) - safe to hand its address to lws as
+    // opaque_user_data below and keep using it after this call returns.
+    ClientConnection& conn = m_clients[uri];
+    conn.uri = uri;
+
+    lws_context_creation_info info;
+    std::memset(&info, 0, sizeof(info));
+    info.port = CONTEXT_PORT_NO_LISTEN;  // connector role only - this context is never a server
+    info.protocols = m_clientProtocols;
+    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    info.client_ssl_ca_filepath = m_tls.caCertPath.c_str();          // validates the HUB's certificate
+    info.client_ssl_cert_filepath = m_tls.certPath.c_str();          // this device's own operational cert (mutual TLS)
+    info.client_ssl_private_key_filepath = m_tls.keyPath.c_str();
+    // TLS 1.3 only, same restriction as the listener half (135-2024 AB.5.2).
+    info.ssl_client_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_SSLv3;
+    info.user = this;
+    info.gid = static_cast<gid_t>(-1);
+    info.uid = static_cast<uid_t>(-1);
+
+    lws_context* ctx = lws_create_context(&info);
+    if (ctx == nullptr) {
+        fprintf(stderr, "BACnet/SC: Connect(\"%s\"): lws_create_context failed\n", uri.c_str());
+        m_clients.erase(uri);
+        return false;
+    }
+    conn.context = ctx;
+
+    lws_client_connect_info ccinfo;
+    std::memset(&ccinfo, 0, sizeof(ccinfo));
+    ccinfo.context = ctx;
+    ccinfo.address = host.c_str();
+    ccinfo.port = port;
+    ccinfo.path = path.c_str();
+    ccinfo.host = host.c_str();
+    ccinfo.origin = host.c_str();
+    ccinfo.protocol = m_acceptSubprotocol.c_str();  // "hub.bsc.bacnet.org" - plan fact 1, NOT plugfest-example's wrong "hub.bacnet.org"
+    // LCCSCF_USE_SSL: TLS on. LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK: the CA
+    // chain is STILL fully verified (client_ssl_ca_filepath above requires a
+    // valid chain to m_tls.caCertPath) - only the hostname-in-certificate
+    // check is skipped. BACnet/SC certificates identify a DEVICE (by its
+    // UUID/VMAC-derived identity, 135-2024 AB.1.5.3), not a DNS hostname the
+    // way an ordinary HTTPS server certificate does, so requiring the SAN to
+    // list "127.0.0.1"/the hub's hostname would reject a conformant BACnet/SC
+    // hub whose certificate (correctly) does not encode that - see the plan's
+    // Connector subsection and open risk #6 (this app's cert policy is
+    // CA-chain-only; there is no hostname or UUID-in-SAN binding here).
+    ccinfo.ssl_connection = LCCSCF_USE_SSL | LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
+    ccinfo.opaque_user_data = &conn;
+    lws* wsi = nullptr;
+    ccinfo.pwsi = &wsi;
+
+    if (lws_client_connect_via_info(&ccinfo) == nullptr) {
+        // A hard, immediate failure (bad address, etc.) - note lws may ALSO
+        // have already called HandleClientCallback synchronously with
+        // LWS_CALLBACK_CLIENT_CONNECTION_ERROR for this same attempt (plan
+        // fact 6); that queues its own Error(4) status event, which is fine -
+        // an extra queued event for a connection we are about to erase here
+        // is harmless (DrainStatusEvents' "not accepted" case, main.cpp).
+        fprintf(stderr, "BACnet/SC: Connect(\"%s\"): lws_client_connect_via_info failed immediately\n",
+                uri.c_str());
+        lws_context_destroy(ctx);
+        m_clients.erase(uri);
+        return false;
+    }
+    conn.wsi = wsi;
+    printf("BACnet/SC: dialing out to %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
+           uri.c_str(), m_acceptSubprotocol.c_str());
+    return true;
 }
 
 void ScTransport::Disconnect(const std::string& connStr) {
-    (void)connStr;
-    // No-op: the connector half (the only thing that could have an outbound
-    // connection to disconnect) is not implemented yet - see Connect() above.
+    // Case 1: an accepted server peer ("<acceptUri>|client=N", Phase 2 half).
+    auto serverIt = m_connStringToWsi.find(connStr);
+    if (serverIt != m_connStringToWsi.end()) {
+        lws_close_reason(serverIt->second, LWS_CLOSE_STATUS_NORMAL, nullptr, 0);
+        lws_callback_on_writable(serverIt->second);  // completes the close handshake asynchronously
+        return;
+    }
+    // Case 2: an outbound connector URI (this phase).
+    auto clientIt = m_clients.find(connStr);
+    if (clientIt != m_clients.end() && clientIt->second.wsi != nullptr) {
+        lws_close_reason(clientIt->second.wsi, LWS_CLOSE_STATUS_NORMAL, nullptr, 0);
+        lws_callback_on_writable(clientIt->second.wsi);
+        return;
+    }
+    // Unknown/already-closed connString - no-op, matching the header's contract.
 }
 
 ScTransport::PeerConnection* ScTransport::FindPeerByWsi(lws* wsi) {
@@ -272,31 +452,55 @@ ScTransport::PeerConnection* ScTransport::FindPeerByWsi(lws* wsi) {
 }
 
 bool ScTransport::Send(const std::string& connStr, const uint8_t* data, uint16_t len) {
-    auto it = m_connStringToWsi.find(connStr);
-    if (it == m_connStringToWsi.end()) {
-        return false;  // unknown/closed peer - caller (the router) returns 0 to the stack
+    // Case 1: an accepted server peer ("<acceptUri>|client=N", Phase 2 half).
+    auto serverIt = m_connStringToWsi.find(connStr);
+    if (serverIt != m_connStringToWsi.end()) {
+        PeerConnection* peer = FindPeerByWsi(serverIt->second);
+        if (peer == nullptr) {
+            return false;
+        }
+        std::vector<uint8_t> framed(static_cast<std::size_t>(LWS_PRE) + len);
+        if (len > 0) {
+            std::memcpy(framed.data() + LWS_PRE, data, len);
+        }
+        peer->txQueue.push_back(std::move(framed));
+        lws_callback_on_writable(peer->wsi);
+        return true;
     }
-    PeerConnection* peer = FindPeerByWsi(it->second);
-    if (peer == nullptr) {
-        return false;
+
+    // Case 2: an outbound connector connection, keyed by the URI Connect()
+    // was called with. A connString that names a connector entry whose
+    // wsi is currently null (never established, or already closed) is
+    // treated as unknown - matching the header's "unknown/closed" contract.
+    auto clientIt = m_clients.find(connStr);
+    if (clientIt != m_clients.end() && clientIt->second.wsi != nullptr) {
+        std::vector<uint8_t> framed(static_cast<std::size_t>(LWS_PRE) + len);
+        if (len > 0) {
+            std::memcpy(framed.data() + LWS_PRE, data, len);
+        }
+        clientIt->second.txQueue.push_back(std::move(framed));
+        lws_callback_on_writable(clientIt->second.wsi);
+        return true;
     }
-    std::vector<uint8_t> framed(static_cast<std::size_t>(LWS_PRE) + len);
-    if (len > 0) {
-        std::memcpy(framed.data() + LWS_PRE, data, len);
-    }
-    peer->txQueue.push_back(std::move(framed));
-    lws_callback_on_writable(peer->wsi);
-    return true;
+
+    return false;  // unknown/closed peer - caller (the router) returns 0 to the stack
 }
 
 void ScTransport::Service() {
+    // Phase 1 spike mechanism (a) - see docs/bacnet-sc-transport-plan.md and
+    // the class header comment. Confirmed non-blocking on Windows.
     if (m_listenerContext != nullptr) {
-        // Phase 1 spike mechanism (a) - see docs/bacnet-sc-transport-plan.md and
-        // the class header comment. Confirmed non-blocking on Windows.
         lws_cancel_service(m_listenerContext);
         lws_service(m_listenerContext, 0);
     }
-    // A connector context list would be pumped here too, once Phase 3 adds one.
+    // One client lws_context per connector connection (plan's Connector
+    // subsection) - pump every live one the same non-blocking way.
+    for (auto& kv : m_clients) {
+        if (kv.second.context != nullptr) {
+            lws_cancel_service(kv.second.context);
+            lws_service(kv.second.context, 0);
+        }
+    }
 }
 
 bool ScTransport::PopReceived(ScReceivedFrame* outFrame) {
@@ -357,42 +561,9 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             if (peer == nullptr) {
                 break;
             }
-            if (!lws_frame_is_binary(wsi)) {
-                // BACnet/SC is binary-framed only (135-2024 AB.7.4). Reject a
-                // text frame with 1003 (plan/V1 negative case).
-                fprintf(stderr, "BACnet/SC: peer \"%s\" sent a non-binary frame - closing (1003)\n",
-                        peer->connectionString.c_str());
-                lws_close_reason(wsi, LWS_CLOSE_STATUS_UNACCEPTABLE_OPCODE,
-                                 (unsigned char*)"binary only", 11);
+            if (HandleIncomingFragment(wsi, in, len, peer->connectionString, m_listenUri,
+                                       &peer->rxAssembly, &peer->rxOverflow)) {
                 return -1;
-            }
-
-            const uint8_t* bytes = static_cast<const uint8_t*>(in);
-            if (!peer->rxOverflow) {
-                if (peer->rxAssembly.size() + len > kMaxIngressBytes) {
-                    // Plan fact 8: BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is
-                    // 1497 bytes - a bigger frame is discarded and logged, never
-                    // handed to the stack.
-                    peer->rxOverflow = true;
-                    peer->rxAssembly.clear();
-                    fprintf(stderr, "BACnet/SC: discarding oversized frame (> %zu bytes) from \"%s\" - "
-                                    "ingress ceiling (BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH)\n",
-                            kMaxIngressBytes, peer->connectionString.c_str());
-                } else if (len > 0) {
-                    peer->rxAssembly.insert(peer->rxAssembly.end(), bytes, bytes + len);
-                }
-            }
-
-            if (lws_is_final_fragment(wsi)) {
-                if (!peer->rxOverflow) {
-                    ScReceivedFrame frame;
-                    frame.sourceConnectionString = peer->connectionString;
-                    frame.destinationConnectionString = m_listenUri;
-                    frame.data = peer->rxAssembly;
-                    m_rxQueue.push_back(std::move(frame));
-                }
-                peer->rxAssembly.clear();
-                peer->rxOverflow = false;
             }
             break;
         }
@@ -446,6 +617,162 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 m_connStringToWsi.erase(peer->connectionString);
                 m_peers.erase(wsi);
             }
+            break;
+        }
+
+        default:
+            break;
+    }
+    return 0;
+}
+
+bool ScTransport::HandleIncomingFragment(lws* wsi, const void* in, std::size_t len,
+                                         const std::string& sourceConnStr, const std::string& destConnStr,
+                                         std::vector<uint8_t>* rxAssembly, bool* rxOverflow) {
+    if (!lws_frame_is_binary(wsi)) {
+        // BACnet/SC is binary-framed only (135-2024 AB.7.4). Reject a text
+        // frame with 1003 (plan/V1 negative case) - shared by both roles.
+        fprintf(stderr, "BACnet/SC: peer \"%s\" sent a non-binary frame - closing (1003)\n",
+                sourceConnStr.c_str());
+        lws_close_reason(wsi, LWS_CLOSE_STATUS_UNACCEPTABLE_OPCODE, (unsigned char*)"binary only", 11);
+        return true;
+    }
+
+    const uint8_t* bytes = static_cast<const uint8_t*>(in);
+    if (!*rxOverflow) {
+        if (rxAssembly->size() + len > kMaxIngressBytes) {
+            // Plan fact 8: BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is 1497
+            // bytes - a bigger frame is discarded and logged, never handed to
+            // the stack.
+            *rxOverflow = true;
+            rxAssembly->clear();
+            fprintf(stderr, "BACnet/SC: discarding oversized frame (> %zu bytes) from \"%s\" - "
+                            "ingress ceiling (BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH)\n",
+                    kMaxIngressBytes, sourceConnStr.c_str());
+        } else if (len > 0) {
+            rxAssembly->insert(rxAssembly->end(), bytes, bytes + len);
+        }
+    }
+
+    if (lws_is_final_fragment(wsi)) {
+        if (!*rxOverflow) {
+            ScReceivedFrame frame;
+            frame.sourceConnectionString = sourceConnStr;
+            frame.destinationConnectionString = destConnStr;
+            frame.data = *rxAssembly;
+            m_rxQueue.push_back(std::move(frame));
+        }
+        rxAssembly->clear();
+        *rxOverflow = false;
+    }
+    return false;
+}
+
+int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void* in, std::size_t len) {
+    (void)user;
+    const lws_callback_reasons reason = static_cast<lws_callback_reasons>(reasonInt);
+    // Every reason below fires on a wsi lws created from THIS connection's own
+    // Connect() call, which set ccinfo.opaque_user_data = &conn (a stable
+    // reference into m_clients - see the header's comment on that map) - so
+    // this lookup is valid for every case, including one that fires
+    // synchronously from inside Connect() itself (plan fact 6).
+    ClientConnection* conn = static_cast<ClientConnection*>(lws_get_opaque_user_data(wsi));
+
+    switch (reason) {
+        case LWS_CALLBACK_CLIENT_ESTABLISHED: {
+            if (conn == nullptr) {
+                break;
+            }
+            conn->wsi = wsi;
+            printf("BACnet/SC: connected to hub \"%s\"\n", conn->uri.c_str());
+            ScStatusEvent evt;
+            evt.uri = conn->uri;
+            evt.status = 2;  // WebsocketStatus_Connected (plan fact 3)
+            evt.closeCode = 0;
+            m_statusQueue.push_back(evt);
+            if (!conn->txQueue.empty()) {
+                lws_callback_on_writable(wsi);  // a Send() may have queued before ESTABLISHED fired
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
+            if (conn == nullptr) {
+                break;
+            }
+            const std::string detail = (in != nullptr) ? std::string(static_cast<const char*>(in), len) : std::string();
+            fprintf(stderr, "BACnet/SC: Connect(\"%s\") failed: %s\n", conn->uri.c_str(), detail.c_str());
+            ScStatusEvent evt;
+            evt.uri = conn->uri;
+            evt.status = 4;  // WebsocketStatus_Error (plan fact 3)
+            evt.closeCode = 0;
+            m_statusQueue.push_back(evt);
+            conn->wsi = nullptr;
+            break;
+        }
+
+        case LWS_CALLBACK_WS_PEER_INITIATED_CLOSE: {
+            // Same generic (non-CLIENT_-prefixed) reason the listener half
+            // uses - fires for a client-role wsi too. Recorded only for the
+            // log line below; unlike the listener half, this class does not
+            // branch Disconnected-vs-Error on it for the connector (see
+            // ScStatusEvent's header comment).
+            if (conn != nullptr && in != nullptr && len >= 2) {
+                const uint8_t* bytes = static_cast<const uint8_t*>(in);
+                conn->lastCloseCode = static_cast<uint16_t>((bytes[0] << 8) | bytes[1]);
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_RECEIVE: {
+            if (conn == nullptr) {
+                break;
+            }
+            // destConnStr is empty for a connector-side frame - see
+            // ScReceivedFrame's header comment ("empty (connector)").
+            if (HandleIncomingFragment(wsi, in, len, conn->uri, std::string(),
+                                       &conn->rxAssembly, &conn->rxOverflow)) {
+                return -1;
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_WRITEABLE: {
+            if (conn == nullptr || conn->txQueue.empty()) {
+                break;
+            }
+            std::vector<uint8_t>& framed = conn->txQueue.front();
+            const std::size_t payloadLen = framed.size() - static_cast<std::size_t>(LWS_PRE);
+            const int written = lws_write(wsi, framed.data() + LWS_PRE, payloadLen, LWS_WRITE_BINARY);
+            conn->txQueue.pop_front();
+            if (written < 0 || static_cast<std::size_t>(written) < payloadLen) {
+                fprintf(stderr, "BACnet/SC: short/failed write to hub \"%s\" (%d of %zu bytes) - closing\n",
+                        conn->uri.c_str(), written, payloadLen);
+                return -1;
+            }
+            if (!conn->txQueue.empty()) {
+                lws_callback_on_writable(wsi);  // more frames queued - ask for another turn
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_CLOSED: {
+            if (conn == nullptr) {
+                break;
+            }
+            // Plan spec for the connector half: EVERY close (clean or not)
+            // reports Disconnected(3) here - LWS_CALLBACK_CLIENT_CONNECTION_ERROR
+            // above is the only path that reports Error(4) for this half (unlike
+            // the listener half's closeCode-based split - see ScStatusEvent's
+            // header comment).
+            ScStatusEvent evt;
+            evt.uri = conn->uri;
+            evt.status = 3;  // WebsocketStatus_Disconnected (plan fact 3)
+            evt.closeCode = conn->lastCloseCode;
+            m_statusQueue.push_back(evt);
+            printf("BACnet/SC: hub connection \"%s\" closed (closeCode=%u)\n",
+                   conn->uri.c_str(), (unsigned)conn->lastCloseCode);
+            conn->wsi = nullptr;
             break;
         }
 

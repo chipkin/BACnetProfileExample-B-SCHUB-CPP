@@ -54,17 +54,17 @@
 // headers for the design, and docs/bacnet-sc-transport-plan.md for how the
 // vcpkg/CMake wiring and the non-blocking Service() mechanism were settled.
 //
-// THIS PHASE (2 of the plan) implements the LISTENER (hub-function accept)
-// half for real: CallbackSCStartListening/CallbackSCStopListening below are
-// thin forwards to ScTransport, and a real BACnet/SC node can connect. The
-// CONNECTOR (initiate) half is Phase 3: CallbackInitiateWebsocket/
-// CallbackDisconnectWebsocket already forward to ScTransport's Connect()/
-// Disconnect(), but those are themselves still stubs inside ScTransport.cpp
-// (they log and return false/no-op, honestly, rather than claiming an
-// outbound connection this example does not yet make) - see ScTransport.h's
-// class-header comment. This hub-only example does not need a connector to
-// answer a node's own requests (see plan open risk #8), so that gap does not
-// block NM-SCH-B here.
+// Phase 2 implemented the LISTENER (hub-function accept) half:
+// CallbackSCStartListening/CallbackSCStopListening are thin forwards to
+// ScTransport, and a real BACnet/SC node can connect. THIS PHASE (3)
+// implements the CONNECTOR (initiate) half too: CallbackInitiateWebsocket/
+// CallbackDisconnectWebsocket forward to ScTransport's Connect()/Disconnect(),
+// which are now real - see ScTransport.h's class-header comment. The
+// connector role is OFF by default (this hub-only example does not need one
+// to answer a node's own requests - plan open risk #8) and only turns on when
+// --sc-hub-uri is given on the command line (see main() below), letting this
+// example also demonstrate the hub-CONNECTOR side of NM-SCH-B by dialing out
+// to another hub.
 //
 // The BACnet/IP Network Port (1, "Vermilion") stays active and fully functional
 // throughout, so the example remains discoverable and testable over plain
@@ -189,6 +189,16 @@ static std::string g_scCertDir = "./certs";
 // binds every interface (ScTransport::StartListening treats that host - or an
 // empty one - as "bind all", the same as a NULL lws iface).
 static std::string g_scHubAcceptUri;
+
+// The BACnet/SC hub CONNECTOR (initiator) role - CLI-configurable
+// (--sc-hub-uri, --sc-failover-uri; see ParseScUriArg below). OFF unless
+// --sc-hub-uri is given: BACnetStack_SetBACnetSCHubConnectorForNetworkPort
+// rejects an empty primary URI, and this hub-only example does not need one
+// to answer a node's own requests (plan open risk #8) - it exists so this
+// example can ALSO demonstrate NM-SCH-B's connector side, e.g. dialing out to
+// another hub (a real one, or a second instance of this same example).
+static std::string g_scHubUri;      // primary hub URI to dial; empty = connector role off
+static std::string g_scFailoverUri; // optional failover hub URI; empty = none configured
 
 // The real WebSocket/TLS transport (sc_transport/ScTransport.h) and the glue
 // that dispatches the stack's ReceiveMessageForPort/SendMessageForPort
@@ -590,13 +600,13 @@ bool DeviceCommunicationControl(const uint32_t deviceInstance, const uint8_t ena
 // -----------------------------------------------------------------------------
 
 // The stack asks us to OPEN an outbound WebSocket/TLS connection to a URI -
-// the hub CONNECTOR/initiator role. Forwards to ScTransport::Connect(), which
-// is still a STUB in this phase (Phase 3 implements it for real - see
-// ScTransport.h's class-header comment); this hub-only example does not need
-// a connector to answer a node's own requests (plan open risk #8), so that gap
-// does not block NM-SCH-B. Per plan fact 6, this return value is discarded by
-// the stack for the hub-connector path - ScTransport::Connect() still returns
-// honestly (false) rather than claiming a connection that was not made.
+// the hub CONNECTOR/initiator role. Forwards to ScTransport::Connect(), real
+// as of this phase (see ScTransport.h's class-header comment) - only reached
+// when --sc-hub-uri configured the connector role (see main()'s
+// BACnetStack_SetBACnetSCHubConnectorForNetworkPort call). Per plan fact 6,
+// this return value is discarded by the stack for the hub-connector path
+// anyway; ScTransport::Connect() still returns honestly (true only if the
+// connection ATTEMPT actually started - see its own doc comment).
 bool CallbackInitiateWebsocket(const char* websocketUri, const uint32_t websocketUriLength) {
     const std::string uri(websocketUri, websocketUriLength);
     return g_scTransport.Connect(uri);
@@ -675,6 +685,20 @@ static std::string ParseScCertDirArg(const int argc, char** argv, const std::str
     return defaultDir;
 }
 
+// Parse "<flagName> <value>" (e.g. "--sc-hub-uri wss://..."); returns "" if
+// not given. Shared by --sc-hub-uri and --sc-failover-uri - both are plain
+// "take the next argument verbatim" options (the stack itself rejects a
+// malformed URI when BACnetStack_SetBACnetSCHubConnectorForNetworkPort is
+// called - no point duplicating that validation here).
+static std::string ParseStringArg(const int argc, char** argv, const char* flagName) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], flagName) == 0) {
+            return std::string(argv[i + 1]);
+        }
+    }
+    return std::string();
+}
+
 int main(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -698,6 +722,13 @@ int main(int argc, char** argv) {
                 printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 47819.\n");
                 printf("  --sc-cert-dir <dir> Directory holding hub.crt/hub.key/ca.crt (see\n");
                 printf("                      scripts/generate-test-certs.cmake). Default \"./certs\".\n");
+                printf("  --sc-hub-uri <wss://host:port/path>\n");
+                printf("                      Also run the hub CONNECTOR role: dial out to another hub at\n");
+                printf("                      this URI. Off by default (this example needs only the hub\n");
+                printf("                      FUNCTION/listener role above for NM-SCH-B).\n");
+                printf("  --sc-failover-uri <wss://host:port/path>\n");
+                printf("                      Optional failover hub URI, used only if --sc-hub-uri is\n");
+                printf("                      also given.\n");
                 break;
             }
         }
@@ -707,6 +738,8 @@ int main(int argc, char** argv) {
     g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(argc, argv, g_deviceInstance);
     g_scPort = ParseScPortArg(argc, argv, g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, g_scCertDir);
+    g_scHubUri = ParseStringArg(argc, argv, "--sc-hub-uri");
+    g_scFailoverUri = ParseStringArg(argc, argv, "--sc-failover-uri");
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
 
     // --- Bind the BACnet/IP socket --------------------------------------------
@@ -754,7 +787,7 @@ int main(int argc, char** argv) {
     BACnetStack_RegisterCallbackGetPropertyOctetString(GetPropertyOctetString);
     // DeviceCommunicationControl (DM-DCC-B).
     BACnetStack_RegisterCallbackDeviceCommunicationControl(DeviceCommunicationControl);
-    // BACnet/SC transport callbacks (NM-SCH-B) - stubs, see 2c above and TODO.md.
+    // BACnet/SC transport callbacks (NM-SCH-B) - both roles are real, see 2c above.
     BACnetStack_RegisterCallbackInitiateWebsocket(CallbackInitiateWebsocket);
     BACnetStack_RegisterCallbackDisconnectWebsocket(CallbackDisconnectWebsocket);
     BACnetStack_RegisterCallbackSCStartListening(CallbackSCStartListening);
@@ -853,6 +886,43 @@ int main(int argc, char** argv) {
                                                   true, SC_MAX_HUB_CONNECTIONS)) {
         printf("Error: Failed to enable the BACnet/SC hub function.\n");
         return 1;
+    }
+
+    // --- Optionally ALSO configure the hub CONNECTOR (initiator) role -------
+    // Off unless --sc-hub-uri was given (see g_scHubUri's own comment) - the
+    // stack rejects an empty primary URI, and this hub-only example does not
+    // need a connector to answer a node's own requests (plan open risk #8).
+    if (!g_scHubUri.empty()) {
+        // Same VMAC-derivation rule BACnetStack_SetBACnetSCUuid's own doc
+        // comment describes for the hub-FUNCTION role ("the last 6 octets of
+        // the UUID, XORing the final octet with 0x01 if those 6 octets would
+        // otherwise be all-zero or all-FF") - reused here because this is the
+        // SAME device/UUID dialing out under the SAME identity, not a
+        // separate one. BACnetStack_SetBACnetSCHubConnectorForNetworkPort
+        // takes the VMAC explicitly (unlike the hub function, which derives
+        // its own internally), so this example must compute it itself.
+        uint8_t vmac[6];
+        memcpy(vmac, SC_DEVICE_UUID + (sizeof(SC_DEVICE_UUID) - 6), 6);
+        bool allZero = true, allFF = true;
+        for (int i = 0; i < 6; ++i) {
+            if (vmac[i] != 0x00) allZero = false;
+            if (vmac[i] != 0xFF) allFF = false;
+        }
+        if (allZero || allFF) {
+            vmac[5] ^= 0x01;
+        }
+
+        if (!BACnetStack_SetBACnetSCHubConnectorForNetworkPort(
+                g_deviceInstance, SC_NETWORK_PORT_INSTANCE, vmac, sizeof(vmac),
+                g_scHubUri.c_str(), (uint16_t)g_scHubUri.size(),
+                g_scFailoverUri.c_str(), (uint16_t)g_scFailoverUri.size())) {
+            printf("Error: Failed to configure the BACnet/SC hub connector (--sc-hub-uri \"%s\").\n",
+                   g_scHubUri.c_str());
+            return 1;
+        }
+        printf("FYI: BACnet/SC hub CONNECTOR is CONFIGURED on Network Port %u, dialing primary hub %s%s%s.\n",
+               SC_NETWORK_PORT_INSTANCE, g_scHubUri.c_str(),
+               g_scFailoverUri.empty() ? "" : " (failover ", g_scFailoverUri.empty() ? "" : (g_scFailoverUri + ")").c_str());
     }
 
     // --- Enable the OPTIONAL properties we choose to expose ------------------
