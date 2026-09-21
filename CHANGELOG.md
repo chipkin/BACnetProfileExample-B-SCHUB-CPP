@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **BACnet/SC hub-function (listener) transport is now real**, not a stub:
+  `sc_transport/ScTransport` (libwebsockets + OpenSSL, mutual TLS 1.3,
+  subprotocol `hub.bsc.bacnet.org`) and `sc_transport/ScTransportRouter` (the
+  stack&lt;-&gt;transport glue, dispatching by Network Port instance) implement
+  Phase 2 ("Listener") of `docs/bacnet-sc-transport-plan.md`. `main.cpp`'s
+  four transport callbacks (section 2c) are thin forwards to `ScTransport`;
+  `CallbackSCStartListening`/`CallbackSCStopListening` are fully real.
+  `scripts/generate-test-certs.cmake` (`cmake --build build --target
+  test-certs`) generates lab-only self-signed certs under `certs/`
+  (gitignored). New CLI options `--sc-port` (default 47819) and
+  `--sc-cert-dir` (default `./certs`).
+- Verified (V1-V3 in the plan): `tests/sc/hub_listener_test.py` (TLS 1.3 +
+  subprotocol negotiation, the required negative cases, and a hand-built
+  BVLC-SC Connect-Request getting a Connect-Accept back) and a real peer
+  (`BACnetSCCli.exe`, `Role=node`) completing Who-Is/I-Am/ReadProperty
+  discovery of this device over BACnet/SC.
+- The connector (hub-connect/initiate) half of `ScTransport` is still a stub
+  (`Connect()`/`Disconnect()` log and return honestly) - that is Phase 3 of
+  the plan, not yet implemented; `CallbackInitiateWebsocket`/
+  `CallbackDisconnectWebsocket` already forward to it so the class shape does
+  not change again when it lands.
+- Removed the Phase 1 spike (`sc_transport_spike.h/.cpp`, the `--sc-spike` CLI
+  hook) now that the real `sc_transport/` classes replace it.
+
 ### Changed
 
 - Restructured documentation to match the series' README/TUTORIAL/PICS split

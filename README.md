@@ -26,9 +26,13 @@ that last part does and does not do in this build.
 
 ## BACnet/SC support: read this first
 
-This example is the series' **spike for BACnet/SC** (canonical for **F-SC**). The
-short version: **the BACnet/SC protocol side is real and stack-verified; the
-WebSocket/TLS transport underneath it is a documented stub, not implemented.**
+This example is canonical for **F-SC**. The short version: **the BACnet/SC
+protocol side is real and stack-verified, and so is the hub-function (listener)
+WebSocket/TLS transport underneath it** - a real BACnet/SC node can connect,
+mutually authenticate over TLS 1.3, and be discovered/read over BACnet/SC. The
+**hub-connector (initiate) half is still a documented stub** - see
+`docs/bacnet-sc-transport-plan.md` and `TODO.md` item 1 for exactly what that
+means and why it does not block this hub-only profile.
 
 **The finding (read from the stack's doc comments and
 `submodules/cas-bacnet-stack/docs/CAS BACnet Stack - BACnet SC Manual_v6.md`,
@@ -65,34 +69,37 @@ WebSocket/TLS transport, not the stack.**
   `CallbackSCStartListening` with the configured accept URI, exactly as its
   doc comment says a hub-function-enabled port must.
 
-**What this example does NOT implement:** the WebSocket/TLS transport itself.
-`CallbackInitiateWebsocket`, `CallbackSCStartListening` and their disconnect
-counterparts (`main.cpp`, section **2c**) are honest **stubs** - they log
-exactly what the stack asked for and return `false` / do nothing, rather than
-claiming a connection that does not exist. The hub function is therefore
-**configured but never actually accepts a BACnet/SC node connection** in this
-build. See [`TODO.md`](TODO.md) for exactly what a real implementation needs
-to add, and [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real)
-for how to start.
+**What this example implements now (real, verified against a real peer):**
 
-**Why not just write one?** A `common/` WebSocket helper is acceptable only if
-it is small and **dependency-free** (no vendored OpenSSL/mbedTLS/etc.), and
-vendoring a heavyweight TLS/crypto dependency was out of bounds for this spike
-without stopping to report it first. BACnet/SC's accept URIs are **required to
-use the `wss://` scheme** (`BACnetStack_AddBACnetSCAcceptUri`'s own doc
-comment: *"Must use the wss scheme"*) - i.e. TLS is not optional for a
-conformant SC hub, it is part of the profile. A minimal dependency-free
-**WebSocket** client/listener (RFC 6455 framing over a plain TCP socket) is
-realistic; a minimal dependency-free **TLS 1.2/1.3** implementation is not -
-every lightweight option either vendors a crypto library or is itself a
-substantial, security-sensitive project unsuitable for a tutorial example. So
-this example documents "bring your own WebSocket/TLS" instead of shipping a
-partial, non-conformant (no-TLS) transport that would look more finished than
-it safely is.
+- `sc_transport/ScTransport` - a libwebsockets + OpenSSL (via vcpkg) transport:
+  mutual TLS 1.3 only, subprotocol `hub.bsc.bacnet.org`, binary WebSocket
+  framing, the 1497-byte ingress ceiling enforced, connection status queued
+  (never reported from inside an lws callback - see the class's header
+  comment for why).
+- `sc_transport/ScTransportRouter` - dispatches the stack's
+  `ReceiveMessageForPort`/`SendMessageForPort` callbacks between BACnet/IP
+  (Network Port 1) and BACnet/SC (Network Port 2, via `ScTransport`).
+- `scripts/generate-test-certs.cmake` - generates a throwaway lab CA + hub +
+  node certificate set under `certs/` (gitignored; **lab testing only**).
+- `CallbackSCStartListening`/`CallbackSCStopListening` (`main.cpp`, section
+  **2c**) are real, not stubs: a real BACnet/SC node can connect to this hub.
+  Verified with `tests/sc/hub_listener_test.py` and with a real peer
+  (`BACnetSCCli.exe`, `Role=node`) completing Who-Is/I-Am/ReadProperty
+  discovery of this device over BACnet/SC - see
+  `docs/bacnet-sc-transport-plan.md`'s V1-V3.
+
+**What is still a stub:** the hub-**connector**/initiate role
+(`CallbackInitiateWebsocket`/`CallbackDisconnectWebsocket`, forwarding to
+`ScTransport::Connect()`/`Disconnect()`) - it logs what the stack asked for and
+returns `false`/no-op rather than claiming an outbound connection this example
+does not make. This hub-only example does not need a connector to answer a
+node's own requests (the hub function delivers locally), so this gap does not
+block NM-SCH-B. See [`TODO.md`](TODO.md) and
+[TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real).
 
 **The BACnet/IP Network Port (1, "Vermilion") stays fully active** throughout,
 so this example remains discoverable and testable over plain BACnet/IP
-regardless of the BACnet/SC transport gap - see [Verify](#verify) below.
+regardless of BACnet/SC - see [Verify](#verify) below.
 
 ## What is the B-SCHUB (BACnet/SC Hub) profile?
 
@@ -278,17 +285,19 @@ Common helper (common/) version: 2.5.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
 TX 21 bytes to 192.168.3.255:47808 (broadcast) (Network Port 1)
 FYI: Device 389022 ("Rainbow") ready. Vendor ID 389. Press 'h' for help.
-FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (Vermilion 2) but its WebSocket/TLS transport is a documented stub - see README.md "BACnet/SC support" and TODO.md.
+FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (Vermilion 2), accept URI wss://0.0.0.0:47819/. Certificates: ./certs. See README.md "BACnet/SC support" for how to generate lab test certs.
 RX 21 bytes from 192.168.3.64:47808 (Network Port 1)
-BACnet/SC: stack asked to LISTEN for inbound WebSocket connections on wss://0.0.0.0:47819/ - STUB, no WebSocket/TLS transport is implemented (see TODO.md). The hub function is configured but will not accept any real SC node connection until a transport is added.
+BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
 ```
 
 The `TX` line is the start-up I-Am the device broadcasts to announce itself. It
 goes to the **local subnet broadcast** address (computed from the Network
 Port's interface), not the global `255.255.255.255`. As clients talk to the
 device you'll see `RX ... bytes from ...` and `TX ... bytes to ...` lines
-showing the traffic. The `BACnet/SC: stack asked to LISTEN...` line only
-appears once (it would otherwise repeat every `Tick()` the stack retries).
+showing the traffic - both over BACnet/IP and, once a node connects, over
+BACnet/SC (tagged `SC peer "..."` instead of an IP:port). If `certs/` is
+missing, the listener line instead explains what to run
+(`cmake -P scripts/generate-test-certs.cmake`) and BACnet/IP keeps working.
 
 The device listens on UDP **47808** (BACnet/IP). Allow that port through your
 firewall. To use a different port, pass `--port` (see below).

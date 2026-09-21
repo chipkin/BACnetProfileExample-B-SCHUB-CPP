@@ -2,3 +2,12 @@
 build/
 
 build-static/
+
+# vcpkg build artifacts (manifest mode - vcpkg.json - restores these locally;
+# never commit them)
+vcpkg_installed/
+
+# Lab test certificates (scripts/generate-test-certs.cmake) - regenerate with
+# `cmake -D FORCE=1 -P scripts/generate-test-certs.cmake`; never commit private
+# keys.
+certs/

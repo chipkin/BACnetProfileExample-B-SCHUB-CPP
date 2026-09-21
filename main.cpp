@@ -31,8 +31,8 @@
 // not add DS-WP-B or any commandable output - NM-SCH-B replaces that delta).
 //
 // -----------------------------------------------------------------------------
-// BACNET/SC TRANSPORT-OWNERSHIP FINDING (spike result - see README "BACnet/SC
-// support" and TODO.md for the full write-up; this repo is canonical for F-SC)
+// BACNET/SC TRANSPORT (NM-SCH-B) - see docs/bacnet-sc-transport-plan.md and
+// sc_transport/README.md for the full design; this section is the summary.
 //
 // Read from submodules/cas-bacnet-stack/docs/CAS BACnet Stack - BACnet SC
 // Manual_v6.md and the doc comments on every BACnetStack_*SC* / *Websocket*
@@ -48,33 +48,27 @@
 // connections via four callbacks (RegisterCallbackInitiateWebsocket,
 // RegisterCallbackDisconnectWebsocket, RegisterCallbackSCStartListening,
 // RegisterCallbackSCStopListening) and expects status reported back through
-// BACnetStack_SetBACnetSCWebSocketStatus; certificate validation and CSR
-// generation are likewise host callbacks
-// (RegisterCallbackValidateBACnetSCOperationalCertificate,
-// RegisterCallbackGenerateBACnetSCCertificateSigningRequest). So: the
-// APPLICATION must supply the WebSocket/TLS transport, not the stack.
+// BACnetStack_SetBACnetSCWebSocketStatus. This example supplies that transport
+// with sc_transport/ScTransport (libwebsockets + OpenSSL, via vcpkg) and
+// sc_transport/ScTransportRouter (the stack<->transport glue) - see those
+// headers for the design, and docs/bacnet-sc-transport-plan.md for how the
+// vcpkg/CMake wiring and the non-blocking Service() mechanism were settled.
 //
-// Per the task card, a common/ WebSocket helper is acceptable only if small and
-// dependency-free (no OpenSSL vendoring). BACnet/SC's accept URIs are REQUIRED
-// to use the wss:// scheme (135-2024 AB; BACnetStack_AddBACnetSCAcceptUri's own
-// doc comment: "Must use the wss scheme") - i.e. TLS is not optional for a
-// conformant SC hub. A minimal dependency-free WebSocket client/server is
-// realistic (RFC 6455 framing over a plain TCP socket is a few hundred lines);
-// a minimal dependency-free TLS 1.2/1.3 stack is not - every lightweight option
-// either vendors a crypto library (OpenSSL/mbedTLS/BoringSSL, explicitly
-// forbidden without stopping to report it first) or is itself a substantial,
-// security-sensitive undertaking unsuitable for a tutorial example. So this
-// example does NOT vendor a WebSocket/TLS implementation. It documents "bring
-// your own WebSocket/TLS" and wires up the stub below so the SC configuration
-// calls, the hub-function enablement, and the callback registrations are all
-// real, compilable, and ready for a real transport to be dropped in - but the
-// four transport callbacks below are STUBS that log what they were asked to do
-// and return false (never claiming a connection that does not exist). See
-// TODO.md for exactly what a real implementation needs to add.
+// THIS PHASE (2 of the plan) implements the LISTENER (hub-function accept)
+// half for real: CallbackSCStartListening/CallbackSCStopListening below are
+// thin forwards to ScTransport, and a real BACnet/SC node can connect. The
+// CONNECTOR (initiate) half is Phase 3: CallbackInitiateWebsocket/
+// CallbackDisconnectWebsocket already forward to ScTransport's Connect()/
+// Disconnect(), but those are themselves still stubs inside ScTransport.cpp
+// (they log and return false/no-op, honestly, rather than claiming an
+// outbound connection this example does not yet make) - see ScTransport.h's
+// class-header comment. This hub-only example does not need a connector to
+// answer a node's own requests (see plan open risk #8), so that gap does not
+// block NM-SCH-B here.
 //
 // The BACnet/IP Network Port (1, "Vermilion") stays active and fully functional
 // throughout, so the example remains discoverable and testable over plain
-// BACnet/IP regardless of the BACnet/SC transport gap.
+// BACnet/IP regardless of BACnet/SC.
 // -----------------------------------------------------------------------------
 
 #include "CASExampleHelper.h"
@@ -82,10 +76,12 @@
 #include "CASBACnetStackAdapter.h" // the CAS BACnet Stack C API (BACnetStack_*); call
                                     // LoadBACnetFunctions() before any BACnetStack_* call -
                                     // see the top of main() below.
-#include "sc_transport_spike.h"    // PHASE 1 SPIKE - TEMPORARY, see that header.
+#include "sc_transport/ScTransport.h"
+#include "sc_transport/ScTransportRouter.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <string>
 
 #if defined(_WIN32)
@@ -183,10 +179,28 @@ static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 static const uint8_t NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT = 11;
 static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "Vermilion 2"
 static const uint16_t SC_MAX_HUB_CONNECTIONS = 4;       // small, demo-sized limit
-// The wss:// URI this hub's accept role advertises. A real deployment binds
-// this to the interface/port its (real) WebSocket/TLS listener actually opens;
-// here it documents the intended address for the stub transport below.
-static const char* SC_HUB_ACCEPT_URI = "wss://0.0.0.0:47819/";
+
+// The BACnet/SC hub accept role's WebSocket/TLS listener - CLI-configurable
+// (--sc-port, --sc-cert-dir; see ParseSCPortArg/ParseSCCertDirArg below), since
+// unlike the stub this replaces, ScTransport actually opens this port.
+static uint16_t g_scPort = 47819;
+static std::string g_scCertDir = "./certs";
+// Built from g_scPort once the CLI has been parsed - see main(). "0.0.0.0"
+// binds every interface (ScTransport::StartListening treats that host - or an
+// empty one - as "bind all", the same as a NULL lws iface).
+static std::string g_scHubAcceptUri;
+
+// The real WebSocket/TLS transport (sc_transport/ScTransport.h) and the glue
+// that dispatches the stack's ReceiveMessageForPort/SendMessageForPort
+// callbacks between it and Network Port 1's UDP socket (sc_transport/
+// ScTransportRouter.h). Both are globals (not locals in main()) because the
+// four BACnet/SC transport callbacks below - plain C function pointers the
+// stack calls with no user-data argument - need to reach g_scTransport.
+static CASSc::ScTransport g_scTransport;
+// Declared after g_scTransport (intra-TU global init order follows
+// declaration order, and this takes a reference to it - see
+// ScTransportRouter.h's constructor).
+static CASSc::ScTransportRouter g_scRouter(NETWORK_PORT_INSTANCE, SC_NETWORK_PORT_INSTANCE, g_scTransport);
 
 // BACnet/SC device UUID (135-2024 AB.1.5.3) - REQUIRED, set exactly once. A
 // real device should generate/persist a stable random UUID (RFC 4122 v4) per
@@ -566,56 +580,52 @@ bool DeviceCommunicationControl(const uint32_t deviceInstance, const uint8_t ena
 }
 
 // -----------------------------------------------------------------------------
-// 2c. BACnet/SC transport STUBS (NM-SCH-B) - see the file header for the full
-// finding. The stack drives the SC protocol and asks the HOST to actually open,
-// accept and close WebSocket(+TLS) connections through these four callbacks.
-// This example does not vendor a WebSocket/TLS implementation (see header and
-// TODO.md), so these are honest stubs: they log what the stack asked for and
-// report failure/no-op rather than claiming a transport that does not exist.
-// A real implementation replaces the bodies below with an actual WebSocket
-// client/listener and calls BACnetStack_SetBACnetSCWebSocketStatus() to report
-// real connection state back to the stack as it changes.
+// 2c. BACnet/SC transport (NM-SCH-B) - see the file header for the design.
+// The stack drives the SC protocol and asks the HOST to actually open, accept
+// and close WebSocket(+TLS) connections through these four callbacks; each one
+// below is a thin forward to g_scTransport (sc_transport/ScTransport.h). The
+// stack owns the URI strings' storage only for the duration of the call, so
+// every forward below copies into a std::string before calling into
+// ScTransport (which may keep/compare the string afterwards).
 // -----------------------------------------------------------------------------
 
-// The stack asks us to OPEN an outbound WebSocket/TLS connection to a URI (used
-// for a hub CONNECTOR/initiator role - not used by this hub-only example, but
-// registered for completeness since the stack logs a warning if it is not).
+// The stack asks us to OPEN an outbound WebSocket/TLS connection to a URI -
+// the hub CONNECTOR/initiator role. Forwards to ScTransport::Connect(), which
+// is still a STUB in this phase (Phase 3 implements it for real - see
+// ScTransport.h's class-header comment); this hub-only example does not need
+// a connector to answer a node's own requests (plan open risk #8), so that gap
+// does not block NM-SCH-B. Per plan fact 6, this return value is discarded by
+// the stack for the hub-connector path - ScTransport::Connect() still returns
+// honestly (false) rather than claiming a connection that was not made.
 bool CallbackInitiateWebsocket(const char* websocketUri, const uint32_t websocketUriLength) {
-    printf("BACnet/SC: stack asked to INITIATE a WebSocket connection to %.*s "
-           "- STUB, no WebSocket/TLS transport is implemented (see TODO.md).\n",
-           (int)websocketUriLength, websocketUri);
-    return false; // never claim a connection attempt we did not make
+    const std::string uri(websocketUri, websocketUriLength);
+    return g_scTransport.Connect(uri);
 }
 
-// The stack asks us to CLOSE a previously opened connection.
+// The stack asks us to CLOSE a previously opened connection (an outbound URI,
+// per fact 6 - not an accepted-peer "|client=" string; those close via the
+// hub function's own peer-eviction path instead).
 void CallbackDisconnectWebsocket(const char* websocketUri, const uint32_t websocketUriLength) {
-    printf("BACnet/SC: stack asked to DISCONNECT the WebSocket connection to %.*s "
-           "- STUB (nothing to close; no transport is implemented).\n",
-           (int)websocketUriLength, websocketUri);
+    const std::string uri(websocketUri, websocketUriLength);
+    g_scTransport.Disconnect(uri);
 }
 
 // The stack asks us to START ACCEPTING inbound WebSocket connections on a URI -
-// this is the hub function's accept role, the one this example actually needs
-// for NM-SCH-B. Returning false here means the stack retries every Tick(); the
-// hub function is therefore configured and enabled below, but never actually
-// reaches "listening" until a real WebSocket/TLS listener replaces this stub.
+// the hub function's accept role, the one this example actually needs for
+// NM-SCH-B. Per plan fact 6 this can fire synchronously from inside
+// BACnetStack_AddBACnetSCAcceptUri() (called from main() below) and the stack
+// retries every Tick() while this returns false - ScTransport::StartListening()
+// already implements exactly that contract (returns false + logs once if the
+// certificate files are missing, retried silently after that).
 bool CallbackSCStartListening(const char* websocketUri, const uint32_t websocketUriLength) {
-    static bool warned = false;
-    if (!warned) {
-        printf("BACnet/SC: stack asked to LISTEN for inbound WebSocket "
-               "connections on %.*s - STUB, no WebSocket/TLS transport is "
-               "implemented (see TODO.md). The hub function is configured but "
-               "will not accept any real SC node connection until a transport "
-               "is added.\n", (int)websocketUriLength, websocketUri);
-        warned = true; // the stack retries every Tick(); do not spam the console
-    }
-    return false; // honest: we are not actually listening
+    const std::string uri(websocketUri, websocketUriLength);
+    return g_scTransport.StartListening(uri);
 }
 
 // The stack asks us to STOP accepting inbound connections on a URI.
 void CallbackSCStopListening(const char* websocketUri, const uint32_t websocketUriLength) {
-    printf("BACnet/SC: stack asked to STOP LISTENING on %.*s - STUB (nothing "
-           "was listening).\n", (int)websocketUriLength, websocketUri);
+    const std::string uri(websocketUri, websocketUriLength);
+    g_scTransport.StopListening(uri);
 }
 
 // Purely observational: logs every BACnet/SC connection-state transition. Left
@@ -637,22 +647,37 @@ void CallbackBACnetSCStateChange(const uint32_t deviceInstance, const uint32_t n
 // -----------------------------------------------------------------------------
 // 3. main()
 // -----------------------------------------------------------------------------
+// Parse "--sc-port <n>" (1..65535); returns defaultPort if not given/invalid.
+// Deliberately local to main.cpp, not common/ - see the CLI-args note in the
+// file header (common's --help cannot list example-specific options).
+static uint16_t ParseScPortArg(const int argc, char** argv, const uint16_t defaultPort) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--sc-port") == 0) {
+            char* end = NULL;
+            const long value = strtol(argv[i + 1], &end, 10);
+            if (end != argv[i + 1] && *end == '\0' && value > 0 && value <= 65535) {
+                return (uint16_t)value;
+            }
+            printf("Warning: ignoring invalid --sc-port \"%s\" (want 1..65535); using %u.\n",
+                   argv[i + 1], (unsigned)defaultPort);
+        }
+    }
+    return defaultPort;
+}
+
+// Parse "--sc-cert-dir <dir>"; returns defaultDir if not given.
+static std::string ParseScCertDirArg(const int argc, char** argv, const std::string& defaultDir) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--sc-cert-dir") == 0) {
+            return std::string(argv[i + 1]);
+        }
+    }
+    return defaultDir;
+}
+
 int main(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
-
-    // --- PHASE 1 SPIKE HOOK - TEMPORARY, see sc_transport_spike.h ------------
-    // `--sc-spike` is not a documented/real CLI option: it exists only so the
-    // Phase 1 spike program can be run and timed from the real, fully-linked
-    // executable (proving the vcpkg/CMake wiring + static-CRT link against the
-    // CAS BACnet Stack, not just a standalone test binary). Remove this block
-    // together with sc_transport_spike.{h,cpp} once Phase 2/3 lands the real
-    // sc_transport/ classes.
-    for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--sc-spike") {
-            return RunScTransportSpike();
-        }
-    }
 
     // --- Load the CAS BACnet Stack -------------------------------------------
     if (!LoadBACnetFunctions()) {
@@ -663,16 +688,35 @@ int main(int argc, char** argv) {
 
     // --- Command line + version --------------------------------------------
     if (CASExampleHelper::HandleHelpAndVersionArgs(argc, argv, APP_NAME, APP_VERSION)) {
+        // common/'s --help handler cannot know about this example's BACnet/SC
+        // options (see the file header) - print them here too, but only for
+        // --help/-h//? (not --version, which HandleHelpAndVersionArgs also
+        // handles and which should stay just a version string).
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "/?") == 0) {
+                printf("\nBACnet/SC options (NM-SCH-B hub function):\n");
+                printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 47819.\n");
+                printf("  --sc-cert-dir <dir> Directory holding hub.crt/hub.key/ca.crt (see\n");
+                printf("                      scripts/generate-test-certs.cmake). Default \"./certs\".\n");
+                break;
+            }
+        }
         return 0;
     }
     const uint16_t port = CASExampleHelper::ParsePortArg(argc, argv, 47808);
     g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(argc, argv, g_deviceInstance);
+    g_scPort = ParseScPortArg(argc, argv, g_scPort);
+    g_scCertDir = ParseScCertDirArg(argc, argv, g_scCertDir);
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
 
-    // --- Bind the BACnet/IP socket -------------------------------------------
-    // The BACnet/IP port stays active regardless of the BACnet/SC transport
-    // outcome - see the file header note.
-    if (!CASExampleHelper::SetupUDP(port)) {
+    // --- Bind the BACnet/IP socket --------------------------------------------
+    // Owned by g_scRouter (sc_transport/ScTransportRouter.h), NOT
+    // CASExampleHelper::SetupUDP() - the router's own ReceiveMessageForPort/
+    // SendMessageForPort callbacks (registered below) must be able to reach
+    // this socket directly to dispatch between it and BACnet/SC. The BACnet/IP
+    // port stays active regardless of the BACnet/SC transport outcome - see
+    // the file header note.
+    if (!g_scRouter.Start(port)) {
         return 1;
     }
 
@@ -682,9 +726,26 @@ int main(int argc, char** argv) {
                "will report 0.0.0.0.\n");
     }
 
+    // --- Configure the BACnet/SC transport -------------------------------------
+    // Build the accept URI from --sc-port now that the CLI has been parsed.
+    // "0.0.0.0" = bind every interface (ScTransport::StartListening's contract).
+    g_scHubAcceptUri = "wss://0.0.0.0:" + std::to_string(g_scPort) + "/";
+    {
+        CASSc::ScTlsFiles tls;
+        tls.caCertPath = g_scCertDir + "/ca.crt";
+        tls.certPath = g_scCertDir + "/hub.crt";
+        tls.keyPath = g_scCertDir + "/hub.key";
+        g_scTransport.Configure(tls, "hub.bsc.bacnet.org"); // plan fact 1 - NOT "hub.bacnet.org"
+    }
+
     // --- Register callbacks ---------------------------------------------------
-    CASExampleHelper::SetNetworkPortInstance(NETWORK_PORT_INSTANCE);
+    // RegisterCommonCallbacks() FIRST (it also supplies GetSystemTime), then
+    // g_scRouter.RegisterCallbacks() to REPLACE the Receive/SendMessageForPort
+    // pointers with the router's own dispatching versions - the stack keeps
+    // only ONE pointer per callback slot, so ordering here is load-bearing
+    // (see ScTransportRouter.h's class-header comment).
     CASExampleHelper::RegisterCommonCallbacks();
+    g_scRouter.RegisterCallbacks();
     BACnetStack_RegisterCallbackGetPropertyReal(GetPropertyReal);
     BACnetStack_RegisterCallbackGetPropertyEnumerated(GetPropertyEnumerated);
     BACnetStack_RegisterCallbackGetPropertyUnsignedInteger(GetPropertyUnsignedInteger);
@@ -759,10 +820,9 @@ int main(int argc, char** argv) {
     }
 
     // --- Add Network Port 2 (BACnet/SC, "Vermilion 2") + configure the hub ---
-    // function (NM-SCH-B). The SC protocol/state-machine side is fully real;
-    // the four transport callbacks registered above are stubs (see 2c), so this
-    // hub function is CONFIGURED but never reaches "listening" for a real peer
-    // until a WebSocket/TLS transport replaces them - see TODO.md.
+    // function (NM-SCH-B). The SC protocol/state-machine side is fully real,
+    // and (this phase) so is the listener transport (see 2c) - a real SC node
+    // can connect to g_scHubAcceptUri once certs exist under --sc-cert-dir.
     if (!BACnetStack_AddNetworkPortObject(
             g_deviceInstance, SC_NETWORK_PORT_INSTANCE,
             NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT,
@@ -785,7 +845,7 @@ int main(int argc, char** argv) {
     // accept URI is required before enabling (BACnetStack_AddBACnetSCAcceptUri
     // doc comment); connectionRole 0 = hub function.
     if (!BACnetStack_AddBACnetSCAcceptUri(g_deviceInstance, SC_NETWORK_PORT_INSTANCE, 0,
-                                          SC_HUB_ACCEPT_URI, (uint32_t)strlen(SC_HUB_ACCEPT_URI))) {
+                                          g_scHubAcceptUri.c_str(), (uint32_t)g_scHubAcceptUri.size())) {
         printf("Error: Failed to add the BACnet/SC hub accept URI.\n");
         return 1;
     }
@@ -810,18 +870,30 @@ int main(int argc, char** argv) {
     // Who-Is is answered automatically. The spec also requires a device to
     // announce itself on start-up, so broadcast an unsolicited I-Am now (to the
     // local subnet broadcast - the BACnet/IP Network Port's own network).
-    CASExampleHelper::SendIAm(g_deviceInstance);
+    // g_scRouter.SendIAm(), not CASExampleHelper::SendIAm() - the router owns
+    // Network Port 1's UDP socket directly (see the "Bind the BACnet/IP
+    // socket" comment above).
+    g_scRouter.SendIAm(g_deviceInstance);
 
     printf("FYI: Device %u (\"%s\") ready. Vendor ID %u. Press 'h' for help.\n",
            g_deviceInstance, DEVICE_NAME, VENDOR_IDENTIFIER);
     printf("FYI: BACnet/SC hub function is CONFIGURED on Network Port %u "
-           "(Vermilion 2) but its WebSocket/TLS transport is a documented stub "
-           "- see README.md \"BACnet/SC support\" and TODO.md.\n", SC_NETWORK_PORT_INSTANCE);
+           "(Vermilion 2), accept URI %s. Certificates: %s. See README.md "
+           "\"BACnet/SC support\" for how to generate lab test certs.\n",
+           SC_NETWORK_PORT_INSTANCE, g_scHubAcceptUri.c_str(), g_scCertDir.c_str());
 
     // --- Run the stack ------------------------------------------------------
     bool running = true;
     while (running) {
         BACnetStack_Tick();
+
+        // Pump the WebSocket/TLS transport non-blockingly, then report any
+        // resulting connection-status changes to the stack. NEVER call
+        // BACnetStack_* from inside an lws callback (plan fact 6) - Service()
+        // only queues; DrainStatusEvents() is what actually calls
+        // BACnetStack_SetBACnetSCWebSocketStatus, safely here in the main loop.
+        g_scTransport.Service();
+        g_scRouter.DrainStatusEvents();
 
         switch (CASExampleHelper::PollKey()) {
             case CASExampleHelper::KeyCommand::Help:
@@ -851,6 +923,6 @@ int main(int argc, char** argv) {
     }
 
     CASExampleHelper::RestoreInput();
-    CASExampleHelper::ShutdownUDP();
+    g_scRouter.Shutdown();
     return 0;
 }

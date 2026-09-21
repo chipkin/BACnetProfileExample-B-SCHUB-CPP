@@ -111,18 +111,23 @@ set(COMMON_SOURCES
     "${EXAMPLES_COMMON_DIR}/SimpleUDP.cpp")
 
 # --- The executable ---------------------------------------------------------
-# sc_transport_spike.cpp is Phase 1 ("Spike") scratch code only: it settles
-# which lws Service() non-blocking mechanism to use and proves the vcpkg/CMake
-# wiring above actually links. It is NOT the real sc_transport/ architecture
-# (that's Phase 2/3 per docs/bacnet-sc-transport-plan.md) and is expected to be
-# removed/replaced once that lands.
+# sc_transport/ is the real BACnet/SC WebSocket+TLS transport (libwebsockets +
+# OpenSSL) and its stack<->transport glue - see docs/bacnet-sc-transport-plan.md
+# and sc_transport/README.md. Phase 1's scratch sc_transport_spike.{h,cpp} (which
+# only settled the lws Service() non-blocking mechanism) is gone now that this
+# lands - see CHANGELOG.md.
+set(SC_TRANSPORT_SOURCES
+    "sc_transport/ScTransport.cpp"
+    "sc_transport/ScTransportRouter.cpp")
+
 add_executable(BACnetExampleBSCHUB
     main.cpp
-    sc_transport_spike.cpp
+    ${SC_TRANSPORT_SOURCES}
     ${COMMON_SOURCES})
 
 target_include_directories(BACnetExampleBSCHUB PRIVATE
-    "${EXAMPLES_COMMON_DIR}")
+    "${EXAMPLES_COMMON_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(BACnetExampleBSCHUB PRIVATE
     CASBACnetStack::Adapter
@@ -139,7 +144,7 @@ if(MSVC)
 else()
     set(EXAMPLE_WARNINGS "-Wall;-Wextra")
 endif()
-set_source_files_properties(main.cpp ${COMMON_SOURCES}
+set_source_files_properties(main.cpp ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
     PROPERTIES COMPILE_OPTIONS "${EXAMPLE_WARNINGS}")
 
 # --- Platform sockets --------------------------------------------------------
@@ -151,3 +156,13 @@ set_source_files_properties(main.cpp ${COMMON_SOURCES}
 if(WIN32)
     target_link_libraries(BACnetExampleBSCHUB PRIVATE ws2_32 iphlpapi dbghelp winmm)
 endif()
+
+# --- Lab test certificates ---------------------------------------------------
+# `cmake --build build --target test-certs` (or `cmake -P scripts/generate-test-certs.cmake`
+# directly) regenerates certs/ - see that script for what it produces and why.
+# Not a dependency of BACnetExampleBSCHUB: the app itself checks for missing
+# cert files at run time and logs the generate command (ScTransport::StartListening).
+add_custom_target(test-certs
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-test-certs.cmake"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Generating BACnet/SC lab test certificates under certs/")
