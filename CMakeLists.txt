@@ -119,7 +119,8 @@ set(COMMON_SOURCES
 # lands - see CHANGELOG.md.
 set(SC_TRANSPORT_SOURCES
     "sc_transport/ScTransport.cpp"
-    "sc_transport/ScTransportRouter.cpp")
+    "sc_transport/ScTransportRouter.cpp"
+    "sc_transport/HttpServer.cpp")
 
 add_executable(BACnetExampleBSCHUB
     main.cpp
@@ -156,7 +157,9 @@ set_source_files_properties(main.cpp config.cpp ${SC_TRANSPORT_SOURCES} ${COMMON
 # same fix as ../plugfest-example/CMakeLists.txt for the identical LNK2019s
 # (SymSetOptions/SymGetOptions/MiniDumpWriteDump from libuv's process.c).
 if(WIN32)
-    target_link_libraries(BACnetExampleBSCHUB PRIVATE ws2_32 iphlpapi dbghelp winmm)
+    # advapi32 = GetNamedSecurityInfoA/GetAce/ConvertSidToStringSidA (config.cpp's
+    # best-effort config-file-permissions check, Task 1's secrets-handling pass).
+    target_link_libraries(BACnetExampleBSCHUB PRIVATE ws2_32 iphlpapi dbghelp winmm advapi32)
 endif()
 
 # --- Lab test certificates ---------------------------------------------------

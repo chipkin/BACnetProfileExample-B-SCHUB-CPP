@@ -204,3 +204,37 @@ mistake the behaviour for a bug in this example.
    transport-level accept/close events this batch's audit trail is anchored
    to), but a natural next step if VMAC/UUID-level audit correlation is
    needed.
+9. **The HTTP health/metrics + certificate-upload listener (`sc_transport/HttpServer`,
+   added 2026-09-21) has no TLS at all** - plain HTTP, `127.0.0.1`-only by
+   design (see README.md "Health/metrics HTTP endpoint"). Acceptable because
+   loopback traffic never crosses a real network boundary, but this means the
+   listener cannot safely be rebound to a non-loopback address without first
+   adding TLS (or moving it to a Unix domain socket / Windows named pipe,
+   which would not need TLS at all for a local-only integration). There is no
+   `--http-bind-address` option in this batch, deliberately, precisely so a
+   config file cannot accidentally expose this off-host by omission - adding
+   one is a real, scoped follow-up, not an oversight.
+10. **`POST /certs/<slot>`'s authentication is a bearer token equal to
+    `dcc-password`, checked with a plain string compare - not constant-time,
+    not mTLS, not OAuth/a real credential/token-issuance scheme.** Reusing
+    `dcc-password` was a deliberate simplification (one secret, one config
+    key, matching this batch's Task 4 instructions) rather than adding a
+    second credential type for a tutorial's single write endpoint; a real
+    deployment should use a dedicated, rotatable upload credential (or real
+    mTLS client-cert auth reusing the same PKI the BACnet/SC transport
+    already has) instead of overloading the DCC password for two purposes.
+11. **No rate limiting on `POST /certs/<slot>` upload *attempts* specifically**
+    (as distinct from `--sc-rate-limit`, which only bounds new BACnet/SC
+    WebSocket connection attempts) - an attacker who already has a valid
+    `dcc-password` (or is brute-forcing a weak one) can hammer the upload
+    endpoint as fast as TCP allows. Low risk at this example's scale (the
+    endpoint is loopback-only and every attempt is logged), but a real
+    product should add one.
+12. **The uploaded-certificate check is a PEM-header + size sanity check,
+    not a real X.509 parse.** OpenSSL is already vendored (for the SC
+    transport's TLS) and could be used for a real parse-and-sanity-check;
+    this batch stuck to the simpler check on the judgement that the real
+    trust decision happens at the next TLS handshake anyway (see README.md
+    "Certificate upload endpoint" for the full reasoning) - revisit if this
+    example ever needs to catch a malformed-but-PEM-shaped upload before it
+    reaches disk, rather than only before it reaches a TLS handshake.

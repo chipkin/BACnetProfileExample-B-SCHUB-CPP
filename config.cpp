@@ -13,6 +13,14 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
+#else
+#include <sys/stat.h>
+#endif
+
 // Trim leading/trailing ASCII whitespace (the only kind this simple format
 // needs to worry about - config files are expected to be plain ASCII/UTF-8
 // key=value lines, not locale-sensitive text).
@@ -54,6 +62,77 @@ static bool ParseConfigUint(const std::string& field, const std::string& value,
     }
     *outValue = (uint32_t)parsed;
     return true;
+}
+
+#if defined(_WIN32)
+// Best-effort check: true if the file's DACL grants access to a principal
+// OTHER than well-known "trusted owner" SIDs (BUILTIN\Administrators,
+// SYSTEM) - a rough, practical stand-in for POSIX's "group/world readable"
+// on a platform with no single mode-bit to check. Deliberately NOT a full
+// security audit: it does not resolve nested/domain group membership, does
+// not distinguish read from write/full access, and does not walk ACEs
+// inherited from a parent directory - see README.md "Secrets handling" for
+// why a best-effort warning (not enforcement) is this tutorial's goal, not a
+// hardened permissions check.
+static bool WindowsFileHasBroadAccess(const std::string& path) {
+    PSECURITY_DESCRIPTOR sd = NULL;
+    PACL dacl = NULL;
+    const DWORD result = GetNamedSecurityInfoA(
+        const_cast<char*>(path.c_str()), SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd);
+    if (result != ERROR_SUCCESS || dacl == NULL) {
+        if (sd != NULL) {
+            LocalFree(sd);
+        }
+        return false;  // can't determine - don't warn on a heuristic we can't evaluate
+    }
+
+    bool broad = false;
+    for (WORD i = 0; i < dacl->AceCount; ++i) {
+        LPVOID aceVoid = NULL;
+        if (!GetAce(dacl, i, &aceVoid)) {
+            continue;
+        }
+        const ACE_HEADER* header = static_cast<ACE_HEADER*>(aceVoid);
+        if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) {
+            continue;  // only ALLOW aces grant access; DENY/audit aces don't
+        }
+        const ACCESS_ALLOWED_ACE* ace = static_cast<ACCESS_ALLOWED_ACE*>(aceVoid);
+        const PSID sid = (PSID)&ace->SidStart;
+        char* sidString = NULL;
+        if (ConvertSidToStringSidA(sid, &sidString)) {
+            const std::string sidStr(sidString);
+            LocalFree(sidString);
+            // Everyone (S-1-1-0), Authenticated Users (S-1-5-11), or
+            // BUILTIN\Users (S-1-5-32-545) granting ANY access is "broad" for
+            // this heuristic. BUILTIN\Administrators (S-1-5-32-544) and
+            // SYSTEM (S-1-5-18) are treated as trusted and never flagged.
+            if (sidStr == "S-1-1-0" || sidStr == "S-1-5-11" || sidStr == "S-1-5-32-545") {
+                broad = true;
+                break;
+            }
+        }
+    }
+    LocalFree(sd);
+    return broad;
+}
+#endif
+
+// Best-effort, cross-platform "is this file readable by more than its
+// owner/administrators" check - see WindowsFileHasBroadAccess's comment
+// above for the Windows heuristic and its limits. POSIX just reads the mode
+// bits directly (group/other read/write/execute), which is exact, unlike
+// the Windows ACL heuristic.
+static bool ConfigFileHasBroadPermissions(const std::string& path) {
+#if defined(_WIN32)
+    return WindowsFileHasBroadAccess(path);
+#else
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        return false;  // can't stat it - don't warn on a heuristic we can't evaluate
+    }
+    return (st.st_mode & (S_IRWXG | S_IRWXO)) != 0;
+#endif
 }
 
 bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
@@ -118,6 +197,11 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
         } else if (key == "dcc-password") {
             outConfig->dccPassword = value;
             outConfig->hasDccPassword = true;
+        } else if (key == "http-port") {
+            if (ParseConfigUint(key, value, 1, 65535, &numeric)) {
+                outConfig->httpPort = (uint16_t)numeric;
+                outConfig->hasHttpPort = true;
+            }
         } else if (key == "sc-max-hub-connections") {
             if (ParseConfigUint(key, value, 1, 65535, &numeric)) {
                 outConfig->scMaxHubConnections = (uint16_t)numeric;
@@ -135,6 +219,27 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
                                   "config file %s:%d: ignoring unrecognised key \"%s\".",
                                   path.c_str(), lineNumber, key.c_str());
         }
+    }
+
+    // Secrets handling (Task 1): dcc-password is the only secret-shaped key
+    // this config file format currently has (every other key - device-id,
+    // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, http-port,
+    // sc-max-hub-connections, sc-rate-limit - is either non-sensitive or, for
+    // the URIs, a network endpoint rather than a credential). Warn - do not
+    // refuse to start - if the file looks readable by more than its
+    // owner/Administrators, so an operator who copied a config file with the
+    // wrong permissions finds out from the log instead of from an incident.
+    // See ConfigFileHasBroadPermissions()'s own comment for what this check
+    // does and does not catch, and README.md "Secrets handling" for the
+    // icacls/chmod remediation this warning points at.
+    if (outConfig->hasDccPassword && !outConfig->dccPassword.empty() &&
+        ConfigFileHasBroadPermissions(path)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "config file \"%s\" sets a non-empty dcc-password and appears readable by more than "
+            "its owner/Administrators. Restrict its permissions: Windows - "
+            "\"icacls %s /inheritance:r /grant:r %%USERNAME%%:F\"; Linux/macOS - \"chmod 600 %s\". "
+            "See README.md \"Secrets handling\".",
+            path.c_str(), path.c_str(), path.c_str());
     }
     return true;
 }

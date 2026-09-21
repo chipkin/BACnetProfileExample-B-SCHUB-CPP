@@ -8,14 +8,19 @@
 // This example's `--config <path>` support: a dependency-free, INI-like
 // "key = value" config file supplying DEFAULTS for a handful of this
 // example's settings (device-id, port, sc-port, sc-cert-dir, sc-hub-uri,
-// sc-failover-uri, dcc-password, sc-max-hub-connections, sc-rate-limit).
+// sc-failover-uri, dcc-password, http-port, sc-max-hub-connections,
+// sc-rate-limit).
 //
 // Precedence is CLI args > config file > main.cpp's own built-in defaults -
 // see main.cpp's CLI-parsing block for how ExampleConfig is threaded through:
 // each existing Parse*Arg() call is given the config-file value (if present)
 // as ITS default, so a CLI flag (which those functions already prefer over
 // their own default parameter) still wins, and a config file value only ever
-// fills in what the user did not pass on the command line.
+// fills in what the user did not pass on the command line. dcc-password is
+// the ONE exception (2026-09 secrets-handling pass): it has NO CLI flag at
+// all, so the config file is the only way to set it - see README.md
+// "Secrets handling" for why (a CLI argument is visible in process
+// listings/shell history).
 //
 // Deliberately example-local (main.cpp/config.h/config.cpp), NOT common/ -
 // this key set and file format is specific to this example's own CLI surface,
@@ -24,8 +29,8 @@
 // dependency-free (no third-party INI/YAML/JSON library) to match this
 // repository's existing ParsePortArg/ParseDeviceIdArg style in
 // common/CASExampleHelper.cpp: a flat, line-oriented "key = value" format
-// needs none of that machinery, and pulling one in for 8 keys would be
-// exactly the kind of speculative abstraction the series avoids.
+// needs none of that machinery, and pulling one in for this many keys would
+// be exactly the kind of speculative abstraction the series avoids.
 // =============================================================================
 
 #include <stdint.h>
@@ -54,8 +59,27 @@ struct ExampleConfig {
     bool hasScFailoverUri = false;
     std::string scFailoverUri;
 
+    // dcc-password (Task 1, 2026-09 secrets-handling pass): the ONLY way to
+    // set the DeviceCommunicationControl password as of this batch - the
+    // "--dcc-password <string>" CLI flag was REMOVED from main.cpp (a CLI
+    // argument is visible in process listings/shell history on every
+    // platform - `ps aux`, Task Manager's command-line column, etc. - which
+    // is a real exposure for a secret, however weak DM-DCC-B's own password
+    // protection already is; see main.cpp's DeviceCommunicationControl
+    // callback for that caveat). See README.md "Configuration file" and
+    // "Secrets handling" for the full story, including the file-permission
+    // warning LoadExampleConfig() below performs when this key is non-empty.
     bool hasDccPassword = false;
     std::string dccPassword;
+
+    // http-port: TCP port for the read-only health/metrics HTTP endpoint
+    // (Task 3) and the certificate-upload endpoint (Task 4) - both served by
+    // sc_transport/HttpServer on 127.0.0.1 only (never 0.0.0.0 - see
+    // HttpServer.h). Distinct from --port (BACnet/IP UDP) and --sc-port
+    // (BACnet/SC WebSocket/TLS TCP) - three different listeners, three
+    // different defaults (47808 / 47819 / 8080), no overlap.
+    bool hasHttpPort = false;
+    uint16_t httpPort = 0;
 
     bool hasScMaxHubConnections = false;
     uint16_t scMaxHubConnections = 0;
@@ -80,10 +104,14 @@ std::string ParseConfigPathArg(int argc, char** argv);
 // for why; leading/trailing whitespace around key and value is trimmed, and
 // "key=value" with no spaces is also accepted). Recognised keys: device-id,
 // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, dcc-password,
-// sc-max-hub-connections, sc-rate-limit. An unrecognised key or an
+// http-port, sc-max-hub-connections, sc-rate-limit. An unrecognised key or an
 // unparsable numeric value is WARNED about (via CASExampleHelper::Log) and
 // otherwise skipped, never fatal - a config file is a convenience, not a
-// contract the device refuses to start over.
+// contract the device refuses to start over. If dcc-password is set to a
+// non-empty value, this function ALSO warns (still non-fatal) if the config
+// file itself looks readable by more than its owner/Administrators - see
+// ConfigFileHasBroadPermissions() in config.cpp and README.md "Secrets
+// handling".
 //
 // Returns true if the file itself was found and opened (even if some lines
 // inside it were skipped); false if the path could not be opened at all - the

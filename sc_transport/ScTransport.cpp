@@ -549,6 +549,19 @@ bool ScTransport::PopReceived(ScReceivedFrame* outFrame) {
     return true;
 }
 
+ScTransportMetrics ScTransport::GetMetrics() const {
+    ScTransportMetrics m;
+    m.totalConnects = m_totalConnects;
+    m.totalDisconnects = m_totalDisconnects;
+    m.rateLimitRejections = m_rateLimitRejections;
+    m.rxMessages = m_rxMessages;
+    m.rxBytes = m_rxBytes;
+    m.txMessages = m_txMessages;
+    m.txBytes = m_txBytes;
+    m.currentPeerCount = m_peers.size();
+    return m;
+}
+
 bool ScTransport::PopStatusEvent(ScStatusEvent* outEvent) {
     if (m_statusQueue.empty() || outEvent == nullptr) {
         return false;
@@ -576,6 +589,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             // up immediately, before sending or receiving anything - no TLS
             // handshake CPU/memory is spent on a rejected attempt.
             if (!AllowNewConnectionAttempt()) {
+                ++m_rateLimitRejections;
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                     "SC rate limit: rejecting new connection attempt on %s - more than %u attempt(s)/sec "
                     "(rejected before TLS handshake; see --sc-rate-limit)",
@@ -606,6 +620,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             peer.wsi = wsi;
             peer.connectionString = connStr;
             m_connStringToWsi[connStr] = wsi;
+            ++m_totalConnects;
             printf("BACnet/SC: accepted WebSocket connection - peer=\"%s\"\n", connStr.c_str());
             // Audit trail (Task 1): the accepted-peer connection string
             // ("<acceptUri>|client=N") is the identity this transport layer
@@ -657,6 +672,8 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                         peer->connectionString.c_str(), written, payloadLen);
                 return -1;
             }
+            ++m_txMessages;
+            m_txBytes += static_cast<uint64_t>(payloadLen);
             if (!peer->txQueue.empty()) {
                 lws_callback_on_writable(wsi);  // more frames queued - ask for another turn
             }
@@ -686,6 +703,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 evt.status = status;
                 evt.closeCode = peer->lastCloseCode;
                 m_statusQueue.push_back(evt);
+                ++m_totalDisconnects;
                 printf("BACnet/SC: peer \"%s\" disconnected (status=%u closeCode=%u)\n",
                        peer->connectionString.c_str(), (unsigned)status, (unsigned)peer->lastCloseCode);
                 // Audit trail (Task 1) - same identity/timestamp rationale as
@@ -739,6 +757,8 @@ bool ScTransport::HandleIncomingFragment(lws* wsi, const void* in, std::size_t l
             frame.sourceConnectionString = sourceConnStr;
             frame.destinationConnectionString = destConnStr;
             frame.data = *rxAssembly;
+            ++m_rxMessages;
+            m_rxBytes += static_cast<uint64_t>(frame.data.size());
             m_rxQueue.push_back(std::move(frame));
         }
         rxAssembly->clear();
@@ -829,6 +849,8 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
                         conn->uri.c_str(), written, payloadLen);
                 return -1;
             }
+            ++m_txMessages;
+            m_txBytes += static_cast<uint64_t>(payloadLen);
             if (!conn->txQueue.empty()) {
                 lws_callback_on_writable(wsi);  // more frames queued - ask for another turn
             }

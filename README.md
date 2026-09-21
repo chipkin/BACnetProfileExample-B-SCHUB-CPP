@@ -150,7 +150,8 @@ the callback accepts it, the stack rejects the request with
 `service-request-denied`; the standard now expects `disable-initiation`.
 
 The example ships with **no password** by default (accepts any request) - set
-one at start-up with `--dcc-password <string>` (`common/` 2.6.0).
+one via the `--config` file's `dcc-password` key (see
+[Secrets handling](#secrets-handling)); there is no CLI flag for it.
 
 ## The device this example creates
 
@@ -397,19 +398,70 @@ firewall. To use a different port, pass `--port` (see below).
 | `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
 | `--sc-max-hub-connections <n>` | `4` | Max simultaneous inbound BACnet/SC peer connections the hub function accepts - enforced by the stack (see [Configuration file](#configuration-file) and `TODO.md`/this option's own doc comment in `main.cpp` for how). |
 | `--sc-rate-limit <n>` | `10` | Max NEW inbound BACnet/SC connection *attempts*/second the listener accepts before rejecting the excess - enforced by this example's transport (`sc_transport/ScTransport`), before the TLS handshake. Distinct from `--sc-max-hub-connections`, which bounds *concurrent* connections, not the rate of new attempts - see [Rate-limiting and the audit trail](#rate-limiting-and-the-audit-trail) below. `0` = no limit. |
-| `--dcc-password <string>` | *(none)* | Require this password on DeviceCommunicationControl/ReinitializeDevice requests (`common/` 2.6.0). |
-| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file. |
+| `--http-port <n>` | `8080` | TCP port for `GET /health`, `GET /metrics` and `POST /certs/<slot>`, bound to `127.0.0.1` only - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) and [Certificate upload endpoint](#certificate-upload-endpoint) below. |
+| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `http-port`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file - **except `dcc-password`, which has no CLI flag at all** (see [Secrets handling](#secrets-handling)). |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
+
+There is deliberately **no** `--dcc-password <string>` CLI flag - see
+[Secrets handling](#secrets-handling) below.
+
+### Secrets handling
+
+`dcc-password` (the DeviceCommunicationControl/ReinitializeDevice password -
+see [DeviceCommunicationControl](#devicecommunicationcontrol) below) can be
+set **only** via the `--config` file's `dcc-password` key, never on the
+command line. Earlier batches added a `--dcc-password <string>` CLI flag
+(`common/` 2.6.0's `ParseDccPasswordArg`); this batch **removed it from this
+example** because a command-line argument is visible to any other user/process
+on the same host for the life of the process - `ps aux` / `/proc/<pid>/cmdline`
+on Linux, the Task Manager "Command line" column or `wmic process get
+commandline` on Windows - and typically also lands in shell history. A config
+file is not immune to bad permissions either, which is why this example also
+warns about that:
+
+**File-permission warning.** At `--config` load time, if the file sets a
+non-empty `dcc-password`, the example checks the file's own permissions and
+logs a `Warning` (via `CASExampleHelper::Log`) if it looks readable by more
+than its owner/Administrators:
+
+```
+2026-09-21 19:15:55 [WARNING] config file "test_config_perm.conf" sets a non-empty dcc-password and appears readable by more than its owner/Administrators. Restrict its permissions: Windows - "icacls test_config_perm.conf /inheritance:r /grant:r %USERNAME%:F"; Linux/macOS - "chmod 600 test_config_perm.conf". See README.md "Secrets handling".
+```
+
+This is a **warning, not enforcement** - the device still starts. On
+Linux/macOS the check is exact (the POSIX group/other read/write/execute mode
+bits). On Windows there is no single mode bit to check, so
+`config.cpp`'s `WindowsFileHasBroadAccess()` uses a best-effort heuristic:
+it walks the file's DACL via `GetNamedSecurityInfoA`/`GetAce` and flags an
+`ALLOW` entry for `Everyone`, `Authenticated Users`, or `BUILTIN\Users` as
+"broad", while treating `BUILTIN\Administrators` and `SYSTEM` as trusted. It
+does **not** resolve nested/domain group membership, does not distinguish
+read from write/full access, and does not walk ACEs inherited from a parent
+directory - this is example/tutorial code, not a security product, so a
+best-effort warning is the goal, not bulletproof enforcement. Restrict the
+file yourself:
+
+```powershell
+# Windows - grant only the current user full control, strip inherited ACEs:
+icacls example.conf /inheritance:r /grant:r "$env:USERNAME:F"
+```
+
+```bash
+# Linux/macOS:
+chmod 600 example.conf
+```
 
 ### Configuration file
 
 `--config <path>` points at a small, dependency-free `key = value` text file
 (no third-party INI/YAML/JSON library - see `config.h`) providing DEFAULTS for
 `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`,
-`dcc-password`, `sc-max-hub-connections`, and `sc-rate-limit`. **Precedence is
-CLI args > config file > this example's built-in defaults** - a flag given on
-the command line always wins over the same key in the config file.
+`dcc-password`, `http-port`, `sc-max-hub-connections`, and `sc-rate-limit`.
+**Precedence is CLI args > config file > this example's built-in defaults**
+for every key **except `dcc-password`**, which has no CLI form at all (see
+[Secrets handling](#secrets-handling) above) - the config file is the only
+way to set it.
 
 `example.conf` (checked in, at the repository root) is a commented template
 with every key shown at its built-in default:
@@ -423,6 +475,7 @@ with every key shown at its built-in default:
 # sc-hub-uri =
 # sc-failover-uri =
 # dcc-password =
+# http-port = 8080
 # sc-max-hub-connections = 4
 # sc-rate-limit = 10
 ```
@@ -499,9 +552,111 @@ While the example runs, these keys are available:
 | `q` | Quit. |
 | up arrow | Increase Analog Input 1 (`Bronze`) by 1.1. |
 | down arrow | Decrease Analog Input 1 (`Bronze`) by 1.1. |
+| `m` | Print a health/metrics snapshot to stdout (uptime, BACnet/SC connection count, connect/disconnect/rate-limit counters, RX/TX counters) - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) for the same data over HTTP. Added in `common/` 2.7.0 (`KeyCommand::Metrics`). |
 
 The up/down keys change the live `Present_Value` of the analog input, so a client
-re-reading it sees the new value.
+re-reading it sees the new value. Example `m` output:
+
+```
+--- Health/metrics snapshot -------------------------------------------
+Uptime:                    2m 34s (154 s)
+BACnet/SC hub connections: 1 / 4 (current / --sc-max-hub-connections)
+BACnet/SC connects total:      3
+BACnet/SC disconnects total:   2
+BACnet/SC rate-limit rejects:  0
+BACnet/SC RX: 12 message(s), 456 byte(s)
+BACnet/SC TX: 12 message(s), 456 byte(s)
+------------------------------------------------------------------------
+```
+
+### Health/metrics HTTP endpoint
+
+`GET http://127.0.0.1:<http-port>/health` and `GET .../metrics` (identical -
+two paths for whatever a monitoring tool expects) return the same data as the
+`m` keypress above, as JSON, **with no authentication** - this is a
+deliberate, documented tradeoff: the endpoint is read-only, low-risk, and
+bound to loopback only (see `sc_transport/HttpServer.h`), and a tutorial
+monitoring integration should not need a secret just to poll uptime.
+
+```
+$ curl -s http://127.0.0.1:8080/health
+{"uptime_seconds":154,"uptime":"2m 34s","sc_hub_connections_current":1,"sc_hub_connections_max":4,"sc_total_connects":3,"sc_total_disconnects":2,"sc_rate_limit_rejections":0,"sc_rx_messages":12,"sc_rx_bytes":456,"sc_tx_messages":12,"sc_tx_bytes":456}
+```
+
+JSON (not plain text) was chosen because it is what an actual monitoring
+integration (Prometheus textfile collector, a custom scraper, `jq` in a
+shell script) can consume without inventing a parser - and the format is
+simple enough (flat, numeric/string fields) that hand-built string
+concatenation in `main.cpp`'s `BuildHealthJson()` is clearer than pulling in
+a JSON library for it.
+
+Built on the already-vendored `libwebsockets` (the same library
+`sc_transport/ScTransport` already links for BACnet/SC) via its
+`LWS_CALLBACK_HTTP`/`LWS_CALLBACK_HTTP_WRITEABLE` HTTP-server callbacks - see
+`sc_transport/HttpServer.h`/`.cpp` - specifically so this feature adds no new
+vcpkg dependency. It is a **separate `lws_context`** from the BACnet/SC
+listener (plain HTTP, no TLS, a completely different protocol handler) -
+see `HttpServer.h`'s file header for the full reasoning.
+
+### Certificate upload endpoint
+
+`POST http://127.0.0.1:<http-port>/certs/<slot>` (`<slot>` one of
+`operational`, `csr`, `issuer1`, `issuer2`, mapping to the same
+`hub.crt`/`hub.csr`/`ca.crt`/`ca.crt` files under `--sc-cert-dir` the 4 read-only
+File objects already serve - see [The device this example
+creates](#the-device-this-example-creates)) uploads a replacement
+certificate/CSR without manual file copying - e.g. after an operator gets a
+CSR signed externally and wants to push just the resulting cert onto the
+device.
+
+**This is the highest-risk feature in this batch. Read this whole section
+before using it.**
+
+- **Requires `Authorization: Bearer <dcc-password>`.** A request with no
+  token, or the wrong one, is rejected `401` and logged at `Warning`.
+- **Disabled entirely if `dcc-password` is unset/empty** (the default) -
+  the endpoint refuses every upload with `503` rather than accepting one with
+  no protection. An empty password does **not** mean "no auth required".
+- Bound to `127.0.0.1` only, same listener/port as the health/metrics
+  endpoint above - but the auth requirement does **not** leak between the two
+  routes in either direction: `GET /health`/`GET /metrics` never check the
+  token; `POST /certs/<slot>` always does (or is disabled) regardless of
+  whether `GET` is reachable.
+- **PEM sanity check, not full X.509 validation.** The upload must contain
+  `-----BEGIN CERTIFICATE-----` (or `-----BEGIN CERTIFICATE REQUEST-----` for
+  the `csr` slot) and be 64..65536 bytes. This is **not** a real parse -
+  OpenSSL is already vendored for the SC transport's TLS and could be used
+  for one, but the real trust decision for an uploaded cert is made by the
+  peer's TLS stack at the next handshake anyway (a malformed cert simply
+  fails to work; it does not compromise this device), so this example sticks
+  to a small, easy-to-audit header/size check rather than adding an ASN.1/X.509
+  parser here. Judged, not skipped by oversight - see `sc_transport/HttpServer.cpp`'s
+  `HandlePostBodyComplete` for exactly what is (and isn't) checked.
+- **Atomic write.** The upload is written to a temp file, then renamed over
+  the live target - never a partial/truncating write to the path
+  `CallbackReadFile`/`AtomicReadFile` may be actively serving to a connected
+  peer.
+- Every attempt (success and every rejection reason) is logged via
+  `CASExampleHelper::Log` at `Info`/`Warning`, in the spirit of the
+  connect/disconnect audit trail above.
+
+```bash
+# health/metrics need no token:
+curl http://127.0.0.1:8080/health
+
+# upload a replacement operational certificate (dcc-password must be set):
+curl -X POST -H "Authorization: Bearer $DCC_PASSWORD" \
+     --data-binary @new-hub.crt \
+     http://127.0.0.1:8080/certs/operational
+```
+
+**What is honestly NOT hardened here** (this is lab/tutorial-grade, not a
+production upload path): no rate limiting on upload *attempts* specifically
+(only the BACnet/SC listener has `--sc-rate-limit`), no mutual TLS on the
+HTTP listener itself (it isn't TLS at all - plain HTTP, acceptable only
+because it never leaves `127.0.0.1`), and a bearer token in a header rather
+than a real auth scheme (mTLS, OAuth). See `TODO.md`'s "Genuinely open
+items" for the full list.
 
 ## Verify
 

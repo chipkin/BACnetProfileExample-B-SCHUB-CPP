@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - unreleased
+
+### Added
+
+- **Task 3: read-only health/metrics HTTP endpoint** - `GET
+  http://127.0.0.1:<http-port>/health` and `GET .../metrics` (identical),
+  no authentication, JSON body (uptime, BACnet/SC hub connection count vs
+  `--sc-max-hub-connections`, cumulative connect/disconnect/rate-limit-rejection
+  counters, RX/TX message/byte counters). New `sc_transport/HttpServer.h`/`.cpp`,
+  built on the already-vendored `libwebsockets` HTTP-server callbacks
+  (`LWS_CALLBACK_HTTP`/`LWS_CALLBACK_HTTP_WRITEABLE`/etc.) - no new vcpkg
+  dependency. Bound to `127.0.0.1` only, on a new `--http-port <n>` /
+  config-file `http-port` setting (default `8080`). See README.md
+  "Health/metrics HTTP endpoint".
+- **Task 2: `m` keypress prints the same health/metrics snapshot as plain
+  text** to stdout, using the identical data source (`ScTransport::GetMetrics()`,
+  `main.cpp`'s `BuildHealthJson()`/`PrintHealthSnapshot()`) so the keypress and
+  the HTTP endpoint can never drift apart. `ScTransport` gained cumulative
+  counters (`ScTransportMetrics`: total connects/disconnects, rate-limit
+  rejections, RX/TX messages and bytes) reusing the existing audit-trail
+  (`LWS_CALLBACK_ESTABLISHED`/`CLOSED`) and rate-limiter (`AllowNewConnectionAttempt`)
+  call sites rather than a second bookkeeping scheme. `common/` bumped to
+  2.7.0 for the new `KeyCommand::Metrics` ('m'/'M') enum value - see
+  `common/CHANGELOG.md`.
+- **Task 4: `POST /certs/<slot>` certificate/CSR upload endpoint**
+  (`<slot>`: `operational`, `csr`, `issuer1`, `issuer2`) writes an uploaded
+  file into `--sc-cert-dir`, replacing the corresponding file the 4 read-only
+  File objects already serve. Requires `Authorization: Bearer <dcc-password>`;
+  rejected `401` with no/wrong token; **disabled entirely** (`503`, every
+  attempt logged) if `dcc-password` is unset - an empty password never means
+  "no auth required". PEM-header + size sanity check (not full X.509
+  validation - a deliberate, documented tradeoff, see README.md). Atomic
+  write (temp file + rename) so a peer reading the live file via
+  `AtomicReadFile` mid-upload is never handed a partial write. Every attempt
+  (success and every rejection reason) logged via `CASExampleHelper::Log`.
+  Shares the Task 3 HTTP listener/port, but the auth requirement is a hard
+  branch on HTTP method in `HttpServer::HandleHttp` so it cannot leak between
+  the two routes in either direction. See README.md "Certificate upload
+  endpoint" for the full safety writeup, including what is honestly NOT
+  hardened (no TLS on this listener, no per-upload rate limiting, bearer
+  token rather than mTLS/OAuth) and `TODO.md`'s "Genuinely open items" for
+  the same, tracked.
+
+### Changed
+
+- **Task 1: `--dcc-password <string>` REMOVED from the command line.** The
+  DeviceCommunicationControl password is now settable **only** via the
+  `--config` file's `dcc-password` key - a CLI argument is visible in process
+  listings/shell history on every platform, a real exposure for a secret.
+  `--dcc-password` no longer appears in `--help` output
+  (`CASExampleHelper::HandleHelpAndVersionArgs` gained an optional, default-`true`
+  `showDccPasswordCliOption` parameter in `common/` 2.7.0 - this repo passes
+  `false`; every other example's `--help` is unaffected). An unrecognised
+  `--dcc-password <value>` on this repo's command line is now silently
+  ignored, matching this codebase's existing convention for any unknown flag
+  (no CLI argument parser here treats an unrecognised flag as a hard error).
+  `common/CASExampleHelper::ParseDccPasswordArg()` itself was **kept, not
+  removed**, from `common/` - see `common/CHANGELOG.md`'s 2.7.0 entry for the
+  full reasoning (it was published in `common/` 2.6.0 the same day this
+  decision was made, with no evidence any sibling example repo has adopted it
+  yet, so removing a function the moment after publishing it was judged more
+  invasive than simply not calling it from this one repo).
+- **New: config-file secret-permission warning.** At `--config` load time, if
+  the file sets a non-empty `dcc-password`, `config.cpp` checks the file's
+  own permissions and logs a `Warning` (via `CASExampleHelper::Log`) if it
+  looks readable by more than its owner/Administrators - exact on
+  Linux/macOS (POSIX mode bits), a best-effort DACL heuristic on Windows
+  (`GetNamedSecurityInfoA`/`GetAce`, flags `Everyone`/`Authenticated
+  Users`/`BUILTIN\Users` ALLOW entries). A warning, not enforcement - the
+  device still starts. See README.md "Secrets handling".
+- `example.conf` documents `http-port` and reinforces that `dcc-password` is
+  config-file-only.
+- `APP_VERSION` `1.1.4` -> `1.1.5`.
+
 ## [1.1.4] - unreleased
 
 ### Changed

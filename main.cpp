@@ -128,11 +128,13 @@
                                     // see the top of main() below.
 #include "sc_transport/ScTransport.h"
 #include "sc_transport/ScTransportRouter.h"
+#include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <chrono>
 #include <string>
 #include <sys/stat.h> // stat()/_stat() - File objects' File_Size + Modification_Date (section 2d)
 #include <time.h>     // gmtime() - File objects' Modification_Date
@@ -149,7 +151,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.4";
+static const char* APP_VERSION = "1.1.5";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -204,9 +206,19 @@ static const char* MODEL_NAME = "CAS BACnet Stack Example - B-SCHUB";
 // shipping - note it still crosses the wire in plaintext, so this is a guard
 // against accidents, not a security boundary.
 //
-// Parsed from --dcc-password in main() via CASExampleHelper::ParseDccPasswordArg
-// (common/ 2.6.0) - not a compile-time constant, so it is NOT `static const`
-// like the rest of this identity block; see main()'s CLI-parsing block.
+// SET ONLY VIA THE --config FILE'S "dcc-password" KEY (2026-09 secrets-handling
+// pass, Task 1) - there is deliberately NO "--dcc-password <string>" CLI flag
+// (common/CASExampleHelper::ParseDccPasswordArg still EXISTS in common/ 2.6.0+
+// for any other example that wants a CLI flag; this repo simply stopped
+// calling it for that purpose - see README.md "Secrets handling" for why a
+// CLI argument is a real exposure a config-file key is not: it is visible in
+// process listings/shell history on every platform). Not a compile-time
+// constant, so it is NOT `static const` like the rest of this identity block;
+// see main()'s config-file-loading block, which points this at
+// fileConfig.dccPassword's storage (a local that lives for the rest of
+// main()) when the key is present. This same value doubles as the bearer
+// token POST /certs/<slot> (Task 4) requires - see g_httpServer's Configure
+// call below.
 static const char* g_dccPassword = "";  // default: "" = no password required
 
 // FIRMWARE_REVISION / APPLICATION_SOFTWARE_VERSION - your real versions. Wire
@@ -335,6 +347,20 @@ static std::string g_scHubAcceptUri;
 // another hub (a real one, or a second instance of this same example).
 static std::string g_scHubUri;      // primary hub URI to dial; empty = connector role off
 static std::string g_scFailoverUri; // optional failover hub URI; empty = none configured
+
+// The read-only health/metrics HTTP endpoint (Task 3) and the certificate
+// upload endpoint (Task 4) - both served by g_httpServer below, bound to
+// 127.0.0.1 ONLY (see HttpServer.h's Start()). --http-port / config-file
+// http-port; distinct from --port (BACnet/IP, default 47808) and --sc-port
+// (BACnet/SC, default 47819).
+static uint16_t g_httpPort = 8080;
+static CASSc::HttpServer g_httpServer;
+
+// Process start time (steady clock - immune to wall-clock adjustments),
+// captured at the top of main() - source of the "uptime" field in the
+// health/metrics snapshot (Task 2's 'm' keypress and Task 3's GET
+// /health//metrics).
+static std::chrono::steady_clock::time_point g_startTime;
 
 // The real WebSocket/TLS transport (sc_transport/ScTransport.h) and the glue
 // that dispatches the stack's ReceiveMessageForPort/SendMessageForPort
@@ -1061,6 +1087,127 @@ bool CallbackGenerateBACnetSCCertificateSigningRequest(
 }
 
 // -----------------------------------------------------------------------------
+// 2e. Health/metrics (Task 2's 'm' keypress and Task 3's HTTP endpoint) and
+// the certificate-upload slot table (Task 4's HTTP endpoint). Both reuse
+// existing state: ScCertFileRelativePath (2a-i) for the slot table, and
+// g_scTransport's own counters (ScTransport::GetMetrics(), this batch) for
+// everything BACnet/SC-related - nothing here invents a second bookkeeping
+// scheme.
+// -----------------------------------------------------------------------------
+
+// Maps a cert-upload slot name (POST /certs/<slot>) to the relative filename
+// under --sc-cert-dir it overwrites - the SAME mapping ScCertFileRelativePath
+// (2a-i) already uses for the read-only File objects, just addressed by a
+// short slot name instead of a File object instance (an HTTP client has no
+// reason to know this device's internal object-instance numbering). Returns
+// false for an unrecognised slot.
+static bool ResolveCertUploadSlot(const std::string& slot, std::string* outRelativeFilename) {
+    uint32_t fileInstance;
+    if (slot == "operational") {
+        fileInstance = FILE_OPERATIONAL_CERT_INSTANCE;
+    } else if (slot == "csr") {
+        fileInstance = FILE_CSR_INSTANCE;
+    } else if (slot == "issuer1") {
+        fileInstance = FILE_ISSUER_CERT_1_INSTANCE;
+    } else if (slot == "issuer2") {
+        fileInstance = FILE_ISSUER_CERT_2_INSTANCE;
+    } else {
+        return false;
+    }
+    const char* relative = ScCertFileRelativePath(fileInstance);
+    if (relative == NULL) {
+        return false;
+    }
+    *outRelativeFilename = relative;
+    return true;
+}
+
+// Formats a byte count of elapsed steady-clock time as "NdNNhNNmNNs" (only
+// the units actually needed - no leading "0d0h" for a device that has been up
+// 5 minutes). Shared by the 'm' keypress (plain text) and the HTTP JSON body
+// (as both a human string and a raw seconds count, so a monitoring scraper
+// does not have to parse the string).
+static uint64_t UptimeSeconds() {
+    const auto elapsed = std::chrono::steady_clock::now() - g_startTime;
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
+}
+
+static std::string FormatUptime(const uint64_t totalSeconds) {
+    const uint64_t days = totalSeconds / 86400;
+    const uint64_t hours = (totalSeconds % 86400) / 3600;
+    const uint64_t minutes = (totalSeconds % 3600) / 60;
+    const uint64_t seconds = totalSeconds % 60;
+    char buf[64];
+    if (days > 0) {
+        snprintf(buf, sizeof(buf), "%llud %lluh %llum %llus",
+                 (unsigned long long)days, (unsigned long long)hours,
+                 (unsigned long long)minutes, (unsigned long long)seconds);
+    } else if (hours > 0) {
+        snprintf(buf, sizeof(buf), "%lluh %llum %llus",
+                 (unsigned long long)hours, (unsigned long long)minutes, (unsigned long long)seconds);
+    } else {
+        snprintf(buf, sizeof(buf), "%llum %llus", (unsigned long long)minutes, (unsigned long long)seconds);
+    }
+    return std::string(buf);
+}
+
+// Builds the JSON body served by GET /health and GET /metrics (Task 3) - the
+// SAME data PrintHealthSnapshot() below prints as plain text for the 'm'
+// keypress (Task 2), so the two can never drift apart (both read
+// g_scTransport.GetMetrics() and g_scMaxHubConnections directly, nothing is
+// cached/duplicated). Deliberately plain, hand-built JSON (no third-party
+// JSON library - see this repo's existing "dependency-free where reasonable"
+// pattern, e.g. config.h/config.cpp's own INI-like format) - the shape is
+// simple enough (flat, all-numeric-or-string fields) that string
+// concatenation is clearer here than pulling in a library for it.
+static std::string BuildHealthJson() {
+    const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
+    const uint64_t uptime = UptimeSeconds();
+    char buf[768];
+    snprintf(buf, sizeof(buf),
+        "{"
+        "\"uptime_seconds\":%llu,"
+        "\"uptime\":\"%s\","
+        "\"sc_hub_connections_current\":%zu,"
+        "\"sc_hub_connections_max\":%u,"
+        "\"sc_total_connects\":%llu,"
+        "\"sc_total_disconnects\":%llu,"
+        "\"sc_rate_limit_rejections\":%llu,"
+        "\"sc_rx_messages\":%llu,"
+        "\"sc_rx_bytes\":%llu,"
+        "\"sc_tx_messages\":%llu,"
+        "\"sc_tx_bytes\":%llu"
+        "}",
+        (unsigned long long)uptime, FormatUptime(uptime).c_str(),
+        m.currentPeerCount, (unsigned)g_scMaxHubConnections,
+        (unsigned long long)m.totalConnects, (unsigned long long)m.totalDisconnects,
+        (unsigned long long)m.rateLimitRejections,
+        (unsigned long long)m.rxMessages, (unsigned long long)m.rxBytes,
+        (unsigned long long)m.txMessages, (unsigned long long)m.txBytes);
+    return std::string(buf);
+}
+
+// Plain-text health/metrics snapshot for the 'm' keypress (Task 2) - same
+// fields as BuildHealthJson() above, formatted for a human reading stdout
+// rather than a monitoring scraper.
+static void PrintHealthSnapshot() {
+    const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
+    const uint64_t uptime = UptimeSeconds();
+    printf("--- Health/metrics snapshot -------------------------------------------\n");
+    printf("Uptime:                    %s (%llu s)\n", FormatUptime(uptime).c_str(), (unsigned long long)uptime);
+    printf("BACnet/SC hub connections: %zu / %u (current / --sc-max-hub-connections)\n",
+           m.currentPeerCount, (unsigned)g_scMaxHubConnections);
+    printf("BACnet/SC connects total:      %llu\n", (unsigned long long)m.totalConnects);
+    printf("BACnet/SC disconnects total:   %llu\n", (unsigned long long)m.totalDisconnects);
+    printf("BACnet/SC rate-limit rejects:  %llu\n", (unsigned long long)m.rateLimitRejections);
+    printf("BACnet/SC RX: %llu message(s), %llu byte(s)\n",
+           (unsigned long long)m.rxMessages, (unsigned long long)m.rxBytes);
+    printf("BACnet/SC TX: %llu message(s), %llu byte(s)\n",
+           (unsigned long long)m.txMessages, (unsigned long long)m.txBytes);
+    printf("------------------------------------------------------------------------\n");
+}
+
+// -----------------------------------------------------------------------------
 // 3. main()
 // -----------------------------------------------------------------------------
 // Parse "--sc-port <n>" (1..65535); returns defaultPort if not given/invalid.
@@ -1118,6 +1265,24 @@ static uint16_t ParseScRateLimitArg(const int argc, char** argv, const uint16_t 
     return defaultValue;
 }
 
+// Parse "--http-port <n>" (1..65535); returns defaultPort if not
+// given/invalid. Same pattern as ParseScPortArg above (Task 3/4's health,
+// metrics and cert-upload HTTP endpoint - see g_httpServer).
+static uint16_t ParseHttpPortArg(const int argc, char** argv, const uint16_t defaultPort) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--http-port") == 0) {
+            char* end = NULL;
+            const long value = strtol(argv[i + 1], &end, 10);
+            if (end != argv[i + 1] && *end == '\0' && value > 0 && value <= 65535) {
+                return (uint16_t)value;
+            }
+            printf("Warning: ignoring invalid --http-port \"%s\" (want 1..65535); using %u.\n",
+                   argv[i + 1], (unsigned)defaultPort);
+        }
+    }
+    return defaultPort;
+}
+
 // Parse "--sc-cert-dir <dir>"; returns defaultDir if not given.
 static std::string ParseScCertDirArg(const int argc, char** argv, const std::string& defaultDir) {
     for (int i = 1; i + 1 < argc; ++i) {
@@ -1154,7 +1319,11 @@ int main(int argc, char** argv) {
     }
 
     // --- Command line + version --------------------------------------------
-    if (CASExampleHelper::HandleHelpAndVersionArgs(argc, argv, APP_NAME, APP_VERSION)) {
+    // showDccPasswordCliOption=false (common/ 2.7.0) - this example does NOT
+    // accept --dcc-password on the command line (Task 1: config-file only,
+    // see g_dccPassword's own comment and README.md "Secrets handling").
+    if (CASExampleHelper::HandleHelpAndVersionArgs(argc, argv, APP_NAME, APP_VERSION,
+                                                   /*showDccPasswordCliOption*/ false)) {
         // common/'s --help handler cannot know about this example's BACnet/SC
         // options (see the file header) - print them here too, but only for
         // --help/-h//? (not --version, which HandleHelpAndVersionArgs also
@@ -1182,13 +1351,24 @@ int main(int argc, char** argv) {
                 printf("                      stack). Distinct from --sc-max-hub-connections, which bounds\n");
                 printf("                      CONCURRENT connections, not the rate of new attempts. 0 = no\n");
                 printf("                      limit. Default 10.\n");
+                printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
+                printf("  --http-port <n>     TCP port for the read-only GET /health, GET /metrics and\n");
+                printf("                      POST /certs/<slot> HTTP endpoints, bound to 127.0.0.1 ONLY\n");
+                printf("                      (never exposed off-host by this example). Default 8080.\n");
+                printf("                      GET /health and GET /metrics need no authentication.\n");
+                printf("                      POST /certs/<slot> (slot: operational, csr, issuer1, issuer2)\n");
+                printf("                      requires \"Authorization: Bearer <dcc-password>\" and is\n");
+                printf("                      DISABLED ENTIRELY if dcc-password is not set - see\n");
+                printf("                      README.md \"Certificate upload endpoint\".\n");
                 printf("\nConfig file:\n");
                 printf("  --config <path>     Read defaults for device-id, port, sc-port, sc-cert-dir,\n");
-                printf("                      sc-hub-uri, sc-failover-uri, dcc-password,\n");
+                printf("                      sc-hub-uri, sc-failover-uri, dcc-password, http-port,\n");
                 printf("                      sc-max-hub-connections and sc-rate-limit from a\n");
                 printf("                      \"key = value\" file (see example.conf and README.md\n");
                 printf("                      \"Configuration file\"). Any of those flags given on the\n");
-                printf("                      command line still wins over the config file.\n");
+                printf("                      command line still wins over the config file - EXCEPT\n");
+                printf("                      dcc-password, which has NO command-line flag at all (Task 1:\n");
+                printf("                      see README.md \"Secrets handling\").\n");
                 break;
             }
         }
@@ -1216,12 +1396,14 @@ int main(int argc, char** argv) {
         argc, argv, fileConfig.hasPort ? fileConfig.port : 47808);
     g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(
         argc, argv, fileConfig.hasDeviceId ? fileConfig.deviceId : g_deviceInstance);
-    // fileConfig.dccPassword's storage lives for the rest of main() (a local,
-    // not a temporary), so g_dccPassword pointing into it - same "caller does
-    // not own the returned storage" contract ParseDccPasswordArg's own doc
-    // comment already describes - stays valid for the whole run.
-    g_dccPassword = CASExampleHelper::ParseDccPasswordArg(
-        argc, argv, fileConfig.hasDccPassword ? fileConfig.dccPassword.c_str() : g_dccPassword);
+    // dcc-password: CONFIG FILE ONLY (Task 1) - no CLI flag exists for it at
+    // all (unlike every other setting here, which is CLI > config file >
+    // built-in default). fileConfig.dccPassword's storage lives for the rest
+    // of main() (a local, not a temporary), so g_dccPassword pointing into it
+    // stays valid for the whole run.
+    if (fileConfig.hasDccPassword) {
+        g_dccPassword = fileConfig.dccPassword.c_str();
+    }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
     g_scHubUri = ParseStringArg(argc, argv, "--sc-hub-uri");
@@ -1236,7 +1418,9 @@ int main(int argc, char** argv) {
         argc, argv, fileConfig.hasScMaxHubConnections ? fileConfig.scMaxHubConnections : SC_MAX_HUB_CONNECTIONS_DEFAULT);
     g_scRateLimit = ParseScRateLimitArg(
         argc, argv, fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
+    g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
+    g_startTime = std::chrono::steady_clock::now();
 
     // --- Bind the BACnet/IP socket --------------------------------------------
     // Owned by g_scRouter (sc_transport/ScTransportRouter.h), NOT
@@ -1522,12 +1706,25 @@ int main(int argc, char** argv) {
     // socket" comment above).
     g_scRouter.SendIAm(g_deviceInstance);
 
-    printf("FYI: Device %u (\"%s\") ready. Vendor ID %u. Press 'h' for help.\n",
+    printf("FYI: Device %u (\"%s\") ready. Vendor ID %u. Press 'h' for help, 'm' for a health/metrics snapshot.\n",
            g_deviceInstance, DEVICE_NAME, VENDOR_IDENTIFIER);
     printf("FYI: BACnet/SC hub function is CONFIGURED on Network Port %u "
            "(BACnet SC), accept URI %s. Certificates: %s. See README.md "
            "\"BACnet/SC support\" for how to generate lab test certs.\n",
            SC_NETWORK_PORT_INSTANCE, g_scHubAcceptUri.c_str(), g_scCertDir.c_str());
+
+    // --- Start the HTTP health/metrics + certificate-upload endpoint --------
+    // (Tasks 3/4). Not fatal if this fails to bind (see HttpServer::Start's
+    // own comment) - BACnet/IP and BACnet/SC keep running regardless.
+    {
+        CASSc::HttpServerConfig httpConfig;
+        httpConfig.port = g_httpPort;
+        httpConfig.certDir = g_scCertDir;
+        httpConfig.bearerToken = g_dccPassword;  // Task 4: empty => upload endpoint disabled entirely
+        httpConfig.resolveCertSlot = ResolveCertUploadSlot;
+        httpConfig.buildHealthJson = BuildHealthJson;
+        g_httpServer.Start(httpConfig);
+    }
 
     // --- Run the stack ------------------------------------------------------
     bool running = true;
@@ -1541,6 +1738,7 @@ int main(int argc, char** argv) {
         // BACnetStack_SetBACnetSCWebSocketStatus, safely here in the main loop.
         g_scTransport.Service();
         g_scRouter.DrainStatusEvents();
+        g_httpServer.Service(); // Tasks 3/4 - non-blocking, same mechanism as g_scTransport.Service()
 
         switch (CASExampleHelper::PollKey()) {
             case CASExampleHelper::KeyCommand::Help:
@@ -1557,6 +1755,9 @@ int main(int argc, char** argv) {
                 g_analogInput1Value -= 1.1f;
                 printf("Analog Input 1 (Bronze) = %.1f C\n", g_analogInput1Value);
                 break;
+            case CASExampleHelper::KeyCommand::Metrics:
+                PrintHealthSnapshot();
+                break;
             case CASExampleHelper::KeyCommand::None:
             default:
                 break;
@@ -1570,6 +1771,7 @@ int main(int argc, char** argv) {
     }
 
     CASExampleHelper::RestoreInput();
+    g_httpServer.Stop();
     g_scRouter.Shutdown();
     return 0;
 }

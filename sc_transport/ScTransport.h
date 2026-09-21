@@ -128,6 +128,28 @@ struct ScStatusEvent {
     uint32_t closeCode;  // WebSocket close code if known, else 0
 };
 
+// Cumulative counters for the health/metrics keypress + HTTP endpoint (added
+// this batch) - reuses the audit-trail (connect/disconnect) and rate-limiter
+// bookkeeping this class already had (see LWS_CALLBACK_ESTABLISHED/CLOSED and
+// AllowNewConnectionAttempt() in the .cpp) rather than inventing a parallel
+// counting scheme. All counters are since-process-start; there is no
+// persistence across restarts. currentPeerCount is the live count (listener
+// half only - accepted BACnet/SC peers), directly comparable against
+// main.cpp's g_scMaxHubConnections. rx/tx counters cover BOTH halves
+// (listener peers and any outbound connector connection): a message is
+// counted once it is a complete, reassembled BVLC frame (RX) or once lws has
+// actually written it to the socket (TX) - never a partial fragment.
+struct ScTransportMetrics {
+    uint64_t totalConnects = 0;       // listener half: peers accepted (LWS_CALLBACK_ESTABLISHED) since start
+    uint64_t totalDisconnects = 0;    // listener half: peers closed (LWS_CALLBACK_CLOSED) since start
+    uint64_t rateLimitRejections = 0; // connection attempts rejected by AllowNewConnectionAttempt() since start
+    uint64_t rxMessages = 0;
+    uint64_t rxBytes = 0;
+    uint64_t txMessages = 0;
+    uint64_t txBytes = 0;
+    size_t currentPeerCount = 0;      // live accepted peers right now (listener half)
+};
+
 class ScTransport {
 public:
     ScTransport();
@@ -181,6 +203,12 @@ public:
 
     bool IsListening() const;
     const std::string& ListenUri() const { return m_listenUri; }
+
+    // Snapshot of the cumulative counters above - see ScTransportMetrics'
+    // comment. Cheap (a handful of integer copies plus m_peers.size()); safe
+    // to call every tick (the 'health' keypress) or on every HTTP GET
+    // /health request (Task 3).
+    ScTransportMetrics GetMetrics() const;
 
     // --- Connector (client) half - real in this phase ---------------------
 
@@ -343,6 +371,19 @@ private:
     uint32_t m_maxConnAttemptsPerSecond = 0;
     double m_rateLimitTokens = 0.0;
     std::chrono::steady_clock::time_point m_rateLimitLastRefill;
+
+    // Cumulative metrics counters (Task 2/3, this batch) - see
+    // ScTransportMetrics' comment for what each one means and when it is
+    // incremented (ScTransport.cpp: LWS_CALLBACK_ESTABLISHED/CLOSED,
+    // AllowNewConnectionAttempt(), HandleIncomingFragment(), and the
+    // SERVER_WRITEABLE/CLIENT_WRITEABLE write paths).
+    uint64_t m_totalConnects = 0;
+    uint64_t m_totalDisconnects = 0;
+    uint64_t m_rateLimitRejections = 0;
+    uint64_t m_rxMessages = 0;
+    uint64_t m_rxBytes = 0;
+    uint64_t m_txMessages = 0;
+    uint64_t m_txBytes = 0;
 };
 
 }  // namespace CASSc

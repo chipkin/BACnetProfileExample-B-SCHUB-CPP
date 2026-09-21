@@ -32,21 +32,38 @@ per-field note on each saying what to change it to. That block is the
 authoritative checklist; it is in the source rather than here so it cannot be
 skipped by someone who only reads the code.
 
-**Require a password for DeviceCommunicationControl** - pass `--dcc-password
-<string>` on the command line (parsed by `CASExampleHelper::ParseDccPasswordArg`,
-`common/` 2.6.0, into `main.cpp`'s `g_dccPassword`), or change that variable's
-default in `main.cpp`; the `DeviceCommunicationControl` callback then rejects a
-mismatch with `password-failure` instead of accepting any request.
+**Require a password for DeviceCommunicationControl** - set the `--config`
+file's `dcc-password` key (into `main.cpp`'s `g_dccPassword`), or change that
+variable's compile-time default in `main.cpp`; the `DeviceCommunicationControl`
+callback then rejects a mismatch with `password-failure` instead of accepting
+any request. There is **no** `--dcc-password` command-line flag (removed in
+the 2026-09 secrets-handling pass - a CLI argument is visible in process
+listings/shell history; see README.md "Secrets handling"). If you set a
+non-empty `dcc-password`, restrict the config file's own permissions
+(`icacls`/`chmod 600` - see README.md) - the example warns, but does not
+refuse to start, if it looks group/world-readable. The same value also gates
+the `POST /certs/<slot>` certificate-upload HTTP endpoint - see README.md
+"Certificate upload endpoint".
 
 **Use a config file instead of repeating CLI flags** - `--config <path>` (see
 `config.h`/`config.cpp` and README.md's "Configuration file") reads
 `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`,
-`sc-failover-uri`, `dcc-password`, and `sc-max-hub-connections` from a small
-`key = value` text file. It only ever supplies a DEFAULT: any of those flags
-given directly on the command line still wins. Useful for a lab rig that
+`sc-failover-uri`, `dcc-password`, `http-port`, and `sc-max-hub-connections`
+from a small `key = value` text file. It only ever supplies a DEFAULT: any of
+those flags given directly on the command line still wins (except
+`dcc-password`, which has no CLI form at all). Useful for a lab rig that
 always runs with the same non-default settings (a fixed `--sc-port`, a
 non-default `--deviceID`, ...) without retyping them every run -
 `example.conf` is a ready-to-copy template.
+
+**Check device health without a BACnet client** - press `m` for a
+uptime/connection/RX-TX snapshot on stdout, or `curl
+http://127.0.0.1:8080/health` (no auth needed; `--http-port` to change the
+port) for the same data as JSON. `POST http://127.0.0.1:<http-port>/certs/<slot>`
+uploads a replacement certificate/CSR (bearer-token auth using
+`dcc-password`, disabled entirely if that is unset) - see README.md
+"Health/metrics HTTP endpoint" and "Certificate upload endpoint" for the full
+contract, including what is deliberately NOT hardened about the upload path.
 
 **Limit how many BACnet/SC nodes the hub accepts** - `--sc-max-hub-connections
 <n>` (or the config file's `sc-max-hub-connections` key), default 4. This is
