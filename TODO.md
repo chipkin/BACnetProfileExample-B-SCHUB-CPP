@@ -125,3 +125,12 @@ does not mistake the behaviour for a bug in this example.
    enabling it, since enabling it changes this device's protocol conformance
    posture and is a deployment decision, not a default this tutorial should
    make for the user.
+6. **Implement a bounded transmit queue in `sc_transport/ScTransport`.**
+   Item 8 above documents the gap and the upstream design question
+   ([#2228](https://github.com/chipkin/cas-bacnet-stack/issues/2228)); this
+   is the concrete, example-owned follow-up: bound each connection's transmit
+   queue (a starting point: 64 frames, matching item 8's own estimate) and
+   close the socket on overflow rather than growing the queue unbounded.
+   Not implemented yet - low risk at this example's demo scale
+   (`SC_MAX_HUB_CONNECTIONS = 4`), but a real, scoped task rather than only a
+   documented risk.
