@@ -28,10 +28,8 @@ does not mistake the behaviour for a bug in this example.
    confirms neither is called anywhere in the stack's own source, only from
    the registration function itself. This device's actual (and only)
    certificate policy is the CA-chain check `sc_transport/ScTransport`'s TLS
-   contexts perform. **Stack issue candidate S6** in
-   `docs/bacnet-sc-transport-plan.md`'s "CAS BACnet Stack changes" table -
-   filing an issue on `chipkin/cas-bacnet-stack` needs explicit user
-   permission (outward-facing); draft text is in that table.
+   contexts perform. **Filed:**
+   [chipkin/cas-bacnet-stack#2227](https://github.com/chipkin/cas-bacnet-stack/issues/2227).
 2. **No hostname checking on the connector.** `ScTransport::Connect()` passes
    `LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK` - a deliberate choice, not an
    oversight (BACnet/SC certificates identify devices, not DNS hosts; see
@@ -46,37 +44,39 @@ does not mistake the behaviour for a bug in this example.
    `ReceiveMessageForPort` can hand back; a maximum-size BVLC-SC frame from a
    peer is silently dropped (logged) by `sc_transport/ScTransport`, never
    reaching the stack. Possible B-SCHUB conformance gap in the stack itself -
-   **stack issue candidate S3**. Do not work around this in the transport (it
-   would require guessing at a larger, unsupported buffer contract); report
-   upstream instead.
+   **filed:** [chipkin/cas-bacnet-stack#2225](https://github.com/chipkin/cas-bacnet-stack/issues/2225).
+   Do not work around this in the transport (it would require guessing at a
+   larger, unsupported buffer contract); report upstream instead.
 5. **Outbound SC sites pass the literal `networkPortInstance = 2`
    (`NetworkType_SC`) rather than calling `GetNetworkPortInstanceForSend()`.**
    Harmless in this example specifically because its SC Network Port instance
    *is* 2 (see the `SC_NETWORK_PORT_INSTANCE` constant's own comment in
    `main.cpp`), but it means dispatch-by-instance would silently break for any
-   application whose SC port number differs. **Stack issue candidate S2.**
+   application whose SC port number differs. **Filed:**
+   [chipkin/cas-bacnet-stack#2224](https://github.com/chipkin/cas-bacnet-stack/issues/2224).
 6. **The stack's `SendMessageForPort` doc comment describes the return value
    as a boolean flag; the real SC contract requires returning exactly
    `messageLength`** (confirmed against the 4 call sites in
    `BACnetSCHubFunctionManager.cpp`/`BACnetSCHubConnector_Outgoing.cpp`).
    `ScTransportRouter` already does this correctly - this is a documentation
-   defect in the stack header, not a behavioural gap. **Stack issue candidate
-   S4** (docs-only fix).
+   defect in the stack header, not a behavioural gap. **Filed (docs-only
+   fix):** [chipkin/cas-bacnet-stack#2226](https://github.com/chipkin/cas-bacnet-stack/issues/2226).
 7. **The `<acceptUri>|client=<N>` accepted-peer connection-string convention
    is undocumented** anywhere except one function's behaviour
    (`BACnetDataLinkSC.cpp`'s `DoesConfiguredUriMatch`) and the stack's own
    unit tests. Load-bearing for the listener (`sc_transport/README.md` fact
    2); a future stack pin bump that changes this silently would break every
-   hub host application built on it. **Stack issue candidate S1.**
+   hub host application built on it. **Filed:**
+   [chipkin/cas-bacnet-stack#2223](https://github.com/chipkin/cas-bacnet-stack/issues/2223).
 8. **No backpressure signal in the send contract.** `SendMessageForPort` must
    claim the full `messageLength` at enqueue time; if the socket later fails,
    the already-claimed frame is lost silently. `sc_transport/ScTransport`
    does not yet bound its per-connection transmit queue or close the socket
    on overflow - low risk at this example's demo scale (`SC_MAX_HUB_CONNECTIONS
    = 4`), but a real product built on this pattern should add a bounded queue
-   (e.g. 64 frames) with close-on-overflow. **Stack design question S7** (no
+   (e.g. 64 frames) with close-on-overflow. **Filed as a design question, no
    stack change requested yet - this is squarely an application-layer
-   concern).
+   concern:** [chipkin/cas-bacnet-stack#2228](https://github.com/chipkin/cas-bacnet-stack/issues/2228).
 9. **The stack's own BACnet/SC manual (`docs/CAS BACnet Stack - BACnet SC
    Manual_v6.md`) has at least 5 known errors**: the WebSocket status enum
    values (says `Disconnected=1`; the header says `Disconnected=3` - see fact
@@ -95,10 +95,13 @@ does not mistake the behaviour for a bug in this example.
 1. **Push / PR / merge permission.** This branch
    (`implement-bacnet-sc-transport`) is local-only, as instructed. Nothing in
    this repository has been pushed, no PR opened, no tag created.
-2. **Filing the stack issues above (S1-S4, S6, S7) with Chipkin's
-   `chipkin/cas-bacnet-stack`** - outward-facing, so only with explicit user
-   permission. Draft text for each is in
-   `docs/bacnet-sc-transport-plan.md`'s "CAS BACnet Stack changes" table.
+2. ~~Filing the stack issues above with `chipkin/cas-bacnet-stack`~~ - **done**,
+   2026-09-21: [#2223](https://github.com/chipkin/cas-bacnet-stack/issues/2223),
+   [#2224](https://github.com/chipkin/cas-bacnet-stack/issues/2224),
+   [#2225](https://github.com/chipkin/cas-bacnet-stack/issues/2225),
+   [#2226](https://github.com/chipkin/cas-bacnet-stack/issues/2226),
+   [#2227](https://github.com/chipkin/cas-bacnet-stack/issues/2227),
+   [#2228](https://github.com/chipkin/cas-bacnet-stack/issues/2228).
 3. **CI cache eviction economics.** `.github/workflows/release.yml`'s vcpkg
    binary cache (`actions/cache`, keyed on `vcpkg.json`'s hash) is evicted
    after 7 days of GitHub Actions idling it; since this workflow only runs on
