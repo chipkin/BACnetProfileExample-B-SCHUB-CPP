@@ -418,7 +418,8 @@ void PrintHelp(const char* appName, const char* appVersion) {
     PrintInteractiveCommands();
 }
 
-bool HandleHelpAndVersionArgs(const int argc, char** argv, const char* appName, const char* appVersion) {
+bool HandleHelpAndVersionArgs(const int argc, char** argv, const char* appName, const char* appVersion,
+                              const bool showDccPasswordCliOption) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0 ||
             strcmp(argv[i], "/?") == 0) {
@@ -435,11 +436,13 @@ bool HandleHelpAndVersionArgs(const int argc, char** argv, const char* appName, 
             printf("  --port <n>        BACnet/IP UDP port (1..65535). Default 47808 (0xBAC0).\n");
             printf("                    Use a non-default port to avoid clashing with another\n");
             printf("                    BACnet device already on 47808 on this host.\n");
-            printf("  --dcc-password <string>\n");
-            printf("                    DeviceCommunicationControl password. Default \"\" (no\n");
-            printf("                    password required). Set to require a matching password on\n");
-            printf("                    DeviceCommunicationControl requests - see this example's own\n");
-            printf("                    DeviceCommunicationControl callback for how it is checked.\n");
+            if (showDccPasswordCliOption) {
+                printf("  --dcc-password <string>\n");
+                printf("                    DeviceCommunicationControl password. Default \"\" (no\n");
+                printf("                    password required). Set to require a matching password on\n");
+                printf("                    DeviceCommunicationControl requests - see this example's own\n");
+                printf("                    DeviceCommunicationControl callback for how it is checked.\n");
+            }
             printf("\n");
             PrintInteractiveCommands(); // version banner already printed above
             return true;
@@ -621,6 +624,7 @@ KeyCommand PollKey() {
     if (c == 'w' || c == 'W') return KeyCommand::WriteGroupDemo;
     if (c == 'd' || c == 'D') return KeyCommand::DiscoverRemote;
     if (c == 'r' || c == 'R') return KeyCommand::RouterAnnounce;
+    if (c == 'm' || c == 'M') return KeyCommand::Metrics;
     return KeyCommand::None;
 #else
     EnableRawInput();
@@ -640,6 +644,7 @@ KeyCommand PollKey() {
     if (buf[0] == 'w' || buf[0] == 'W') return KeyCommand::WriteGroupDemo;
     if (buf[0] == 'd' || buf[0] == 'D') return KeyCommand::DiscoverRemote;
     if (buf[0] == 'r' || buf[0] == 'R') return KeyCommand::RouterAnnounce;
+    if (buf[0] == 'm' || buf[0] == 'M') return KeyCommand::Metrics;
     return KeyCommand::None;
 #endif
 }

@@ -12,6 +12,50 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-09-21
+
+### Added
+
+- **`KeyCommand::Metrics` ('m'/'M')** - a generic "print a health/metrics
+  snapshot" interactive key command, added for
+  `BACnetProfileExample-B-SCHUB-CPP`'s health/metrics keypress (this batch's
+  Task 2: uptime, connection counts, rate-limit rejections, RX/TX counters).
+  `'h'`/`'q'`/arrows/`'s'`/`'w'`/`'d'`/`'r'` were already taken (see
+  `KeyCommand`'s own comment), so this is a new enum value, not a repurposed
+  one. `PollKey()` (both the Windows `_kbhit`/`_getch` branch and the POSIX
+  raw-input branch) now recognises `'m'`/`'M'` and returns it. This is a
+  purely additive, backward-compatible enum/switch change - existing
+  `switch (PollKey())` call sites elsewhere in the series that do not handle
+  `Metrics` are unaffected (an unhandled `default:`/no `case` simply does
+  nothing, same as any other key this repo's own `main.cpp` chooses not to
+  act on). Kept generic (not BACnet/SC-specific) so any other example that
+  later tracks its own connection/throughput counters can reuse the same key
+  rather than main.cpp inventing a parallel one.
+
+### Changed
+
+- **`HandleHelpAndVersionArgs()` gains an optional 5th parameter,
+  `showDccPasswordCliOption` (default `true`).** Added so
+  `BACnetProfileExample-B-SCHUB-CPP` can stop advertising `--dcc-password` in
+  its own `--help` output (this batch's Task 1: the CLI form of
+  `--dcc-password` was removed from that repo - config-file only now, since a
+  CLI argument is visible in process listings/shell history) without
+  affecting any other example's `--help` output. This is a **non-breaking**
+  change: every existing 4-argument call site (`HandleHelpAndVersionArgs(argc,
+  argv, APP_NAME, APP_VERSION)`) keeps compiling and keeps printing the
+  `--dcc-password` line exactly as before, because the new parameter defaults
+  to `true`. `ParseDccPasswordArg()` itself is UNCHANGED and NOT removed -
+  see that function's own entry in the 2.6.0 section below; any example
+  (including this one, previously) can still call it directly for a CLI
+  `--dcc-password` flag if it wants one. Evaluated and rejected: removing
+  `ParseDccPasswordArg()` outright, since (a) it was only added in 2.6.0 (this
+  same day) with no evidence any other example in the series has adopted it
+  yet, but (b) removing a just-published shared function the moment after
+  publishing it, rather than simply not using it in this one repo, is more
+  invasive than the problem calls for - see
+  `BACnetProfileExample-B-SCHUB-CPP`'s own `CHANGELOG.md` for the full
+  reasoning.
+
 ## [2.6.0] - 2026-09-21
 
 ### Added

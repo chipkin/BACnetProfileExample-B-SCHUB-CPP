@@ -40,7 +40,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "2.6.0";
+static const char* COMMON_VERSION = "2.7.0";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.
@@ -61,7 +61,20 @@ void PrintHelp(const char* appName, const char* appVersion);
 // Returns true if it printed something and the caller should exit(0); false to
 // carry on starting up. Every example in the series supports --help/--version,
 // so this lives here rather than in each main.cpp.
-bool HandleHelpAndVersionArgs(int argc, char** argv, const char* appName, const char* appVersion);
+//
+// showDccPasswordCliOption (added common/ 2.7.0, default true so every
+// EXISTING call site - one positional argument short - keeps printing the
+// "--dcc-password <string>" line exactly as before): pass false when an
+// example does NOT accept --dcc-password on the command line (e.g.
+// BACnetProfileExample-B-SCHUB-CPP as of its 2026-09 secrets-handling pass,
+// which accepts the DCC password only via its --config file - see that
+// repo's README.md "Configuration file" section for why: a CLI argument is
+// visible in process listings/shell history). This is a non-breaking,
+// default-valued addition - it does not remove ParseDccPasswordArg() (still
+// here, still usable by any example that still wants --dcc-password) or
+// change any existing 4-argument call site's behaviour.
+bool HandleHelpAndVersionArgs(int argc, char** argv, const char* appName, const char* appVersion,
+                              bool showDccPasswordCliOption = true);
 
 // Return the UDP port to use: the value after "--port" if present, else
 // defaultPort. Common to every example.
@@ -222,9 +235,16 @@ enum class KeyCommand {
                    //       triggers it normally
     DiscoverRemote, // 'd' - send a demo SendWhoIs to discover a remote device
                     //       this example writes to or reads from
-    RouterAnnounce  // 'r' - manually (re-)send I-Am-Router-To-Network now, instead
+    RouterAnnounce, // 'r' - manually (re-)send I-Am-Router-To-Network now, instead
                      //       of waiting for the one sent at start-up, so routing
                      //       can be demonstrated on demand
+    Metrics         // 'm' - print a health/metrics snapshot (uptime, connection
+                     //       counts, rate-limit rejections, RX/TX counters, etc.)
+                     //       to stdout. Added in common/ 2.7.0 for
+                     //       BACnetProfileExample-B-SCHUB-CPP's health/metrics
+                     //       keypress (Task 2); generic (not BACnet/SC-specific)
+                     //       so any example that later tracks its own
+                     //       connections/throughput can reuse it the same way.
 };
 
 // Non-blocking: returns a pending key command, or None if nothing was pressed.
