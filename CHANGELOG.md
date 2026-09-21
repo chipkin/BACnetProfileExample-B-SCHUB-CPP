@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - unreleased
+
+### Changed
+
+- **Submodule pin bump**: `submodules/cas-bacnet-stack` moved from `abd4cee1`
+  to `53739153` on `issues/runbook` (fetched fresh and verified via
+  `git show 2021e29f`, the real fix commit; `53739153` is a ledger-only
+  follow-up with no further code changes). Picks up real, verified-fixed
+  upstream behaviour for two issues this example filed:
+  - **[#2224](https://github.com/chipkin/cas-bacnet-stack/issues/2224)** - SC
+    send sites (and, disclosed as scope expansion in the same commit, the
+    equivalent BACnet/IP BBMD/generic-data-link sites) now pass the real
+    `GetNetworkPortInstanceForSend()` value into `SendMessageForPort` instead
+    of the literal `NetworkType_SC` (2) byte that was there before.
+  - **[#2225](https://github.com/chipkin/cas-bacnet-stack/issues/2225)** -
+    `BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH` is now 1600 bytes when
+    `STACK_OPTION_DATA_LINK_LAYER_SC` is compiled in (was 1497, 103 bytes
+    short of Annex AB's 1600-octet minimum BVLC-SC relay size).
+  - `sc_transport/ScTransport.cpp`/`.h`'s own `kMaxIngressBytes` ingress
+    ceiling constant and its surrounding comments were updated from 1497 to
+    1600 bytes to match the new stack constant - this transport still
+    enforces a finite ceiling, just the corrected one.
+  - `sc_transport/README.md` fact 8 and `TODO.md` updated to match (moved
+    #2224/#2225 into a new "Fixed since the last pin" section; #2223/#2226
+    marked partially fixed - SC Manual prose done in the same upstream
+    commit, the `CASBACnetStackDLL.h` header-comment half still
+    needs-human-review upstream; #2227 marked closed as a duplicate, real fix
+    still tracked under the stack's internal #988, not yet done; #2228
+    unchanged - still open, no code expected).
+  - `ScTransportRouter`'s dispatch-by-`networkPortInstance` logic
+    (`sc_transport/ScTransportRouter.cpp`) required **no code change**: this
+    example's `SC_NETWORK_PORT_INSTANCE` is already 2, so the value it
+    received was already correct before the fix (by coincidence - matching
+    the old buggy constant) and remains correct after it (now because the
+    stack genuinely computes the real instance). Verified directly against
+    the post-bump build, no temporary debug code needed:
+    `ScTransportRouter::HandleSendMessage` already logs the
+    `networkPortInstance` it receives on every SC send
+    (`TX N bytes to SC peer "..." (Network Port <networkPortInstance>)`);
+    running `tests/sc/hub_listener_test.py`'s V2 case against the rebuilt
+    `BACnetExampleBSCHUB.exe` produced `TX 34 bytes to SC peer
+    "wss://0.0.0.0:47819/|client=3" (Network Port 2)` - confirming the stack
+    now passes the real Network Port instance (2), not merely "some value".
+  - No `docs/objects.json` changes; `docs/PICS.md` regeneration was skipped
+    accordingly (dependency/bugfix pin bump only, no object-model change).
+
 ## [1.1.3] - unreleased
 
 ### Added

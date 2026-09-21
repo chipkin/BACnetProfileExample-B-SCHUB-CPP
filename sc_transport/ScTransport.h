@@ -51,8 +51,10 @@
 // after a failure is exactly how the stack's retry is expected to work here.
 //
 // INGRESS CEILING (plan fact 8): BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is
-// 1497 bytes. A reassembled WebSocket message larger than that is discarded
-// and logged here - it is never handed to PopReceived()/the stack.
+// 1600 bytes (post cas-bacnet-stack#2225 fix - previously 1497, 103 bytes
+// short of Annex AB's 1600-octet minimum BVLC-SC relay size). A reassembled
+// WebSocket message larger than that is discarded and logged here - it is
+// never handed to PopReceived()/the stack.
 // =============================================================================
 
 #include <chrono>
@@ -249,7 +251,7 @@ private:
         lws* wsi = nullptr;
         std::string connectionString;     // "<acceptUri>|client=N"
         std::vector<uint8_t> rxAssembly;   // in-progress reassembly for this peer
-        bool rxOverflow = false;           // true once rxAssembly exceeded the 1497B ceiling
+        bool rxOverflow = false;           // true once rxAssembly exceeded the 1600B ceiling
         std::deque<std::vector<uint8_t>> txQueue;  // pending frames, each padded with LWS_PRE
         uint16_t lastCloseCode = 0;        // from LWS_CALLBACK_WS_PEER_INITIATED_CLOSE, if any
     };
@@ -292,7 +294,7 @@ private:
     void DestroyClientContext(ClientConnection& conn);
 
     // Shared by LWS_CALLBACK_RECEIVE (server) and LWS_CALLBACK_CLIENT_RECEIVE
-    // (client) - binary-frame enforcement, reassembly and the 1497-byte
+    // (client) - binary-frame enforcement, reassembly and the 1600-byte
     // ingress ceiling are IDENTICAL rules for both roles (plan: "reuse that
     // logic, don't duplicate/diverge it"). `destConnStr` is the bare accept
     // URI for a listener-side frame, or empty for a connector-side one (see

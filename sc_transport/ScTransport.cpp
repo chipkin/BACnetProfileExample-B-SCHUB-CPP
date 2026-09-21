@@ -17,13 +17,19 @@ namespace CASSc {
 namespace {
 
 // BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH from
-// submodules/cas-bacnet-stack/source/BACnetStackConstants.h:330 - a frame the
+// submodules/cas-bacnet-stack/source/BACnetStackConstants.h - a frame the
 // stack could never accept anyway must never be queued for it (plan fact 8).
-// Not #include-d directly: BACnetStackConstants.h is an internal stack header,
-// not part of the public adapter surface this example otherwise depends on;
-// the value is stable (Annex AB's own BVLC size floor) and cross-checked
-// against source on every phase of this plan - see docs/bacnet-sc-transport-plan.md.
-const std::size_t kMaxIngressBytes = 1497;
+// As of the stack pin bump that closed cas-bacnet-stack#2225 (commit 2021e29f,
+// "SC ingress buffer/ceilings now accept a maximum-size Annex AB frame"), this
+// constant is gated on STACK_OPTION_DATA_LINK_LAYER_SC (compiled in for this
+// example) and is now 1600 bytes - reaching ANSI/ASHRAE 135 Annex AB's
+// 1600-octet minimum BVLC-SC relay size exactly (it was previously pinned at
+// 1497, 103 bytes short of that minimum). Not #include-d directly:
+// BACnetStackConstants.h is an internal stack header, not part of the public
+// adapter surface this example otherwise depends on; the value is stable and
+// cross-checked against source on every phase of this plan - see
+// docs/bacnet-sc-transport-plan.md.
+const std::size_t kMaxIngressBytes = 1600;
 
 // A connection is dropped for sending a non-final-fragment frame that alone
 // already exceeds this many header-parse attempts of nonsense... (not used -
@@ -714,9 +720,9 @@ bool ScTransport::HandleIncomingFragment(lws* wsi, const void* in, std::size_t l
     const uint8_t* bytes = static_cast<const uint8_t*>(in);
     if (!*rxOverflow) {
         if (rxAssembly->size() + len > kMaxIngressBytes) {
-            // Plan fact 8: BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is 1497
-            // bytes - a bigger frame is discarded and logged, never handed to
-            // the stack.
+            // Plan fact 8: BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is 1600
+            // bytes (post cas-bacnet-stack#2225 fix) - a bigger frame is
+            // discarded and logged, never handed to the stack.
             *rxOverflow = true;
             rxAssembly->clear();
             fprintf(stderr, "BACnet/SC: discarding oversized frame (> %zu bytes) from \"%s\" - "

@@ -14,12 +14,39 @@ documented limitation of the pinned CAS BACnet Stack build (not a bug in this
 example - listed first) or a genuinely open item for the user to decide on
 (listed second).
 
+## Fixed since the last pin (2026-09-21, `abd4cee1` -> `53739153`)
+
+Verified via `git fetch origin issues/runbook` + `git show 2021e29f` (the real
+fix commit; `53739153` is a ledger-only follow-up, no further code changes) in
+`submodules/cas-bacnet-stack` before bumping the pin. Both are real,
+verified-fixed upstream (8664/8664 tests green per the commit's own report),
+not just closed-without-a-fix:
+
+- **#2224** (SC send sites passed the literal `NetworkType_SC` (2) instead of
+  the real `networkPortInstance` into `SendMessageForPort`) - **CLOSED**,
+  fixed in commit `2021e29f`. The 5 named call sites (plus 8 more the same
+  commit found and disclosed: 7 in `BACnetBBMD.cpp`, 1 in
+  `BACnetDataLink.cpp`) now call `GetNetworkPortInstanceForSend()`. See item 5
+  below (moved out of "known limitations") for what this changes in this
+  repository specifically.
+- **#2225** (SC ingress buffer 103 bytes short of Annex AB's 1600-octet
+  minimum) - **CLOSED**, fixed in the same commit `2021e29f`.
+  `BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH` (`source/BACnetStackConstants.h`)
+  is now gated on `STACK_OPTION_DATA_LINK_LAYER_SC` (compiled in for this
+  example): 1600 bytes when SC is built in (reaching the Annex AB minimum
+  exactly), `BACNET_ENCODED_FRAME_MAX_LENGTH` (1529) otherwise. This
+  repository's own ingress ceiling in `sc_transport/ScTransport.cpp`/`.h`
+  (`kMaxIngressBytes`) has been updated from 1497 to 1600 to match - see
+  `CHANGELOG.md`.
+
 ## Known, documented limitations of the pinned stack build (not bugs here)
 
 These are real gaps, verified absent by reading `submodules/cas-bacnet-stack/source/`
-at the pinned commit (`6.x` @ `abd4cee1`, 6.0.21) - not assumed. Each one is
-called out in `README.md`/`sc_transport/README.md` where relevant so a reader
-does not mistake the behaviour for a bug in this example.
+at the pinned commit (`6.x` @ `abd4cee1` at the time this list was first
+written; the submodule pin is now `53739153`, see "Fixed since the last pin"
+above for what changed) - not assumed. Each one is called out in
+`README.md`/`sc_transport/README.md` where relevant so a reader does not
+mistake the behaviour for a bug in this example.
 
 1. **Certificate validation and CSR-generation callbacks have zero call
    sites.** `RegisterCallbackValidateBACnetSCOperationalCertificate` and
@@ -29,7 +56,9 @@ does not mistake the behaviour for a bug in this example.
    the registration function itself. This device's actual (and only)
    certificate policy is the CA-chain check `sc_transport/ScTransport`'s TLS
    contexts perform. **Filed:**
-   [chipkin/cas-bacnet-stack#2227](https://github.com/chipkin/cas-bacnet-stack/issues/2227).
+   [chipkin/cas-bacnet-stack#2227](https://github.com/chipkin/cas-bacnet-stack/issues/2227) -
+   closed as a **duplicate**; the real wiring is tracked upstream under their
+   internal #988, still **not fixed**. The gap described above is unchanged.
 2. **No hostname checking on the connector.** `ScTransport::Connect()` passes
    `LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK` - a deliberate choice, not an
    oversight (BACnet/SC certificates identify devices, not DNS hosts; see
@@ -38,36 +67,45 @@ does not mistake the behaviour for a bug in this example.
 3. **No CRL support.** Neither this transport nor the pinned stack checks
    certificate revocation lists. A revoked device certificate is still
    accepted as long as it chains to the trusted CA.
-4. **SC ingress ceiling (1497 bytes) is one octet short of Annex AB's
-   1600-octet minimum BVLC size a conformant hub should be able to relay.**
-   `BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH` in the pinned stack caps what
-   `ReceiveMessageForPort` can hand back; a maximum-size BVLC-SC frame from a
-   peer is silently dropped (logged) by `sc_transport/ScTransport`, never
-   reaching the stack. Possible B-SCHUB conformance gap in the stack itself -
-   **filed:** [chipkin/cas-bacnet-stack#2225](https://github.com/chipkin/cas-bacnet-stack/issues/2225).
-   Do not work around this in the transport (it would require guessing at a
-   larger, unsupported buffer contract); report upstream instead.
-5. **Outbound SC sites pass the literal `networkPortInstance = 2`
-   (`NetworkType_SC`) rather than calling `GetNetworkPortInstanceForSend()`.**
-   Harmless in this example specifically because its SC Network Port instance
-   *is* 2 (see the `SC_NETWORK_PORT_INSTANCE` constant's own comment in
-   `main.cpp`), but it means dispatch-by-instance would silently break for any
-   application whose SC port number differs. **Filed:**
-   [chipkin/cas-bacnet-stack#2224](https://github.com/chipkin/cas-bacnet-stack/issues/2224).
+4. ~~SC ingress ceiling short of Annex AB's minimum~~ - **fixed upstream, see
+   "Fixed since the last pin" above** ([#2225](https://github.com/chipkin/cas-bacnet-stack/issues/2225)).
+5. **Outbound SC sites used to pass the literal `networkPortInstance = 2`
+   (`NetworkType_SC`) rather than calling `GetNetworkPortInstanceForSend()`
+   - fixed upstream, see "Fixed since the last pin" above
+   ([#2224](https://github.com/chipkin/cas-bacnet-stack/issues/2224)).** This
+   was always harmless in this example specifically, because its SC Network
+   Port instance *is* 2 (see the `SC_NETWORK_PORT_INSTANCE` constant's own
+   comment in `main.cpp`) - so the value `ScTransportRouter::HandleSendMessage`
+   dispatches on (`sc_transport/ScTransportRouter.cpp`) was already correct
+   before the fix, by coincidence. After the fix it is correct because the
+   stack now genuinely computes and passes the real Network Port instance,
+   not because this example's port number happens to match the old buggy
+   constant. No code change was needed in `ScTransportRouter.cpp` - its
+   dispatch-by-instance logic was verified to still work unchanged (see
+   `CHANGELOG.md` for the `networkPortInstance` debug-log verification done
+   at pin-bump time).
 6. **The stack's `SendMessageForPort` doc comment describes the return value
    as a boolean flag; the real SC contract requires returning exactly
    `messageLength`** (confirmed against the 4 call sites in
    `BACnetSCHubFunctionManager.cpp`/`BACnetSCHubConnector_Outgoing.cpp`).
    `ScTransportRouter` already does this correctly - this is a documentation
    defect in the stack header, not a behavioural gap. **Filed (docs-only
-   fix):** [chipkin/cas-bacnet-stack#2226](https://github.com/chipkin/cas-bacnet-stack/issues/2226).
+   fix):** [chipkin/cas-bacnet-stack#2226](https://github.com/chipkin/cas-bacnet-stack/issues/2226) -
+   **partially fixed**: the SC Manual prose (`docs/CAS BACnet Stack - BACnet
+   SC Manual_v6.md` §18.1) was corrected in commit `2021e29f`; the
+   `CASBACnetStackDLL.h` header-comment half was explicitly routed to
+   needs-human-review (the frozen public interface, out of scope for that
+   resolver session) and is still **not done**.
 7. **The `<acceptUri>|client=<N>` accepted-peer connection-string convention
    is undocumented** anywhere except one function's behaviour
    (`BACnetDataLinkSC.cpp`'s `DoesConfiguredUriMatch`) and the stack's own
    unit tests. Load-bearing for the listener (`sc_transport/README.md` fact
    2); a future stack pin bump that changes this silently would break every
    hub host application built on it. **Filed:**
-   [chipkin/cas-bacnet-stack#2223](https://github.com/chipkin/cas-bacnet-stack/issues/2223).
+   [chipkin/cas-bacnet-stack#2223](https://github.com/chipkin/cas-bacnet-stack/issues/2223) -
+   **partially fixed**: SC Manual §18.3.1 now documents the convention
+   (commit `2021e29f`); the same `CASBACnetStackDLL.h` header-comment half as
+   #2226 above is still **not done** (needs-human-review).
 8. **No backpressure signal in the send contract.** `SendMessageForPort` must
    claim the full `messageLength` at enqueue time; if the socket later fails,
    the already-claimed frame is lost silently. `sc_transport/ScTransport`

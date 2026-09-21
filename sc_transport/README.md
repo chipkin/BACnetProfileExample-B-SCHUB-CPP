@@ -58,10 +58,13 @@ new stack pin, re-verify every one of these against `submodules/cas-bacnet-stack
    that re-entrant call is safe.
 7. **The stack owns every timer** - heartbeat, reconnect, failover. This
    transport never auto-reconnects; it only dials when asked again.
-8. **Ingress ceiling is 1497 bytes** (`BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH`).
-   A larger reassembled WebSocket message is dropped and logged, never handed
-   to the stack. See `TODO.md` for why this is a known stack limitation, not a
-   bug here.
+8. **Ingress ceiling is 1600 bytes** (`BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH`,
+   reaching ANSI/ASHRAE 135 Annex AB's 1600-octet minimum BVLC-SC relay size,
+   as of the pinned stack commit that closed
+   [cas-bacnet-stack#2225](https://github.com/chipkin/cas-bacnet-stack/issues/2225);
+   previously 1497 bytes, 103 short of that minimum). A larger reassembled
+   WebSocket message is dropped and logged, never handed to the stack. See
+   `TODO.md` for the pin history.
 
 ## Certificate policy
 

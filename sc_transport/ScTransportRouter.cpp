@@ -201,7 +201,7 @@ uint16_t ScTransportRouter::ReceiveFromSc(uint8_t* message, const uint16_t maxMe
     }
 
     if (frame.data.size() > maxMessageLength) {
-        // Should not happen - ScTransport already enforces the 1497-byte
+        // Should not happen - ScTransport already enforces the 1600-byte
         // ingress ceiling (plan fact 8) - but never overrun the stack's
         // buffer regardless of why this frame is larger than it expects.
         fprintf(stderr, "BACnet/SC: dropping %zu-byte frame from \"%s\" - exceeds the stack's "
