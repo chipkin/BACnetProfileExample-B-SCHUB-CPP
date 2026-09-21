@@ -435,6 +435,11 @@ bool HandleHelpAndVersionArgs(const int argc, char** argv, const char* appName, 
             printf("  --port <n>        BACnet/IP UDP port (1..65535). Default 47808 (0xBAC0).\n");
             printf("                    Use a non-default port to avoid clashing with another\n");
             printf("                    BACnet device already on 47808 on this host.\n");
+            printf("  --dcc-password <string>\n");
+            printf("                    DeviceCommunicationControl password. Default \"\" (no\n");
+            printf("                    password required). Set to require a matching password on\n");
+            printf("                    DeviceCommunicationControl requests - see this example's own\n");
+            printf("                    DeviceCommunicationControl callback for how it is checked.\n");
             printf("\n");
             PrintInteractiveCommands(); // version banner already printed above
             return true;
@@ -495,6 +500,15 @@ uint32_t ParseDeviceIdArg(const int argc, char** argv, const uint32_t defaultDev
         }
     }
     return defaultDeviceId;
+}
+
+const char* ParseDccPasswordArg(const int argc, char** argv, const char* defaultPassword) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--dcc-password") == 0) {
+            return argv[i + 1]; // argv's own storage outlives main() - safe to return directly
+        }
+    }
+    return defaultPassword;
 }
 
 bool SetupUDP(const uint16_t port, const uint32_t networkPortInstance) {

@@ -12,6 +12,72 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-09-21
+
+### Added
+
+- **`CASExampleLog.h` / `CASExampleLog.cpp` - a minimal, dependency-free
+  structured logging facility.** Every example in the series (this repo
+  included) has always logged via bare `printf()`/`fprintf(stderr, ...)`
+  calls scattered through `main.cpp` and its own transport code - no levels,
+  no timestamps, no way to turn the noise up or down. `CASExampleHelper::Log()`
+  is a drop-in replacement for that pattern, not a new subsystem: no external
+  logging library (just `<cstdio>`/`<cstdarg>`/`<ctime>`, already pulled in
+  elsewhere in `common/`), no file output or rotation (explicitly out of
+  scope for this pass), still stdout/stderr underneath. `LogLevel` -
+  `Debug`/`Info`/`Warning`/`Error` - matches the naming already used for
+  `CASExampleHelper::RestartKind`/`KeyCommand` in this same namespace.
+  `SetLogLevel()`/`GetLogLevel()` give a runtime-configurable minimum
+  (default `Info`, so `Debug` stays silent unless an example opts in) - this
+  is what the rate-limiting/audit-trail work planned for
+  `BACnetProfileExample-B-SCHUB-CPP` will use for verbose diagnostics without
+  spamming normal operation. `Log(level, fmt, ...)` is printf-style
+  (`const char* fmt, ...`) specifically to keep call-site conversions small:
+  an existing `printf("Warning: ...", x)` becomes
+  `CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, "...", x)` and
+  nothing else changes. Each line is `<UTC timestamp> [<LEVEL>] <message>`;
+  the timestamp uses the same `gmtime_s`/`gmtime_r` pattern
+  `BACnetProfileExample-B-SCHUB-CPP`'s own `main.cpp` already uses for its
+  File objects' `Modification_Date` (UTC, not `localtime()`, so a line means
+  the same instant regardless of the host's configured timezone). `Debug`/
+  `Info` go to stdout, `Warning`/`Error` go to stderr, matching the split
+  `sc_transport/ScTransport.cpp`/`ScTransportRouter.cpp` already use for their
+  own `printf` (FYI/status) vs `fprintf(stderr, ...)` (problem) calls.
+  First consumer: `BACnetProfileExample-B-SCHUB-CPP`, which converts 3
+  `main.cpp` call sites (the DeviceCommunicationControl password-failure
+  rejection, the "could not read a local IPv4 address" fallback, and the
+  BACnet/SC hub accept-URI failure) as a proof it compiles and works. This is
+  deliberately NOT a sweep of every `printf`/`fprintf` call in that repo -
+  that is a large, separate, mechanical change with real regression risk
+  (its RX/TX log line format, startup banner, etc. are read, though not
+  matched verbatim, by `tests/sc/*.py`) - left for a later, dedicated pass.
+  Any other example in the series can adopt the facility the same way, at its
+  own pace: a `#include "CASExampleLog.h"` and converting call sites as it
+  goes.
+- **`ParseDccPasswordArg()` - `--dcc-password <string>` as a shared CLI
+  argument.** Every example that implements DM-DCC-B has, until now, hardcoded
+  its DeviceCommunicationControl password at compile time (e.g.
+  `BACnetProfileExample-B-SCHUB-CPP`'s `main.cpp` had
+  `static const char* DCC_PASSWORD = "";`) - there was no way to set or test a
+  non-empty password without rebuilding. `ParseDccPasswordArg(argc, argv,
+  defaultPassword)` follows the exact same shape as `ParsePortArg`/
+  `ParseDeviceIdArg`: scan `argv` for the flag, return the following token if
+  present, else `defaultPassword`. It differs from those two only in return
+  type - `const char*` into `argv`'s own storage, not a parsed numeric value -
+  because a password is carried through verbatim, not converted; `argv`
+  outlives `main()`, so returning a pointer into it is safe, and the contract
+  matches an example's own (now non-`static const`) `DCC_PASSWORD`-equivalent
+  global. Default `""` (no password required) preserves today's behaviour for
+  every example that does not opt in - nothing that does not call this
+  function changes. Added to `HandleHelpAndVersionArgs()`'s `--help` output,
+  in the same option-list style as `--port`/`--deviceID`, so it is
+  discoverable series-wide once adopted. First consumer:
+  `BACnetProfileExample-B-SCHUB-CPP`, which parses it alongside `--port`/
+  `--deviceID` in `main()` and renamed its own constant to `g_dccPassword`
+  (no longer `static const`, since it is now assigned at start-up) feeding the
+  existing `DeviceCommunicationControl` callback's password check - unchanged
+  otherwise.
+
 ## [2.5.0] - 2026-09-15
 
 ### Added

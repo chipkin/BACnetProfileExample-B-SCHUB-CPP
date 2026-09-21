@@ -50,6 +50,17 @@ phase-by-phase verification record this entry summarizes.
   certificate-validation security. AtomicReadFile is now enabled - its own
   confirmed service, not implied by adding a File object. No WriteFile: this
   device stays read-only.
+- **`common/` synced to 2.6.0** (`CASExampleHelper.h`'s `COMMON_VERSION`; see
+  `common/CHANGELOG.md`): a new structured logging facility
+  (`CASExampleLog.h`/`.cpp`, `CASExampleHelper::Log(level, fmt, ...)` with
+  `Debug`/`Info`/`Warning`/`Error` levels and a runtime-configurable minimum)
+  and `CASExampleHelper::ParseDccPasswordArg()` (`--dcc-password <string>`).
+  This repo is the first adopter of both: `main.cpp` converts 3 log call
+  sites (the DeviceCommunicationControl password-failure rejection, the
+  "could not read a local IPv4 address" fallback, and the BACnet/SC hub
+  accept-URI failure) to `CASExampleHelper::Log`, and its DCC password is now
+  parsed from `--dcc-password` (`g_dccPassword`, default `""`) instead of the
+  old hardcoded `static const char* DCC_PASSWORD = "";`.
 - `sc_transport/README.md` - the wire-level transport contract (subprotocol,
   connection-string convention, status enum, send/receive semantics,
   certificate policy) referenced from `main.cpp`'s header and `TUTORIAL.md`.

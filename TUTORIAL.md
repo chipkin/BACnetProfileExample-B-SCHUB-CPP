@@ -32,9 +32,11 @@ per-field note on each saying what to change it to. That block is the
 authoritative checklist; it is in the source rather than here so it cannot be
 skipped by someone who only reads the code.
 
-**Require a password for DeviceCommunicationControl** - set `DCC_PASSWORD` in
-`main.cpp` to a non-empty string; the `DeviceCommunicationControl` callback then
-rejects a mismatch with `password-failure` instead of accepting any request.
+**Require a password for DeviceCommunicationControl** - pass `--dcc-password
+<string>` on the command line (parsed by `CASExampleHelper::ParseDccPasswordArg`,
+`common/` 2.6.0, into `main.cpp`'s `g_dccPassword`), or change that variable's
+default in `main.cpp`; the `DeviceCommunicationControl` callback then rejects a
+mismatch with `password-failure` instead of accepting any request.
 
 ### Implement the BACnet/SC transport for real
 

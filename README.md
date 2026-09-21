@@ -20,7 +20,7 @@ that last part does and does not do in this build.
 
 > **Versions:** this document describes **example v1.1.0**, built and verified
 > against **CAS BACnet Stack 6.0.21** (`6.x` @ `abd4cee1`), at
-> **Protocol_Revision 24**, with the vendored `common/` helper at **v2.5.0**.
+> **Protocol_Revision 24**, with the vendored `common/` helper at **v2.6.0**.
 > Running the example prints all three - if what it prints disagrees with this
 > line, trust the program and check `CHANGELOG.md`.
 
@@ -149,7 +149,8 @@ the re-enable timer; this example's callback (`DeviceCommunicationControl` in
 the callback accepts it, the stack rejects the request with
 `service-request-denied`; the standard now expects `disable-initiation`.
 
-The example ships with **no password** (`DCC_PASSWORD = ""`, accept any request).
+The example ships with **no password** by default (accepts any request) - set
+one at start-up with `--dcc-password <string>` (`common/` 2.6.0).
 
 ## The device this example creates
 
@@ -346,7 +347,7 @@ certificates](#generate-lab-test-certificates) above):
 ```
 BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.0
 CAS BACnet Stack version: 6.0.21.0
-Common helper (common/) version: 2.5.0
+Common helper (common/) version: 2.6.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
 TX 21 bytes to 192.168.3.255:47808 (broadcast) (Network Port 1)
 FYI: Device 389022 ("Rainbow") ready. Vendor ID 389. Press 'h' for help.

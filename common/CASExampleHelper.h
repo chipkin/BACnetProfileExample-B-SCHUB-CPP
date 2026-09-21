@@ -40,7 +40,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "2.5.0";
+static const char* COMMON_VERSION = "2.6.0";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.
@@ -71,6 +71,17 @@ uint16_t ParsePortArg(int argc, char** argv, uint16_t defaultPort);
 // else defaultDeviceId. BACnet requires a device's instance to be configurable.
 // Common to every example.
 uint32_t ParseDeviceIdArg(int argc, char** argv, uint32_t defaultDeviceId);
+
+// Return the DeviceCommunicationControl (and ReinitializeDevice) password to
+// require: the value after "--dcc-password" if present, else defaultPassword.
+// Returns a pointer into argv (the "--dcc-password" case) or defaultPassword
+// itself (the not-given case) - same "caller does not own the returned
+// storage" contract an example already relies on for its own DCC_PASSWORD
+// constant; NOT a callback-owned buffer, so do not free() or modify it.
+// defaultPassword is conventionally "" (no password required, today's
+// behaviour for every example that does not opt in) - see main.cpp's
+// DeviceCommunicationControl callback for how the result is used.
+const char* ParseDccPasswordArg(int argc, char** argv, const char* defaultPassword);
 
 // --- Networking ------------------------------------------------------------
 // Bind the UDP socket used by the CURRENT Network Port instance (the one last

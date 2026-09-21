@@ -117,7 +117,8 @@ Interactive keys while running: `h` help, `q` quit, up/down nudge Analog Input 1
   (BACnet/SC, `Network_Type = secureConnect (11)`, a **local** constant in
   `main.cpp` - not added to `common/`, see below).
 - DeviceCommunicationControl (DM-DCC-B): the stack runs the enable/disable state
-  machine; the `DeviceCommunicationControl` callback just validates `DCC_PASSWORD`
+  machine; the `DeviceCommunicationControl` callback just validates
+  `g_dccPassword` (from `--dcc-password`, `common/` 2.6.0's `ParseDccPasswordArg`)
   and logs. The deprecated plain `disable` (1) is rejected by the stack at
   Protocol_Revision >= 20 - only `enable` (0) and `disable-initiation` (2) apply.
   This callback has no fallback error code: it must set `*errorCode` on every
@@ -161,7 +162,7 @@ There are no unit tests; verification is behavioural:
    `Network_Type` reads back `11` (secureConnect).
 4. **DeviceCommunicationControl**: confirm `disable-initiation` and `enable`
    SimpleACK, the deprecated `disable` is rejected (service-request-denied), and a
-   wrong password (if `DCC_PASSWORD` is set) is rejected (password-failure).
+   wrong password (if `--dcc-password` was given) is rejected (password-failure).
 5. **BACnet/SC**: confirm the SC configuration calls all return success at
    start-up and that the console prints the `CallbackSCStartListening` line
    once, then run `tests/sc/hub_listener_test.py` (listener - always

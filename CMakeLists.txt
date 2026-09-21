@@ -108,6 +108,7 @@ add_subdirectory("${CAS_STACK_DIR}/adapters/cpp" cas-bacnet-stack-adapter)
 # --- The shared example helper ----------------------------------------------
 set(COMMON_SOURCES
     "${EXAMPLES_COMMON_DIR}/CASExampleHelper.cpp"
+    "${EXAMPLES_COMMON_DIR}/CASExampleLog.cpp"
     "${EXAMPLES_COMMON_DIR}/SimpleUDP.cpp")
 
 # --- The executable ---------------------------------------------------------

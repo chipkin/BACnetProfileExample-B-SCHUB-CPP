@@ -120,6 +120,7 @@
 // -----------------------------------------------------------------------------
 
 #include "CASExampleHelper.h"
+#include "CASExampleLog.h"
 #include "CASBACnetStackExampleConstants.h"
 #include "CASBACnetStackAdapter.h" // the CAS BACnet Stack C API (BACnetStack_*); call
                                     // LoadBACnetFunctions() before any BACnetStack_* call -
@@ -196,11 +197,15 @@ static const char* MODEL_NAME = "CAS BACnet Stack Example - B-SCHUB";
 
 // DeviceCommunicationControl password. A management station may include a password
 // with a DeviceCommunicationControl (or ReinitializeDevice) request; the device
-// accepts the command only if it matches. Set to NULL/empty to accept any request
-// (no password required). Change this to your device's secret before shipping -
-// note it still crosses the wire in plaintext, so this is a guard against
-// accidents, not a security boundary.
-static const char* DCC_PASSWORD = "";  // "" = no password required
+// accepts the command only if it matches. Empty ("") accepts any request (no
+// password required). Change the DEFAULT below to your device's secret before
+// shipping - note it still crosses the wire in plaintext, so this is a guard
+// against accidents, not a security boundary.
+//
+// Parsed from --dcc-password in main() via CASExampleHelper::ParseDccPasswordArg
+// (common/ 2.6.0) - not a compile-time constant, so it is NOT `static const`
+// like the rest of this identity block; see main()'s CLI-parsing block.
+static const char* g_dccPassword = "";  // default: "" = no password required
 
 // FIRMWARE_REVISION / APPLICATION_SOFTWARE_VERSION - your real versions. Wire
 // them to your build rather than hard-coding a number that will go stale.
@@ -817,19 +822,20 @@ bool DeviceCommunicationControl(const uint32_t deviceInstance, const uint8_t ena
         return false;
     }
 
-    const size_t requiredLength = strlen(DCC_PASSWORD);
+    const size_t requiredLength = strlen(g_dccPassword);
     if (requiredLength > 0) {
         bool matches = (password != NULL) && (passwordLength == requiredLength);
         if (matches) {
             for (size_t i = 0; i < requiredLength; ++i) {
-                if (password[i] != DCC_PASSWORD[i]) {
+                if (password[i] != g_dccPassword[i]) {
                     matches = false;
                     break;
                 }
             }
         }
         if (!matches) {
-            printf("DeviceCommunicationControl: REJECTED (password failure)\n");
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                                  "DeviceCommunicationControl: REJECTED (password failure)");
             *errorCode = ERROR_CODE_PASSWORD_FAILURE;
             return false;
         }
@@ -1095,6 +1101,7 @@ int main(int argc, char** argv) {
     }
     const uint16_t port = CASExampleHelper::ParsePortArg(argc, argv, 47808);
     g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(argc, argv, g_deviceInstance);
+    g_dccPassword = CASExampleHelper::ParseDccPasswordArg(argc, argv, g_dccPassword);
     g_scPort = ParseScPortArg(argc, argv, g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, g_scCertDir);
     g_scHubUri = ParseStringArg(argc, argv, "--sc-hub-uri");
@@ -1114,8 +1121,9 @@ int main(int argc, char** argv) {
 
     g_bacnetIpUdpPort = port;
     if (!CASExampleHelper::GetLocalIPv4(g_ipAddress, g_ipSubnetMask)) {
-        printf("FYI: could not read a local IPv4 address; Network Port IP_Address "
-               "will report 0.0.0.0.\n");
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "could not read a local IPv4 address; Network Port IP_Address "
+                              "will report 0.0.0.0.");
     }
 
     // --- Configure the BACnet/SC transport -------------------------------------
@@ -1254,7 +1262,9 @@ int main(int argc, char** argv) {
     // doc comment); connectionRole 0 = hub function.
     if (!BACnetStack_AddBACnetSCAcceptUri(g_deviceInstance, SC_NETWORK_PORT_INSTANCE, 0,
                                           g_scHubAcceptUri.c_str(), (uint32_t)g_scHubAcceptUri.size())) {
-        printf("Error: Failed to add the BACnet/SC hub accept URI.\n");
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
+                              "cannot start listening: failed to add the BACnet/SC hub accept URI %s.",
+                              g_scHubAcceptUri.c_str());
         return 1;
     }
     if (!BACnetStack_SetBACnetSCHubFunctionConfig(g_deviceInstance, SC_NETWORK_PORT_INSTANCE,
