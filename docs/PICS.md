@@ -43,20 +43,22 @@ superset of B-GENERAL's, a conformant B-SCHUB device also satisfies
 | BIBB | Description | Notes |
 |---|---|---|
 | DS-RP-B | Data Sharing - ReadProperty - B | |
+| DS-RPM-B | Data Sharing - ReadPropertyMultiple - B | reuses the same per-property Get callbacks as DS-RP-B; no additional application code |
 | DM-DDB-B | Device Management - Dynamic Device Binding - B | |
 | DM-DOB-B | Device Management - Dynamic Object Binding - B | |
 | DM-DCC-B | Device Management - DeviceCommunicationControl - B | |
 | NM-SCH-B | Network - Secure Connect Hub Function - B | protocol and WebSocket/TLS transport both real and verified against real peers - see §9 and [README.md "BACnet/SC support"](../README.md#bacnetsc-support-read-this-first) |
 
 No other BIBBs are supported. In particular this device does **not** support
-DS-WP-B (WriteProperty), DS-RPM-B (ReadPropertyMultiple), DS-COV-B, any alarm
-and event (AE-*) BIBB, scheduling (SCHED-*), or trending (T-*).
+DS-WP-B (WriteProperty), DS-COV-B, any alarm and event (AE-*) BIBB,
+scheduling (SCHED-*), or trending (T-*).
 
 ## 4. Application services supported
 
 | Service | Initiate | Execute |
 |---|:---:|:---:|
 | ReadProperty | no | **yes** |
+| ReadPropertyMultiple | no | **yes** |
 | Who-Is | no | **yes** |
 | I-Am | **yes** | - |
 | Who-Has | no | **yes** |

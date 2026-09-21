@@ -38,6 +38,33 @@ skipped by someone who only reads the code.
 default in `main.cpp`; the `DeviceCommunicationControl` callback then rejects a
 mismatch with `password-failure` instead of accepting any request.
 
+**Use a config file instead of repeating CLI flags** - `--config <path>` (see
+`config.h`/`config.cpp` and README.md's "Configuration file") reads
+`device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`,
+`sc-failover-uri`, `dcc-password`, and `sc-max-hub-connections` from a small
+`key = value` text file. It only ever supplies a DEFAULT: any of those flags
+given directly on the command line still wins. Useful for a lab rig that
+always runs with the same non-default settings (a fixed `--sc-port`, a
+non-default `--deviceID`, ...) without retyping them every run -
+`example.conf` is a ready-to-copy template.
+
+**Limit how many BACnet/SC nodes the hub accepts** - `--sc-max-hub-connections
+<n>` (or the config file's `sc-max-hub-connections` key), default 4. This is
+enforced by the CAS BACnet Stack itself at the BACnet/SC protocol layer (a
+Connect-Request past the limit gets `HubFunctionPeerUpsertResult_TableFull`
+from `BACnetSCHubFunctionManager.cpp`), not merely advisory - but note the
+underlying WebSocket/TLS connection in `sc_transport/ScTransport` still
+completes; it is the BVLC-SC Connect-Request handshake immediately afterward
+that the stack rejects.
+
+**Read multiple properties in one request** - this example enables
+ReadPropertyMultiple (DS-RPM-B) alongside ReadProperty; a client can read
+several properties of the same or different objects in a single
+`ReadPropertyMultiple` PDU instead of one `ReadProperty` per property. No
+extra callback is needed on the application side: the stack resolves each
+requested property through the same `BACnetBusinessLogic::GetProperty` path
+ReadProperty already uses.
+
 ### Implement the BACnet/SC transport for real
 
 Both transport roles are real, compiled, and verified against real peers -

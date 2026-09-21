@@ -182,6 +182,7 @@ still claims exactly one profile.
 | BIBB | Description | Supported |
 |------|-------------|:---------:|
 | DS-RP-B | Data Sharing - ReadProperty - B | ✅ |
+| DS-RPM-B | Data Sharing - ReadPropertyMultiple - B | ✅ |
 | DM-DDB-B | Device Management - Dynamic Device Binding - B | ✅ |
 | DM-DOB-B | Device Management - Dynamic Object Binding - B | ✅ |
 | DM-DCC-B | Device Management - DeviceCommunicationControl - B | ✅ |
@@ -192,6 +193,7 @@ still claims exactly one profile.
 | Service | Notes |
 |---------|-------|
 | ReadProperty | Responds to property reads (DS-RP-B). |
+| ReadPropertyMultiple | Responds to multi-property reads in a single request (DS-RPM-B) - reuses the same per-property callbacks as ReadProperty. |
 | Who-Is / I-Am | Answers Who-Is with I-Am, and broadcasts an I-Am on start-up (DM-DDB-B). |
 | Who-Has / I-Have | Answers Who-Has with I-Have (DM-DOB-B). |
 | DeviceCommunicationControl | Stops/resumes communication, optionally timed/passworded (DM-DCC-B). |
@@ -238,6 +240,9 @@ gates.
 This is a **self-contained** project. It ships:
 
 - `main.cpp` - the example device.
+- `config.h`/`config.cpp` - the `--config <path>` file parser (example-local,
+  not `common/` - see [Configuration file](#configuration-file) above).
+- `example.conf` - a checked-in config-file template.
 - `common/` - the shared helper (UDP, callbacks, CLI, keyboard) vendored in.
 - `sc_transport/` - the real BACnet/SC WebSocket+TLS transport (libwebsockets
   + OpenSSL) and the stack&lt;-&gt;transport glue - see
@@ -390,8 +395,47 @@ firewall. To use a different port, pass `--port` (see below).
 | `--sc-cert-dir <dir>` | `./certs` | Directory holding `hub.crt`/`hub.key`/`ca.crt` (see [Generate lab test certificates](#generate-lab-test-certificates) above). |
 | `--sc-hub-uri <wss://host:port/path>` | *(none)* | Also run the hub **connector** role: dial out to another hub at this URI. Off by default - this hub-only example needs only the listener role above for NM-SCH-B. |
 | `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
+| `--sc-max-hub-connections <n>` | `4` | Max simultaneous inbound BACnet/SC peer connections the hub function accepts - enforced by the stack (see [Configuration file](#configuration-file) and `TODO.md`/this option's own doc comment in `main.cpp` for how). |
+| `--dcc-password <string>` | *(none)* | Require this password on DeviceCommunicationControl/ReinitializeDevice requests (`common/` 2.6.0). |
+| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `sc-max-hub-connections` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file. |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
+
+### Configuration file
+
+`--config <path>` points at a small, dependency-free `key = value` text file
+(no third-party INI/YAML/JSON library - see `config.h`) providing DEFAULTS for
+`device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`,
+`dcc-password`, and `sc-max-hub-connections`. **Precedence is CLI args >
+config file > this example's built-in defaults** - a flag given on the
+command line always wins over the same key in the config file.
+
+`example.conf` (checked in, at the repository root) is a commented template
+with every key shown at its built-in default:
+
+```ini
+# example.conf
+# device-id = 389022
+# port = 47808
+# sc-port = 47819
+# sc-cert-dir = ./certs
+# sc-hub-uri =
+# sc-failover-uri =
+# dcc-password =
+# sc-max-hub-connections = 4
+```
+
+```bash
+./build/BACnetExampleBSCHUB.exe --config example.conf
+# a CLI flag still overrides the config file:
+./build/BACnetExampleBSCHUB.exe --config example.conf --port 47876
+```
+
+Format rules: one `key = value` per line, `#` starts a comment to
+end-of-line, blank lines are ignored, no `[sections]`. An unrecognised key or
+an unparsable numeric value is logged as a warning and skipped - a malformed
+config file never prevents the device from starting (an unopenable `--config`
+*path*, however, is a startup error, since the user explicitly named it).
 
 ### Interactive commands
 

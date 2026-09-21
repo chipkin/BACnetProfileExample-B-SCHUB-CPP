@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - unreleased
+
+### Added
+
+- **DS-RPM-B (ReadPropertyMultiple) support.** `main.cpp` now enables
+  `SERVICE_READ_PROPERTY_MULTIPLE` alongside `SERVICE_READ_PROPERTY` -
+  confirmed by reading `submodules/cas-bacnet-stack/source/BACnetReadPropertyMultipleProcessor.cpp`
+  that RPM resolves every requested property through the same
+  `BACnetBusinessLogic::GetProperty` path single-property ReadProperty uses,
+  so no additional Get callback is needed. Verified with a real
+  `bacpypes3` client issuing a single ReadPropertyMultiple request for the
+  Device object's `Object_Name` + `Vendor_Identifier` in one PDU - see this
+  task's own report / `tests/sc/` for the ad hoc script. `docs/PICS.md` and
+  `README.md`'s BIBB tables updated to claim DS-RPM-B; `docs/PICS.md`'s
+  objects/properties block regenerated with `tools/gen-objects-properties.py`.
+- **`--config <path>` configuration file** (Task 2): a dependency-free,
+  INI-like `key = value` file (`config.h`/`config.cpp`, example-local, not
+  `common/`) providing DEFAULTS for `device-id`, `port`, `sc-port`,
+  `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, and
+  `sc-max-hub-connections`. Precedence is **CLI args > config file > built-in
+  defaults** - each existing `Parse*Arg()` call is handed the config-file
+  value (if present) as its own default, so a CLI flag still wins with no
+  separate override pass. `example.conf` ships as a checked-in template (not
+  gitignored - only `certs/` and build output are). Documented in
+  `README.md` ("Configuration file") and `TUTORIAL.md`.
+- **`--sc-max-hub-connections <n>` runtime setting** (Task 3): the BACnet/SC
+  hub function's max simultaneous inbound peer connections, previously the
+  hardcoded `SC_MAX_HUB_CONNECTIONS = 4` constant. Now `g_scMaxHubConnections`
+  (default `SC_MAX_HUB_CONNECTIONS_DEFAULT = 4`), settable via
+  `--sc-max-hub-connections` or the config file's `sc-max-hub-connections`
+  key (CLI > config > default, same precedence as Task 2), threaded into
+  `BACnetStack_SetBACnetSCHubFunctionConfig`. **Enforcement verified**: the
+  limit is enforced by the CAS BACnet Stack itself, at the BACnet/SC protocol
+  layer (`BACnetSCHubFunctionManager.cpp` rejects a Connect-Request past the
+  configured max with `HubFunctionPeerUpsertResult_TableFull`) - see this
+  task's own report for the exact verification method and its result
+  (including whether it was possible to observe from outside the process).
+
 ## [1.1.1] - unreleased
 
 ### Added

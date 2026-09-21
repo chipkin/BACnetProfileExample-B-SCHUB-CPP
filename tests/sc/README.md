@@ -91,3 +91,22 @@ Checks:
   object at all, so this proves the negative rather than assuming it).
 
 Exit code 0 = every check passed.
+
+## `rpm_test.py` (V7 - ReadPropertyMultiple, DS-RPM-B)
+
+A real BACnet/IP client (`bacpypes3`) - confirms `SERVICE_READ_PROPERTY_MULTIPLE`
+answers a real multi-property request rather than erroring/aborting.
+
+```
+pip install -r tests/sc/requirements.txt
+./build/BACnetExampleBSCHUB.exe --port 47870
+# in a separate terminal:
+python tests/sc/rpm_test.py --target 127.0.0.1 --target-port 47870
+```
+
+Checks: a single `ReadPropertyMultiple` request for the Device object's
+`Object_Name` + `Vendor_Identifier` gets back one `ReadPropertyMultipleACK`
+(not an Error/Reject/Abort) with both properties decoded and correct
+(`Object_Name == "Rainbow"`, `Vendor_Identifier == 389`).
+
+Exit code 0 = every check passed.

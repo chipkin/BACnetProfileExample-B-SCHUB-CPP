@@ -8,6 +8,7 @@
 // device profile with the CAS BACnet Stack:
 //
 //     DS-RP-B   - respond to ReadProperty requests,
+//     DS-RPM-B  - respond to ReadPropertyMultiple requests,
 //     DM-DDB-B  - respond to Who-Is/I-Am (device discovery),
 //     DM-DOB-B  - respond to Who-Has/I-Have (object discovery),
 //     DM-DCC-B  - respond to DeviceCommunicationControl,
@@ -127,6 +128,7 @@
                                     // see the top of main() below.
 #include "sc_transport/ScTransport.h"
 #include "sc_transport/ScTransportRouter.h"
+#include "config.h" // --config <path> support (Task 2) - see config.h
 
 #include <stdio.h>
 #include <string.h>
@@ -147,7 +149,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.1";
+static const char* APP_VERSION = "1.1.2";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -233,7 +235,24 @@ static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 // example needing one extra constant does not justify a common/ change.
 static const uint8_t NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT = 11;
 static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "BACnet SC"
-static const uint16_t SC_MAX_HUB_CONNECTIONS = 4;       // small, demo-sized limit
+
+// The hub function's max simultaneous inbound peer connections - the built-in
+// default (used when neither --sc-max-hub-connections nor a config-file
+// sc-max-hub-connections key is given). Runtime-configurable as of Task 3
+// (previously a hardcoded constant used directly below); see g_scMaxHubConnections
+// and ParseScMaxHubConnectionsArg() below. Enforced by the STACK, not this
+// example: BACnetSCHubFunctionManager.cpp rejects a Connect-Request once
+// m_hubFunctionAcceptedConnections.size() >= maxConnections
+// (HubFunctionPeerUpsertResult_TableFull) - a real BACnet/SC-protocol-level
+// rejection, not merely advisory and not a raw-socket/TCP-level limit (the
+// WebSocket/TLS handshake in sc_transport/ScTransport still completes; the
+// stack rejects at the BVLC-SC Connect-Request step that follows).
+static const uint16_t SC_MAX_HUB_CONNECTIONS_DEFAULT = 4;
+
+// The runtime value actually passed to BACnetStack_SetBACnetSCHubFunctionConfig -
+// see main()'s CLI-parsing block (--sc-max-hub-connections / config-file
+// sc-max-hub-connections; CLI > config file > SC_MAX_HUB_CONNECTIONS_DEFAULT).
+static uint16_t g_scMaxHubConnections = SC_MAX_HUB_CONNECTIONS_DEFAULT;
 
 // The 4 read-only File objects Network Port 2's SC certificate properties point at - see
 // BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
@@ -1040,6 +1059,23 @@ static uint16_t ParseScPortArg(const int argc, char** argv, const uint16_t defau
     return defaultPort;
 }
 
+// Parse "--sc-max-hub-connections <n>" (1..65535); returns defaultValue if not
+// given/invalid. Same pattern as ParseScPortArg above (Task 3).
+static uint16_t ParseScMaxHubConnectionsArg(const int argc, char** argv, const uint16_t defaultValue) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--sc-max-hub-connections") == 0) {
+            char* end = NULL;
+            const long value = strtol(argv[i + 1], &end, 10);
+            if (end != argv[i + 1] && *end == '\0' && value > 0 && value <= 65535) {
+                return (uint16_t)value;
+            }
+            printf("Warning: ignoring invalid --sc-max-hub-connections \"%s\" (want 1..65535); using %u.\n",
+                   argv[i + 1], (unsigned)defaultValue);
+        }
+    }
+    return defaultValue;
+}
+
 // Parse "--sc-cert-dir <dir>"; returns defaultDir if not given.
 static std::string ParseScCertDirArg(const int argc, char** argv, const std::string& defaultDir) {
     for (int i = 1; i + 1 < argc; ++i) {
@@ -1094,18 +1130,61 @@ int main(int argc, char** argv) {
                 printf("  --sc-failover-uri <wss://host:port/path>\n");
                 printf("                      Optional failover hub URI, used only if --sc-hub-uri is\n");
                 printf("                      also given.\n");
+                printf("  --sc-max-hub-connections <n>\n");
+                printf("                      Max simultaneous inbound BACnet/SC peer connections the hub\n");
+                printf("                      function accepts (enforced by the stack). Default 4.\n");
+                printf("\nConfig file:\n");
+                printf("  --config <path>     Read defaults for device-id, port, sc-port, sc-cert-dir,\n");
+                printf("                      sc-hub-uri, sc-failover-uri, dcc-password and\n");
+                printf("                      sc-max-hub-connections from a \"key = value\" file (see\n");
+                printf("                      example.conf and README.md \"Configuration file\"). Any of\n");
+                printf("                      those flags given on the command line still wins over the\n");
+                printf("                      config file.\n");
                 break;
             }
         }
         return 0;
     }
-    const uint16_t port = CASExampleHelper::ParsePortArg(argc, argv, 47808);
-    g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(argc, argv, g_deviceInstance);
-    g_dccPassword = CASExampleHelper::ParseDccPasswordArg(argc, argv, g_dccPassword);
-    g_scPort = ParseScPortArg(argc, argv, g_scPort);
-    g_scCertDir = ParseScCertDirArg(argc, argv, g_scCertDir);
+    // --- Config file (Task 2) ------------------------------------------------
+    // Loaded BEFORE the individual --port/--deviceID/--sc-*/--dcc-password
+    // flags below, precisely so each of those Parse*Arg() calls can be handed
+    // the config-file value (if any) as ITS default: those functions already
+    // prefer a CLI flag over the default they're given, so this gets CLI args
+    // > config file > this example's own built-in defaults "for free", with no
+    // separate override pass. See config.h for the file format.
+    ExampleConfig fileConfig;
+    {
+        const std::string configPath = ParseConfigPathArg(argc, argv);
+        if (!configPath.empty()) {
+            if (!LoadExampleConfig(configPath, &fileConfig)) {
+                fprintf(stderr, "Error: could not open --config file \"%s\".\n", configPath.c_str());
+                return 1;
+            }
+        }
+    }
+
+    const uint16_t port = CASExampleHelper::ParsePortArg(
+        argc, argv, fileConfig.hasPort ? fileConfig.port : 47808);
+    g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(
+        argc, argv, fileConfig.hasDeviceId ? fileConfig.deviceId : g_deviceInstance);
+    // fileConfig.dccPassword's storage lives for the rest of main() (a local,
+    // not a temporary), so g_dccPassword pointing into it - same "caller does
+    // not own the returned storage" contract ParseDccPasswordArg's own doc
+    // comment already describes - stays valid for the whole run.
+    g_dccPassword = CASExampleHelper::ParseDccPasswordArg(
+        argc, argv, fileConfig.hasDccPassword ? fileConfig.dccPassword.c_str() : g_dccPassword);
+    g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
+    g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
     g_scHubUri = ParseStringArg(argc, argv, "--sc-hub-uri");
+    if (g_scHubUri.empty() && fileConfig.hasScHubUri) {
+        g_scHubUri = fileConfig.scHubUri;
+    }
     g_scFailoverUri = ParseStringArg(argc, argv, "--sc-failover-uri");
+    if (g_scFailoverUri.empty() && fileConfig.hasScFailoverUri) {
+        g_scFailoverUri = fileConfig.scFailoverUri;
+    }
+    g_scMaxHubConnections = ParseScMaxHubConnectionsArg(
+        argc, argv, fileConfig.hasScMaxHubConnections ? fileConfig.scMaxHubConnections : SC_MAX_HUB_CONNECTIONS_DEFAULT);
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
 
     // --- Bind the BACnet/IP socket --------------------------------------------
@@ -1177,13 +1256,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Enable the services this B-SCHUB profile requires: ReadProperty (DS-RP-B)
-    // and DeviceCommunicationControl (DM-DCC-B). We deliberately do NOT enable
-    // WriteProperty, ReadPropertyMultiple, SubscribeCOV, or any alarm/event
-    // service - a BACnet/SC Hub does not require them, so a faithful B-SCHUB
-    // example leaves them off.
+    // Enable the services this B-SCHUB profile requires: ReadProperty (DS-RP-B),
+    // ReadPropertyMultiple (DS-RPM-B), and DeviceCommunicationControl (DM-DCC-B).
+    // We deliberately do NOT enable WriteProperty, SubscribeCOV, or any
+    // alarm/event service - a BACnet/SC Hub does not require them, so a
+    // faithful B-SCHUB example leaves them off.
     if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_READ_PROPERTY, true)) {
         printf("Error: Failed to enable the ReadProperty service.\n");
+        return 1;
+    }
+    // ReadPropertyMultiple (DS-RPM-B) - reuses the SAME per-property Get
+    // callbacks already registered above for ReadProperty (confirmed by
+    // reading submodules/cas-bacnet-stack/source/BACnetReadPropertyMultipleProcessor.cpp:
+    // it resolves each requested property through BACnetBusinessLogic::GetProperty,
+    // the identical path BACnetReadPropertyProcessor.cpp uses for single-property
+    // ReadProperty). No additional callback registration is needed for RPM.
+    if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_READ_PROPERTY_MULTIPLE, true)) {
+        printf("Error: Failed to enable the ReadPropertyMultiple service.\n");
         return 1;
     }
     if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_DEVICE_COMMUNICATION_CONTROL, true)) {
@@ -1268,7 +1357,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (!BACnetStack_SetBACnetSCHubFunctionConfig(g_deviceInstance, SC_NETWORK_PORT_INSTANCE,
-                                                  true, SC_MAX_HUB_CONNECTIONS)) {
+                                                  true, g_scMaxHubConnections)) {
         printf("Error: Failed to enable the BACnet/SC hub function.\n");
         return 1;
     }
