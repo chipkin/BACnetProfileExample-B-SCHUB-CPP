@@ -396,8 +396,9 @@ firewall. To use a different port, pass `--port` (see below).
 | `--sc-hub-uri <wss://host:port/path>` | *(none)* | Also run the hub **connector** role: dial out to another hub at this URI. Off by default - this hub-only example needs only the listener role above for NM-SCH-B. |
 | `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
 | `--sc-max-hub-connections <n>` | `4` | Max simultaneous inbound BACnet/SC peer connections the hub function accepts - enforced by the stack (see [Configuration file](#configuration-file) and `TODO.md`/this option's own doc comment in `main.cpp` for how). |
+| `--sc-rate-limit <n>` | `10` | Max NEW inbound BACnet/SC connection *attempts*/second the listener accepts before rejecting the excess - enforced by this example's transport (`sc_transport/ScTransport`), before the TLS handshake. Distinct from `--sc-max-hub-connections`, which bounds *concurrent* connections, not the rate of new attempts - see [Rate-limiting and the audit trail](#rate-limiting-and-the-audit-trail) below. `0` = no limit. |
 | `--dcc-password <string>` | *(none)* | Require this password on DeviceCommunicationControl/ReinitializeDevice requests (`common/` 2.6.0). |
-| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `sc-max-hub-connections` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file. |
+| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file. |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
 
@@ -406,9 +407,9 @@ firewall. To use a different port, pass `--port` (see below).
 `--config <path>` points at a small, dependency-free `key = value` text file
 (no third-party INI/YAML/JSON library - see `config.h`) providing DEFAULTS for
 `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`,
-`dcc-password`, and `sc-max-hub-connections`. **Precedence is CLI args >
-config file > this example's built-in defaults** - a flag given on the
-command line always wins over the same key in the config file.
+`dcc-password`, `sc-max-hub-connections`, and `sc-rate-limit`. **Precedence is
+CLI args > config file > this example's built-in defaults** - a flag given on
+the command line always wins over the same key in the config file.
 
 `example.conf` (checked in, at the repository root) is a commented template
 with every key shown at its built-in default:
@@ -423,6 +424,7 @@ with every key shown at its built-in default:
 # sc-failover-uri =
 # dcc-password =
 # sc-max-hub-connections = 4
+# sc-rate-limit = 10
 ```
 
 ```bash
@@ -436,6 +438,56 @@ end-of-line, blank lines are ignored, no `[sections]`. An unrecognised key or
 an unparsable numeric value is logged as a warning and skipped - a malformed
 config file never prevents the device from starting (an unopenable `--config`
 *path*, however, is a startup error, since the user explicitly named it).
+
+### Rate-limiting and the audit trail
+
+Two operational-hardening features for the hub-function listener, added in
+the same batch:
+
+**Connect/disconnect audit trail.** Every accepted BACnet/SC peer connection
+logs when it connects and disconnects, via the `common/CASExampleLog.h`
+facility at `Info` level (visible on stdout by default), in a
+grep/pipe-friendly format:
+
+```
+2026-09-21 18:15:33 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" connected
+2026-09-21 18:15:36 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" disconnected (closeCode=1000)
+```
+
+The identifier is the accepted-peer connection string
+(`"<acceptUri>|client=<N>"`) - the same identifier `sc_transport/ScTransport`
+already uses as this peer's BACnet/SC source address for the rest of the
+connection's life. A BACnet/SC VMAC/UUID is **not** available at this point:
+that identity is only established once the stack completes its own
+Connect-Request/Accept exchange over the socket (data this transport layer
+relays but does not parse), so using it here would mean inventing/guessing an
+identifier rather than reporting one this layer genuinely has - see
+`sc_transport/ScTransport.cpp`'s `LWS_CALLBACK_ESTABLISHED`/`LWS_CALLBACK_CLOSED`
+cases. `CASExampleHelper::Log` already prefixes every line with a UTC
+timestamp, so the audit lines do not duplicate one of their own.
+
+**`--sc-rate-limit <n>`** bounds how fast the listener accepts *new
+connection attempts* - a token bucket (burst capacity = `n`, refilling at `n`
+tokens/second), checked in `ScTransport::HandleServerCallback`'s
+`LWS_CALLBACK_FILTER_NETWORK_CONNECTION` case - the earliest point lws offers
+a hook, firing at raw-socket accept() time, **before** the TLS handshake
+starts. An attempt beyond the limit is refused immediately (no TLS/WebSocket
+resources spent) and logged at `Warning`:
+
+```
+2026-09-21 18:15:57 [WARNING] SC rate limit: rejecting new connection attempt on wss://0.0.0.0:47819/ - more than 3 attempt(s)/sec (rejected before TLS handshake; see --sc-rate-limit)
+```
+
+This is deliberately a *different* control from `--sc-max-hub-connections`:
+that one bounds *concurrent* BACnet/SC-protocol-level connections (enforced
+by the stack, after a full TLS handshake); `--sc-rate-limit` bounds the
+*rate* of new attempts (enforced by this example's transport, before TLS).
+Default `10`/sec is generous - a real reconnect storm from this example's own
+demo peers is nowhere near that rate - so it only bites under an actual flood.
+`0` disables it (the pre-existing, unbounded behaviour). See
+`sc_transport/ScTransport.h`'s `SetMaxConnectionAttemptsPerSecond` doc comment
+for the token-bucket algorithm, and `TODO.md` for its known limitation (the
+bucket is per-process/in-memory, not per-source-IP - see that entry for why).
 
 ### Interactive commands
 

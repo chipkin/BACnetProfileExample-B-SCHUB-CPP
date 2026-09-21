@@ -149,7 +149,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.2";
+static const char* APP_VERSION = "1.1.3";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -253,6 +253,28 @@ static const uint16_t SC_MAX_HUB_CONNECTIONS_DEFAULT = 4;
 // see main()'s CLI-parsing block (--sc-max-hub-connections / config-file
 // sc-max-hub-connections; CLI > config file > SC_MAX_HUB_CONNECTIONS_DEFAULT).
 static uint16_t g_scMaxHubConnections = SC_MAX_HUB_CONNECTIONS_DEFAULT;
+
+// The hub function's max NEW inbound connection ATTEMPTS/second (this batch's
+// Task 2) - distinct from SC_MAX_HUB_CONNECTIONS_DEFAULT above, which bounds
+// CONCURRENT connections at the BACnet/SC protocol level. This one bounds
+// how fast an attacker (or a misbehaving/flapping peer) can make the hub
+// spend raw-socket/TLS resources, enforced by
+// sc_transport/ScTransport::AllowNewConnectionAttempt() at
+// LWS_CALLBACK_FILTER_NETWORK_CONNECTION - before the TLS handshake even
+// starts (see that method's comment). 10/sec is a generous default: a real
+// reconnect storm from this example's own handful of demo peers is nowhere
+// near this rate (BACnetSCCli.exe's own reconnect backoff is on the order of
+// seconds, not sub-100ms), so this default only bites under an actual flood,
+// never normal reconnect churn. Runtime-configurable the same way as
+// SC_MAX_HUB_CONNECTIONS_DEFAULT above - see g_scRateLimit and
+// ParseScRateLimitArg() below.
+static const uint16_t SC_RATE_LIMIT_DEFAULT = 10;
+
+// The runtime value actually passed to
+// ScTransport::SetMaxConnectionAttemptsPerSecond() - see main()'s
+// CLI-parsing block (--sc-rate-limit / config-file sc-rate-limit; CLI >
+// config file > SC_RATE_LIMIT_DEFAULT). 0 means "no limit".
+static uint16_t g_scRateLimit = SC_RATE_LIMIT_DEFAULT;
 
 // The 4 read-only File objects Network Port 2's SC certificate properties point at - see
 // BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
@@ -1076,6 +1098,26 @@ static uint16_t ParseScMaxHubConnectionsArg(const int argc, char** argv, const u
     return defaultValue;
 }
 
+// Parse "--sc-rate-limit <n>" (0..65535; 0 = no limit); returns defaultValue
+// if not given/invalid. Same pattern as ParseScMaxHubConnectionsArg above
+// (Task 2), except 0 is a valid, meaningful value here (see g_scRateLimit's
+// comment) so the lower bound check is ">= 0" (i.e. no lower bound at all)
+// rather than "> 0".
+static uint16_t ParseScRateLimitArg(const int argc, char** argv, const uint16_t defaultValue) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--sc-rate-limit") == 0) {
+            char* end = NULL;
+            const long value = strtol(argv[i + 1], &end, 10);
+            if (end != argv[i + 1] && *end == '\0' && value >= 0 && value <= 65535) {
+                return (uint16_t)value;
+            }
+            printf("Warning: ignoring invalid --sc-rate-limit \"%s\" (want 0..65535); using %u.\n",
+                   argv[i + 1], (unsigned)defaultValue);
+        }
+    }
+    return defaultValue;
+}
+
 // Parse "--sc-cert-dir <dir>"; returns defaultDir if not given.
 static std::string ParseScCertDirArg(const int argc, char** argv, const std::string& defaultDir) {
     for (int i = 1; i + 1 < argc; ++i) {
@@ -1133,13 +1175,20 @@ int main(int argc, char** argv) {
                 printf("  --sc-max-hub-connections <n>\n");
                 printf("                      Max simultaneous inbound BACnet/SC peer connections the hub\n");
                 printf("                      function accepts (enforced by the stack). Default 4.\n");
+                printf("  --sc-rate-limit <n>\n");
+                printf("                      Max NEW inbound BACnet/SC connection ATTEMPTS/second the\n");
+                printf("                      listener accepts before rejecting the excess (before the TLS\n");
+                printf("                      handshake - enforced by this example's transport, not the\n");
+                printf("                      stack). Distinct from --sc-max-hub-connections, which bounds\n");
+                printf("                      CONCURRENT connections, not the rate of new attempts. 0 = no\n");
+                printf("                      limit. Default 10.\n");
                 printf("\nConfig file:\n");
                 printf("  --config <path>     Read defaults for device-id, port, sc-port, sc-cert-dir,\n");
-                printf("                      sc-hub-uri, sc-failover-uri, dcc-password and\n");
-                printf("                      sc-max-hub-connections from a \"key = value\" file (see\n");
-                printf("                      example.conf and README.md \"Configuration file\"). Any of\n");
-                printf("                      those flags given on the command line still wins over the\n");
-                printf("                      config file.\n");
+                printf("                      sc-hub-uri, sc-failover-uri, dcc-password,\n");
+                printf("                      sc-max-hub-connections and sc-rate-limit from a\n");
+                printf("                      \"key = value\" file (see example.conf and README.md\n");
+                printf("                      \"Configuration file\"). Any of those flags given on the\n");
+                printf("                      command line still wins over the config file.\n");
                 break;
             }
         }
@@ -1185,6 +1234,8 @@ int main(int argc, char** argv) {
     }
     g_scMaxHubConnections = ParseScMaxHubConnectionsArg(
         argc, argv, fileConfig.hasScMaxHubConnections ? fileConfig.scMaxHubConnections : SC_MAX_HUB_CONNECTIONS_DEFAULT);
+    g_scRateLimit = ParseScRateLimitArg(
+        argc, argv, fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
 
     // --- Bind the BACnet/IP socket --------------------------------------------
@@ -1215,6 +1266,11 @@ int main(int argc, char** argv) {
         tls.certPath = g_scCertDir + "/hub.crt";
         tls.keyPath = g_scCertDir + "/hub.key";
         g_scTransport.Configure(tls, "hub.bsc.bacnet.org"); // plan fact 1 - NOT "hub.bacnet.org"
+        // Task 2: bound how fast the listener accepts new connection
+        // ATTEMPTS - see g_scRateLimit's comment and
+        // ScTransport::SetMaxConnectionAttemptsPerSecond's header comment for
+        // why this is separate from g_scMaxHubConnections (below).
+        g_scTransport.SetMaxConnectionAttemptsPerSecond(g_scRateLimit);
     }
 
     // --- Register callbacks ---------------------------------------------------

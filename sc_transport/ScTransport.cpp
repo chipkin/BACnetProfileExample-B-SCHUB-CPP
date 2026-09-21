@@ -3,6 +3,8 @@
 // Implementation of ScTransport. See ScTransport.h for the contract.
 #include "ScTransport.h"
 
+#include "CASExampleLog.h"
+
 #include <libwebsockets.h>
 #include <openssl/ssl.h>  // SSL_OP_NO_TLSv1* - TLS 1.3-only restriction
 
@@ -169,6 +171,35 @@ void ScTransport::Configure(const ScTlsFiles& tls, const std::string& acceptSubp
     // the header's comment on m_protocolNameStorage.
     m_protocolNameStorage = acceptSubprotocol;
     m_configured = true;
+}
+
+void ScTransport::SetMaxConnectionAttemptsPerSecond(const uint32_t perSecond) {
+    m_maxConnAttemptsPerSecond = perSecond;
+    // Start the bucket full (burst up to the configured rate is allowed
+    // immediately, e.g. right after startup) - see the header comment.
+    m_rateLimitTokens = static_cast<double>(perSecond);
+    m_rateLimitLastRefill = std::chrono::steady_clock::now();
+}
+
+bool ScTransport::AllowNewConnectionAttempt() {
+    if (m_maxConnAttemptsPerSecond == 0) {
+        return true;  // rate-limiting disabled
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsedSeconds = std::chrono::duration<double>(now - m_rateLimitLastRefill).count();
+    m_rateLimitLastRefill = now;
+    const double capacity = static_cast<double>(m_maxConnAttemptsPerSecond);
+    const double refilled = m_rateLimitTokens + elapsedSeconds * capacity;
+    // NOT std::min() here: this translation unit includes <windows.h>
+    // (transitively, via libwebsockets.h) without NOMINMAX, which #defines
+    // min/max as function-like macros that shadow std::min/std::max - a
+    // well-known Windows.h footgun. A plain comparison sidesteps it entirely.
+    m_rateLimitTokens = (refilled < capacity) ? refilled : capacity;
+    if (m_rateLimitTokens >= 1.0) {
+        m_rateLimitTokens -= 1.0;
+        return true;
+    }
+    return false;
 }
 
 void ScTransport::LogListenFailureOnce(const std::string& reason) {
@@ -526,6 +557,28 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
     const lws_callback_reasons reason = static_cast<lws_callback_reasons>(reasonInt);
 
     switch (reason) {
+        case LWS_CALLBACK_FILTER_NETWORK_CONNECTION: {
+            // Fires at raw-socket accept() time, BEFORE TLS negotiation and
+            // before any BACnet/SC-specific state exists for this connection
+            // (lws's own doc comment: "wsi still pointing to the main server
+            // socket" - there is no PeerConnection/connection string yet, and
+            // won't be one if this rejects). This is the earliest, cheapest
+            // point this transport can gate a flood of connection attempts -
+            // see ScTransport::SetMaxConnectionAttemptsPerSecond's header
+            // comment for why this is a separate control from
+            // sc-max-hub-connections. Returning non-zero here makes lws hang
+            // up immediately, before sending or receiving anything - no TLS
+            // handshake CPU/memory is spent on a rejected attempt.
+            if (!AllowNewConnectionAttempt()) {
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                    "SC rate limit: rejecting new connection attempt on %s - more than %u attempt(s)/sec "
+                    "(rejected before TLS handshake; see --sc-rate-limit)",
+                    m_listenUri.c_str(), (unsigned)m_maxConnAttemptsPerSecond);
+                return -1;
+            }
+            break;
+        }
+
         case LWS_CALLBACK_ESTABLISHED: {
             // Verify the client actually asked for our subprotocol ourselves -
             // see SubprotocolListContains's comment for why this is not left to
@@ -548,6 +601,21 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             peer.connectionString = connStr;
             m_connStringToWsi[connStr] = wsi;
             printf("BACnet/SC: accepted WebSocket connection - peer=\"%s\"\n", connStr.c_str());
+            // Audit trail (Task 1): the accepted-peer connection string
+            // ("<acceptUri>|client=N") is the identity this transport layer
+            // actually has at this point - it is the SAME identifier the
+            // stack will use as this peer's BACnet/SC source address for the
+            // rest of the connection's life (plan fact 2). A BACnet/SC VMAC/
+            // UUID is NOT available here: that identity is only established
+            // once the stack completes its own Connect-Request/Accept
+            // exchange over this socket (ordinary RX data, handled below,
+            // processed by the stack - not visible to this transport) - see
+            // ScStatusEvent's header comment and TODO.md for this documented
+            // boundary. CASExampleHelper::Log already prefixes every line
+            // with a UTC timestamp (common/CASExampleLog.cpp), which is the
+            // "<UTC timestamp>" this audit line needs - not duplicated here.
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                "SC audit: peer \"%s\" connected", connStr.c_str());
             // Deliberately NOT queuing a Connected(2) status event here - see
             // ScStatusEvent's doc comment and plan open risk #7: an accepted
             // socket is not yet a BACnet/SC "connection" until the stack's own
@@ -614,6 +682,11 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 m_statusQueue.push_back(evt);
                 printf("BACnet/SC: peer \"%s\" disconnected (status=%u closeCode=%u)\n",
                        peer->connectionString.c_str(), (unsigned)status, (unsigned)peer->lastCloseCode);
+                // Audit trail (Task 1) - same identity/timestamp rationale as
+                // the "connected" line above.
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                    "SC audit: peer \"%s\" disconnected (closeCode=%u)",
+                    peer->connectionString.c_str(), (unsigned)peer->lastCloseCode);
                 m_connStringToWsi.erase(peer->connectionString);
                 m_peers.erase(wsi);
             }

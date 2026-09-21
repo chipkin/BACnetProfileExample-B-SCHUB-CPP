@@ -123,6 +123,13 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
                 outConfig->scMaxHubConnections = (uint16_t)numeric;
                 outConfig->hasScMaxHubConnections = true;
             }
+        } else if (key == "sc-rate-limit") {
+            // 0 is a valid value here (means "no limit"), unlike
+            // sc-max-hub-connections above - see config.h's comment on this field.
+            if (ParseConfigUint(key, value, 0, 65535, &numeric)) {
+                outConfig->scRateLimit = (uint16_t)numeric;
+                outConfig->hasScRateLimit = true;
+            }
         } else {
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                                   "config file %s:%d: ignoring unrecognised key \"%s\".",

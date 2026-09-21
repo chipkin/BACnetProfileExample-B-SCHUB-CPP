@@ -8,7 +8,7 @@
 // This example's `--config <path>` support: a dependency-free, INI-like
 // "key = value" config file supplying DEFAULTS for a handful of this
 // example's settings (device-id, port, sc-port, sc-cert-dir, sc-hub-uri,
-// sc-failover-uri, dcc-password, sc-max-hub-connections).
+// sc-failover-uri, dcc-password, sc-max-hub-connections, sc-rate-limit).
 //
 // Precedence is CLI args > config file > main.cpp's own built-in defaults -
 // see main.cpp's CLI-parsing block for how ExampleConfig is threaded through:
@@ -57,12 +57,17 @@ struct ExampleConfig {
     bool hasDccPassword = false;
     std::string dccPassword;
 
-    // rate-limit: NOT included. main.cpp has no rate-limiting setting today
-    // (grepped for one before writing this - see CHANGELOG.md/this task's
-    // own report), so there is nothing for a config-file key to default.
-
     bool hasScMaxHubConnections = false;
     uint16_t scMaxHubConnections = 0;
+
+    // sc-rate-limit: max NEW inbound BACnet/SC connection ATTEMPTS/second the
+    // hub-function listener accepts before rejecting the excess (distinct
+    // from sc-max-hub-connections, which bounds concurrent connections, not
+    // the rate of new attempts) - see main.cpp's g_scRateLimit and
+    // sc_transport/ScTransport::SetMaxConnectionAttemptsPerSecond. 0 means
+    // "no limit". Same "has*"/value pair pattern as every other key here.
+    bool hasScRateLimit = false;
+    uint16_t scRateLimit = 0;
 };
 
 // Parses "--config <path>" out of argv (same "take the next argument
@@ -75,10 +80,10 @@ std::string ParseConfigPathArg(int argc, char** argv);
 // for why; leading/trailing whitespace around key and value is trimmed, and
 // "key=value" with no spaces is also accepted). Recognised keys: device-id,
 // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, dcc-password,
-// sc-max-hub-connections. An unrecognised key or an unparsable numeric value
-// is WARNED about (via CASExampleHelper::Log) and otherwise skipped, never
-// fatal - a config file is a convenience, not a contract the device refuses
-// to start over.
+// sc-max-hub-connections, sc-rate-limit. An unrecognised key or an
+// unparsable numeric value is WARNED about (via CASExampleHelper::Log) and
+// otherwise skipped, never fatal - a config file is a convenience, not a
+// contract the device refuses to start over.
 //
 // Returns true if the file itself was found and opened (even if some lines
 // inside it were skipped); false if the path could not be opened at all - the

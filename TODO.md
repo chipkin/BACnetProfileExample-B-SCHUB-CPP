@@ -134,3 +134,35 @@ does not mistake the behaviour for a bug in this example.
    Not implemented yet - low risk at this example's demo scale
    (`SC_MAX_HUB_CONNECTIONS = 4`), but a real, scoped task rather than only a
    documented risk.
+7. **`--sc-rate-limit`'s token bucket is per-process and per-listener, not
+   per-source-IP.** A single misbehaving/flooding peer and a thousand
+   distinct source IPs each hammering the listener are rate-limited
+   identically (the shared bucket empties either way) - this is a real,
+   known weakness of the simple global-bucket design chosen for this batch
+   (deliberately: a per-source-IP bucket needs a bounded eviction/aging
+   policy for the tracking table itself, which is a meaningfully bigger
+   design than "bound how fast this hub accepts new attempts" calls for at
+   this example's scale - see `sc_transport/ScTransport.h`'s
+   `SetMaxConnectionAttemptsPerSecond` comment). Practical effect: a single
+   well-behaved reconnecting peer can be starved by an unrelated flood
+   against the same listener. A real product exposed to an untrusted network
+   should pair this with an upstream/OS-level per-IP control (a firewall
+   rule, load balancer, or reverse proxy) rather than relying on this
+   application-level global limiter alone.
+8. **The audit trail's peer identity is the transport-level connection
+   string (`"<acceptUri>|client=<N>"`), not a BACnet/SC VMAC/UUID.** This is
+   the correct, honestly-available identity at the point
+   `sc_transport/ScTransport` observes a connect/disconnect (see
+   `README.md`'s "Rate-limiting and the audit trail" section for why a
+   VMAC/UUID is not available there), but it means the audit log cannot by
+   itself answer "which BACnet/SC *device* connected" across a reconnect -
+   only "which accepted socket, in accept order, on this run". Correlating a
+   `client=N` connection string to a BACnet/SC device identity would require
+   also reading the stack's own peer table (e.g. Network Port 2's
+   `SC_Hub_Function_Connection_Status` property) at the moment the stack's
+   Connect-Request/Accept exchange completes for that same socket - out of
+   scope for this batch (see this task's own report for why: it couples the
+   audit log's timing to the stack's protocol state machine rather than the
+   transport-level accept/close events this batch's audit trail is anchored
+   to), but a natural next step if VMAC/UUID-level audit correlation is
+   needed.

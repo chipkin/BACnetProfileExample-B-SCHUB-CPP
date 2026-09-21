@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - unreleased
+
+### Added
+
+- **BACnet/SC hub-function connect/disconnect audit trail** (Task 1 of this
+  batch): `sc_transport/ScTransport.cpp` now logs, via
+  `CASExampleHelper::Log` at `Info` level, every accepted listener-side peer
+  connecting/disconnecting: `SC audit: peer "<acceptUri>|client=<N>"
+  connected` / `... disconnected (closeCode=<n>)`. The identifier is the
+  accepted-peer connection string - the same identity this transport already
+  uses as the peer's BACnet/SC source address - since a BACnet/SC VMAC/UUID
+  is not available at the transport layer (it is only established once the
+  stack completes its own Connect-Request/Accept exchange, which is ordinary
+  RX data this layer relays but does not parse). No new file/rotation system
+  - real-time structured log output, per the task's own scope. **Verified**
+  with two real, distinct mutually-TLS WebSocket peers connecting and one
+  cleanly disconnecting - see this task's own report for the captured log
+  output (both `connected` lines with distinct `client=N` ids, one clean
+  `disconnected (closeCode=1000)` line, plausible UTC timestamps from
+  `CASExampleLog`'s own prefix).
+- **`--sc-rate-limit <n>` connection-attempt rate limiting** (Task 2 of this
+  batch): bounds how fast the hub-function listener accepts NEW inbound
+  connection *attempts* - a token bucket (burst = `n`, refill `n`/sec) in
+  `sc_transport/ScTransport`, gated in `HandleServerCallback`'s
+  `LWS_CALLBACK_FILTER_NETWORK_CONNECTION` case - the earliest hook lws
+  offers, firing at raw-socket accept() time, before the TLS handshake
+  starts. Rejects (closes immediately, no TLS/WS resources spent) and logs
+  at `Warning` level: `SC rate limit: rejecting new connection attempt on
+  <uri> - more than <n> attempt(s)/sec (rejected before TLS handshake; see
+  --sc-rate-limit)`. Distinct from `--sc-max-hub-connections`, which bounds
+  *concurrent* connections at the BACnet/SC protocol level (after a full TLS
+  handshake), not the rate of new attempts. Default `10`/sec (generous - a
+  real reconnect storm from this example's own demo peers is nowhere near
+  this rate); `0` disables it. Wired into the config-file system the same
+  way as `--sc-max-hub-connections` (`config.h`/`config.cpp`'s `sc-rate-limit`
+  key, `example.conf`, CLI > config file > built-in default) and `--help`.
+  **Verified** with a burst of 20 near-simultaneous connection attempts
+  against `--sc-rate-limit 3`: the first burst (token-bucket capacity)
+  succeeded, the remainder were rejected with the warning log line above, and
+  a later attempt (after enough time had passed to refill one token)
+  succeeded again - see this task's own report for the captured log output.
+  Documented in `README.md` ("Rate-limiting and the audit trail").
+
 ## [1.1.2] - unreleased
 
 ### Added

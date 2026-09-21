@@ -55,6 +55,7 @@
 // and logged here - it is never handed to PopReceived()/the stack.
 // =============================================================================
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -135,6 +136,26 @@ public:
     // test build can override it, but every real caller must pass
     // "hub.bsc.bacnet.org" - see the file header and plan fact 1.
     void Configure(const ScTlsFiles& tls, const std::string& acceptSubprotocol);
+
+    // Bounds how fast the LISTENER half accepts new inbound connection
+    // ATTEMPTS - a token bucket refilling at `perSecond` tokens/second, burst
+    // capacity `perSecond` (i.e. an idle listener can absorb a burst up to
+    // the configured rate before it starts rejecting, then settles back to
+    // steady-state `perSecond`/sec - see AllowNewConnectionAttempt() in the
+    // .cpp). This is deliberately independent of - and enforced BEFORE - the
+    // stack's own sc-max-hub-connections check (main.cpp's
+    // g_scMaxHubConnections): that one bounds CONCURRENT connections at the
+    // BACnet/SC protocol level, after a full TLS handshake; this one bounds
+    // the RATE of new attempts at the raw-socket level, gated in
+    // HandleServerCallback's LWS_CALLBACK_FILTER_NETWORK_CONNECTION case -
+    // before TLS negotiation even starts, so a rejected attempt costs this
+    // process almost nothing. 0 means "no limit" (the pre-existing,
+    // unbounded behaviour). Safe to call before or after Configure()/
+    // StartListening(); takes effect on the next FILTER_NETWORK_CONNECTION
+    // callback. Connector-role (outbound) connections are NOT rate-limited -
+    // this device controls when IT dials out, so there is no "someone else
+    // hammering us" case to guard against on that half.
+    void SetMaxConnectionAttemptsPerSecond(uint32_t perSecond);
 
     // --- Listener (server) half - real in this phase ---------------------
 
@@ -252,6 +273,13 @@ private:
     void DestroyListenerContext();
     PeerConnection* FindPeerByWsi(lws* wsi);
 
+    // Refills the token bucket by elapsed time, then consumes one token if
+    // available. Returns true (attempt allowed) when rate-limiting is
+    // disabled (m_maxConnAttemptsPerSecond == 0) or a token was available;
+    // false (attempt must be rejected) otherwise. See
+    // SetMaxConnectionAttemptsPerSecond's comment above for the algorithm.
+    bool AllowNewConnectionAttempt();
+
     // Builds m_clientProtocols on first use (every ClientConnection's
     // lws_context shares this one read-only table - lws only requires it stay
     // valid for each context's lifetime, not that it be unique per context).
@@ -305,6 +333,14 @@ private:
     std::deque<ScStatusEvent> m_statusQueue;
 
     bool m_loggedListenFailure = false;  // avoid spamming retry logs every Tick
+
+    // Rate-limit token bucket state (listener half only) - see
+    // SetMaxConnectionAttemptsPerSecond()/AllowNewConnectionAttempt() above.
+    // 0 = disabled (the default, matching this class's pre-existing
+    // unbounded behaviour until main.cpp opts in).
+    uint32_t m_maxConnAttemptsPerSecond = 0;
+    double m_rateLimitTokens = 0.0;
+    std::chrono::steady_clock::time_point m_rateLimitLastRefill;
 };
 
 }  // namespace CASSc
