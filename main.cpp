@@ -58,35 +58,60 @@
 // RegisterCallbackDisconnectWebsocket, RegisterCallbackSCStartListening,
 // RegisterCallbackSCStopListening) and expects status reported back through
 // BACnetStack_SetBACnetSCWebSocketStatus. This example supplies that transport
-// with sc_transport/ScTransport (libwebsockets + OpenSSL, via vcpkg) and
-// sc_transport/ScTransportRouter (the stack<->transport glue) - see those
-// headers for the design, and docs/bacnet-sc-transport-plan.md for how the
-// vcpkg/CMake wiring and the non-blocking Service() mechanism were settled.
+// for real, both roles: sc_transport/ScTransport (libwebsockets + OpenSSL, via
+// vcpkg - mutual TLS 1.3, subprotocol "hub.bsc.bacnet.org", binary WebSocket
+// framing, the 1497-byte ingress ceiling enforced) and
+// sc_transport/ScTransportRouter (the stack<->transport glue, dispatching
+// ReceiveMessageForPort/SendMessageForPort by Network Port instance) - see
+// those headers for the design, sc_transport/README.md for the wire-level
+// contract, and docs/bacnet-sc-transport-plan.md for how it was built and
+// verified across all four implementation phases.
 //
-// Phase 2 implemented the LISTENER (hub-function accept) half:
-// CallbackSCStartListening/CallbackSCStopListening are thin forwards to
-// ScTransport, and a real BACnet/SC node can connect. THIS PHASE (3)
-// implements the CONNECTOR (initiate) half too: CallbackInitiateWebsocket/
-// CallbackDisconnectWebsocket forward to ScTransport's Connect()/Disconnect(),
-// which are now real - see ScTransport.h's class-header comment. The
-// connector role is OFF by default (this hub-only example does not need one
-// to answer a node's own requests - plan open risk #8) and only turns on when
-// --sc-hub-uri is given on the command line (see main() below), letting this
-// example also demonstrate the hub-CONNECTOR side of NM-SCH-B by dialing out
-// to another hub.
+// BOTH roles are real and have each been verified against a real peer, not
+// just against this repository's own test scripts:
+//
+//   * LISTENER (hub-function accept role): CallbackSCStartListening/
+//     CallbackSCStopListening forward to ScTransport::StartListening()/
+//     StopListening(). A real BACnet/SC node (BACnetSCCli.exe, Role=node)
+//     connected, mutually authenticated over TLS 1.3, and completed
+//     Who-Is/I-Am/ReadProperty discovery of this device over BACnet/SC.
+//   * CONNECTOR (hub/node initiate role): CallbackInitiateWebsocket/
+//     CallbackDisconnectWebsocket forward to ScTransport::Connect()/
+//     Disconnect(). OFF by default (this hub-only example does not need one
+//     to answer a node's own requests - see docs/bacnet-sc-transport-plan.md
+//     open risk #8) and turns on when --sc-hub-uri is given on the command
+//     line (see main() below). Verified against both a hand-built fake hub
+//     (tests/sc/fake_hub_server.py) and a real hub (BACnetSCCli.exe,
+//     Role=hub), reaching hub-connector state ConnectedPrimary.
 //
 // The BACnet/IP Network Port (1, "Vermilion") stays active and fully functional
 // throughout, so the example remains discoverable and testable over plain
-// BACnet/IP regardless of BACnet/SC.
+// BACnet/IP regardless of BACnet/SC - including while SC peers are connected
+// (main()'s loop alternates IP-first/SC-first each Tick so neither starves the
+// other - see ScTransportRouter.h).
 //
-// THIS PHASE (4) adds the certificate File objects Network Port 2's SC properties
-// (Operational_Certificate_File, Certificate_Signing_Request_File,
-// Issuer_Certificate_Files) point at: 4 read-only File objects (see the object
-// list above) served from --sc-cert-dir by RegisterCallbackReadFile (section 2d
-// below) - never the private key. RegisterCallbackValidateBACnetSCOperationalCertificate
-// and RegisterCallbackGenerateBACnetSCCertificateSigningRequest are also registered
-// (section 2d) for documentation/completeness only - see that section's comment for
-// why they do nothing in this stack build.
+// Network Port 2's SC certificate properties (Operational_Certificate_File,
+// Certificate_Signing_Request_File, Issuer_Certificate_Files) point at 4
+// read-only File objects (see the object list above), served from
+// --sc-cert-dir by RegisterCallbackReadFile (section 2d below) - never the
+// private key (certs/hub.key has no File object at all). Verified over
+// BACnet/IP with AtomicReadFile: byte-for-byte against certs/hub.crt, and the
+// private key confirmed unreachable through any File object instance.
+// RegisterCallbackValidateBACnetSCOperationalCertificate and
+// RegisterCallbackGenerateBACnetSCCertificateSigningRequest are also
+// registered (section 2d) for documentation/completeness only - both have zero
+// call sites in this stack build (see that section's comment) - a known,
+// documented limitation of the pinned stack build, not a bug in this example;
+// see TODO.md.
+//
+// This device's certificate policy is CA-chain validation only, performed by
+// the TLS library (OpenSSL, via libwebsockets) at handshake time: no CRL, no
+// UUID-in-SAN binding, and the connector skips hostname checking
+// (LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK - SC certificates identify BACnet/SC
+// devices, not DNS hosts, so there is no hostname to check against; the CA
+// chain is still verified). See TUTORIAL.md for what productionizing this
+// further - a real CA, certificate rotation, hostname/identity policy - looks
+// like.
 // -----------------------------------------------------------------------------
 
 #include "CASExampleHelper.h"
@@ -116,7 +141,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.0.0";
+static const char* APP_VERSION = "1.1.0";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -152,10 +177,10 @@ static const char* DEVICE_NAME = "Rainbow";
 static const char* DEVICE_DESCRIPTION =
     "Chipkin CAS BACnet Stack example - B-SCHUB (BACnet/SC Hub) profile. "
     "Demonstrates DS-RP-B + DM-DDB-B + DM-DOB-B + DM-DCC-B + NM-SCH-B: "
-    "ReadProperty, discovery, DeviceCommunicationControl and a BACnet/SC hub "
-    "function Network Port, alongside an always-active BACnet/IP port. The "
-    "BACnet/SC WebSocket/TLS transport itself is a documented stub - see "
-    "README.md and TODO.md.";
+    "ReadProperty, discovery, DeviceCommunicationControl and a real BACnet/SC "
+    "hub function (mutual-TLS WebSocket transport, both listener and connector "
+    "roles) Network Port, alongside an always-active BACnet/IP port. See "
+    "README.md and TUTORIAL.md.";
 
 // Device identity strings (read by clients, and used to populate I-Am).
 //   VENDOR_NAME - your company name; it must match VENDOR_IDENTIFIER above.

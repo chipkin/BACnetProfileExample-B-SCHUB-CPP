@@ -18,7 +18,7 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.0.0**, built and verified
+> **Versions:** this document describes **example v1.1.0**, built and verified
 > against **CAS BACnet Stack 6.0.21** (`6.x` @ `abd4cee1`), at
 > **Protocol_Revision 24**, with the vendored `common/` helper at **v2.5.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -26,13 +26,16 @@ that last part does and does not do in this build.
 
 ## BACnet/SC support: read this first
 
-This example is canonical for **F-SC**. The short version: **the BACnet/SC
-protocol side is real and stack-verified, and so is the hub-function (listener)
-WebSocket/TLS transport underneath it** - a real BACnet/SC node can connect,
-mutually authenticate over TLS 1.3, and be discovered/read over BACnet/SC. The
-**hub-connector (initiate) half is still a documented stub** - see
-`docs/bacnet-sc-transport-plan.md` and `TODO.md` item 1 for exactly what that
-means and why it does not block this hub-only profile.
+This example is canonical for **F-SC**. **Both the BACnet/SC protocol and the
+WebSocket/TLS transport underneath it are real and verified against real
+peers** - a real BACnet/SC node connects to this hub, mutually authenticates
+over TLS 1.3, and is discovered/read over BACnet/SC; this example can, in
+turn, dial out to (and be discovered/relayed by) a real BACnet/SC hub. There
+is no remaining "documented stub" in this repository's BACnet/SC transport -
+see `docs/bacnet-sc-transport-plan.md` for the full design/verification
+record and `TODO.md` for what is left as a genuine, documented limitation
+(certificate validation callbacks, hostname checking, CRLs - none of them
+bugs in this example; see below).
 
 **The finding (read from the stack's doc comments and
 `submodules/cas-bacnet-stack/docs/CAS BACnet Stack - BACnet SC Manual_v6.md`,
@@ -50,10 +53,11 @@ WebSocket(+TLS) connections through four callbacks
 `RegisterCallbackSCStartListening`, `RegisterCallbackSCStopListening`) and
 expects real connection status reported back through
 `BACnetStack_SetBACnetSCWebSocketStatus`; certificate validation and CSR
-generation are likewise host callbacks. **So: the application must supply the
-WebSocket/TLS transport, not the stack.**
+generation are likewise host callbacks. This example supplies all of that:
+`sc_transport/` (below) for the WebSocket/TLS transport, and 4 read-only File
+objects (see the device tree below) for the certificate/CSR content.
 
-**What this example implements (real, compiled, stack-verified):**
+**What this example implements (real, compiled, stack-verified, both roles):**
 
 - `BACnetStack_SetBACnetSCUuid` - the required device-wide SC UUID.
 - A second Network Port object (2, "Vermilion 2", `Network_Type = secureConnect
@@ -61,45 +65,54 @@ WebSocket/TLS transport, not the stack.**
 - `BACnetStack_AddBACnetSCAcceptUri` + `BACnetStack_SetBACnetSCHubFunctionConfig`
   - configures and **enables** the NM-SCH-B hub function with a `wss://` accept
   URI and a connection limit.
-- All five SC transport/status callbacks registered
-  (`CallbackInitiateWebsocket`, `CallbackDisconnectWebsocket`,
-  `CallbackSCStartListening`, `CallbackSCStopListening`,
-  `CallbackBACnetSCStateChange`), so the stack's state machine runs and can be
-  observed. Running the example proves this: at start-up the stack calls
-  `CallbackSCStartListening` with the configured accept URI, exactly as its
-  doc comment says a hub-function-enabled port must.
-
-**What this example implements now (real, verified against a real peer):**
-
 - `sc_transport/ScTransport` - a libwebsockets + OpenSSL (via vcpkg) transport:
-  mutual TLS 1.3 only, subprotocol `hub.bsc.bacnet.org`, binary WebSocket
-  framing, the 1497-byte ingress ceiling enforced, connection status queued
-  (never reported from inside an lws callback - see the class's header
-  comment for why).
+  mutual TLS 1.3 only, subprotocol `hub.bsc.bacnet.org` (135-2024 AB.7.1),
+  binary WebSocket framing, the 1497-byte ingress ceiling enforced, connection
+  status queued and only ever reported to the stack from the main loop (never
+  from inside an lws callback - see the class's header comment for why).
+  Implements **both** roles:
+  - **Listener** (hub-function accept role) - `StartListening()`/
+    `StopListening()`. Verified with `tests/sc/hub_listener_test.py` (TLS 1.3
+    + subprotocol negotiation, all required negative cases) and with a real
+    peer (`BACnetSCCli.exe`, `Role=node`) completing Who-Is/I-Am/ReadProperty
+    discovery of this device over BACnet/SC.
+  - **Connector** (hub/node initiate role) - `Connect()`/`Disconnect()`. OFF
+    by default (`--sc-hub-uri` turns it on - see [Command-line
+    options](#command-line-options)); this hub-only example does not need one
+    to answer a node's own requests (the hub function delivers locally). When
+    enabled, verified against `tests/sc/fake_hub_server.py` and against a real
+    hub (`BACnetSCCli.exe`, `Role=hub`), reaching hub-connector state
+    `ConnectedPrimary`.
 - `sc_transport/ScTransportRouter` - dispatches the stack's
   `ReceiveMessageForPort`/`SendMessageForPort` callbacks between BACnet/IP
-  (Network Port 1) and BACnet/SC (Network Port 2, via `ScTransport`).
+  (Network Port 1) and BACnet/SC (Network Port 2, via `ScTransport`),
+  alternating which datalink is polled first each tick so neither one can
+  starve the other while both are busy.
 - `scripts/generate-test-certs.cmake` - generates a throwaway lab CA + hub +
-  node certificate set under `certs/` (gitignored; **lab testing only**).
-- `CallbackSCStartListening`/`CallbackSCStopListening` (`main.cpp`, section
-  **2c**) are real, not stubs: a real BACnet/SC node can connect to this hub.
-  Verified with `tests/sc/hub_listener_test.py` and with a real peer
-  (`BACnetSCCli.exe`, `Role=node`) completing Who-Is/I-Am/ReadProperty
-  discovery of this device over BACnet/SC - see
-  `docs/bacnet-sc-transport-plan.md`'s V1-V3.
+  node certificate set under `certs/` (gitignored; **lab testing only** - see
+  [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real) for
+  what a production certificate story needs).
+- 4 read-only File objects (`Ivory`/`Ivory 2`/`Ivory 3`/`Ivory 4`) serving the
+  hub's operational certificate, CSR, and issuer certificate (×2 slots) over
+  AtomicReadFile - **never the private key**, which has no File object at
+  all. Verified byte-for-byte over BACnet/IP against `certs/hub.crt`, with the
+  private key confirmed unreachable through any File object instance.
 
-**What is still a stub:** the hub-**connector**/initiate role
-(`CallbackInitiateWebsocket`/`CallbackDisconnectWebsocket`, forwarding to
-`ScTransport::Connect()`/`Disconnect()`) - it logs what the stack asked for and
-returns `false`/no-op rather than claiming an outbound connection this example
-does not make. This hub-only example does not need a connector to answer a
-node's own requests (the hub function delivers locally), so this gap does not
-block NM-SCH-B. See [`TODO.md`](TODO.md) and
-[TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real).
+**Known, documented limitations (not bugs in this example) - see
+[`TODO.md`](TODO.md) for the full list:** certificate validation and CSR
+generation are registered callbacks with **zero call sites** in this pinned
+stack build (so they do nothing - this device's actual, and only, certificate
+policy is CA-chain validation performed by OpenSSL/libwebsockets at TLS
+handshake time); the connector skips server hostname checking (SC certificates
+identify devices, not DNS hosts - the CA chain is still verified); no CRL
+support; and the stack's SC ingress path is capped at 1497 bytes, one octet
+short of Annex AB's 1600-octet minimum BVLC size a conformant hub should be
+able to relay.
 
 **The BACnet/IP Network Port (1, "Vermilion") stays fully active** throughout,
 so this example remains discoverable and testable over plain BACnet/IP
-regardless of BACnet/SC - see [Verify](#verify) below.
+regardless of BACnet/SC, including while BACnet/SC peers are connected - see
+[Verify](#verify) below.
 
 ## What is the B-SCHUB (BACnet/SC Hub) profile?
 
@@ -151,7 +164,11 @@ Device 389022  "Rainbow"   (Vendor 389 - Chipkin Automation Systems)
     ├── Binary Input  1       "Emerald"       Present_Value  inactive  (0 = inactive / 1 = active; read-only)
     ├── Multi-State Input 1   "Hot Pink"      Present_Value  1       (state, 1..3; read-only)
     ├── Network Port 1        "Vermilion"     BACnet/IP - active, discoverable (required on every device)
-    └── Network Port 2        "Vermilion 2"   BACnet/SC hub function - CONFIGURED, transport is a stub
+    ├── Network Port 2        "Vermilion 2"   BACnet/SC hub function - CONFIGURED, transport is real (both roles)
+    ├── File 1                "Ivory"         operational certificate (certs/hub.crt), read-only
+    ├── File 2                "Ivory 2"       certificate signing request (certs/hub.csr), read-only
+    ├── File 3                "Ivory 3"       issuer certificate slot 1 (certs/ca.crt), read-only
+    └── File 4                "Ivory 4"       issuer certificate slot 2 (certs/ca.crt), read-only
 ```
 
 ## What this example supports
@@ -171,7 +188,7 @@ still claims exactly one profile.
 | DM-DDB-B | Device Management - Dynamic Device Binding - B | ✅ |
 | DM-DOB-B | Device Management - Dynamic Object Binding - B | ✅ |
 | DM-DCC-B | Device Management - DeviceCommunicationControl - B | ✅ |
-| NM-SCH-B | Network - Secure Connect Hub Function - B | 🚧 configured, transport not implemented (see above) |
+| NM-SCH-B | Network - Secure Connect Hub Function - B | ✅ configured AND transported (both hub-function/listener and connector roles are real - see above) |
 
 ### Services (executed / B-side)
 
@@ -181,7 +198,8 @@ still claims exactly one profile.
 | Who-Is / I-Am | Answers Who-Is with I-Am, and broadcasts an I-Am on start-up (DM-DDB-B). |
 | Who-Has / I-Have | Answers Who-Has with I-Have (DM-DOB-B). |
 | DeviceCommunicationControl | Stops/resumes communication, optionally timed/passworded (DM-DCC-B). |
-| BACnet/SC hub function | Protocol/state-machine configured and enabled (NM-SCH-B); WebSocket/TLS transport stubbed - see above. |
+| BACnet/SC hub function | Protocol/state-machine AND WebSocket/TLS transport both real (NM-SCH-B) - see above. |
+| AtomicReadFile | Serves the 4 certificate/CSR File objects, stream access, read-only. |
 
 ### Object types
 
@@ -193,6 +211,10 @@ still claims exactly one profile.
 | Multi-State Input | 1 | Hot Pink | read-only |
 | Network Port | 1 | Vermilion | - (BACnet/IP) |
 | Network Port | 2 | Vermilion 2 | - (BACnet/SC) |
+| File | 1 | Ivory | read-only (operational certificate) |
+| File | 2 | Ivory 2 | read-only (certificate signing request) |
+| File | 3 | Ivory 3 | read-only (issuer certificate slot 1) |
+| File | 4 | Ivory 4 | read-only (issuer certificate slot 2) |
 
 Every required property of every object, and who answers it, is in
 [docs/PICS.md](docs/PICS.md).
@@ -220,8 +242,20 @@ This is a **self-contained** project. It ships:
 
 - `main.cpp` - the example device.
 - `common/` - the shared helper (UDP, callbacks, CLI, keyboard) vendored in.
+- `sc_transport/` - the real BACnet/SC WebSocket+TLS transport (libwebsockets
+  + OpenSSL) and the stack&lt;-&gt;transport glue - see
+  [`sc_transport/README.md`](sc_transport/README.md) for the wire-level
+  contract.
+- `scripts/generate-test-certs.cmake` - generates a throwaway lab CA + hub +
+  node certificate set under `certs/` (gitignored).
+- `tests/sc/` - the BACnet/SC verification scripts (see [Verify -> Over
+  BACnet/SC](#over-bacnetsc-verified-against-a-real-peer) below).
+- `vcpkg.json` - pins the `libwebsockets`/`openssl` dependencies `sc_transport/`
+  needs (see [Prerequisites](#prerequisites) below).
 - `CMakeLists.txt` - the build, the same on Windows, Linux, and macOS.
 - `docs/PICS.md` - the conformance statement.
+- `THIRD-PARTY-NOTICES.md` - licences for the bundled/linked third-party
+  dependencies (libwebsockets, OpenSSL).
 - `submodules/cas-bacnet-stack/` - the **CAS BACnet Stack as a git submodule**
   (private; requires a license - see above). Its sources are compiled into the
   executable, so there is no library or DLL to build, ship, or install.
@@ -231,22 +265,37 @@ This is a **self-contained** project. It ships:
 - A C++17 compiler (MSVC, GCC, or Clang).
 - CMake >= 3.15.
 - Git (to fetch the stack submodule).
+- **[vcpkg](https://vcpkg.io/)**, with the `VCPKG_ROOT` environment variable
+  set - `sc_transport/`'s BACnet/SC transport depends on `libwebsockets` and
+  `openssl` (via vcpkg's manifest mode, `vcpkg.json`), and CMake needs
+  `VCPKG_ROOT` to find vcpkg's toolchain file automatically (see
+  [Build](#build) below for exactly what that buys you). Visual Studio
+  bundles a vcpkg install and sets `VCPKG_ROOT` for you inside a Developer
+  Command Prompt; on Linux/macOS, or a bare Windows shell, install it
+  yourself: <https://vcpkg.io/en/getting-started>.
 
 ### Windows
 
 - **C++ compiler** - install
   [Visual Studio Community](https://visualstudio.microsoft.com/downloads/)
-  (free) and select the **"Desktop development with C++"** workload.
+  (free) and select the **"Desktop development with C++"** workload (this
+  also gives you a vcpkg install and a Developer Command Prompt with
+  `VCPKG_ROOT` already set).
 - **CMake** - from <https://cmake.org/download/>, or `winget install Kitware.CMake`.
 
 ### Linux / macOS
 
-- Debian/Ubuntu: `sudo apt install build-essential cmake git`
-- macOS: `xcode-select --install` and `brew install cmake`
+- Debian/Ubuntu: `sudo apt install build-essential cmake git ninja-build pkg-config`
+- macOS: `xcode-select --install` and `brew install cmake ninja`
+- vcpkg needs a handful of build tools of its own to compile `openssl`/
+  `libwebsockets` from source (Perl, plus `libssl-dev`/build headers on some
+  distros) - if `vcpkg install` reports a missing tool, install exactly the
+  one it names and re-run the CMake configure step.
 
 ## Build
 
-CMake only, and the same two commands on every platform:
+CMake only, and the same two commands on every platform (with `VCPKG_ROOT`
+set - see [Prerequisites](#prerequisites) above):
 
 ```bash
 git clone --recursive https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP.git
@@ -259,12 +308,31 @@ cmake --build build --config Release
 Already cloned without `--recursive`? Run `git submodule update --init --recursive`
 first - the build needs the stack submodule.
 
-> **The first build takes a few minutes** - it compiles the entire CAS BACnet
-> Stack (~600 source files) into the executable. Rebuilds after that are
-> incremental and take seconds.
+> **The first build takes longer than the series norm** - a few minutes to
+> compile the CAS BACnet Stack (~600 source files) into the executable, **plus
+> ~10-15 minutes the very first time vcpkg has to build OpenSSL from source**
+> (`libwebsockets` is quick by comparison). vcpkg caches what it builds, so
+> every build after that first one - even a from-scratch `rm -rf build` - skips
+> straight to the stack compile. Rebuilds after that are incremental and take
+> seconds.
 
 If your CAS BACnet Stack lives somewhere other than the bundled submodule, point
 CMake at it: `cmake -B build -S . -D CAS_STACK_DIR=/path/to/cas-bacnet-stack`.
+
+### Generate lab test certificates
+
+BACnet/SC's accept URIs are `wss://` (TLS) - the hub function needs a
+certificate/key pair before it can actually listen (it still starts up and
+answers BACnet/IP without one; see [Run](#run) below). Generate a throwaway
+lab CA + hub + node certificate set under `certs/` (gitignored - **lab testing
+only**, see [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real)
+for what a production certificate story needs):
+
+```bash
+cmake --build build --target test-certs
+# or directly:
+cmake -P scripts/generate-test-certs.cmake
+```
 
 ## Run
 
@@ -276,10 +344,11 @@ CMake at it: `cmake -B build -S . -D CAS_STACK_DIR=/path/to/cas-bacnet-stack`.
 .\build\Release\BACnetExampleBSCHUB.exe
 ```
 
-Expected output:
+Expected output (with `certs/` already generated - see [Generate lab test
+certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.0.0
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.0
 CAS BACnet Stack version: 6.0.21.0
 Common helper (common/) version: 2.5.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -288,6 +357,13 @@ FYI: Device 389022 ("Rainbow") ready. Vendor ID 389. Press 'h' for help.
 FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (Vermilion 2), accept URI wss://0.0.0.0:47819/. Certificates: ./certs. See README.md "BACnet/SC support" for how to generate lab test certs.
 RX 21 bytes from 192.168.3.64:47808 (Network Port 1)
 BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
+```
+
+Without `certs/`, the last line instead reads (and BACnet/IP keeps working
+exactly the same either way):
+
+```
+BACnet/SC: cannot start listening on wss://0.0.0.0:47819/: certificate files are missing/unreadable (cert="./certs/hub.crt" key="./certs/hub.key" ca="./certs/ca.crt"). Run: cmake -P scripts/generate-test-certs.cmake
 ```
 
 The `TX` line is the start-up I-Am the device broadcasts to announce itself. It
@@ -313,7 +389,11 @@ firewall. To use a different port, pass `--port` (see below).
 |--------|---------|---------|
 | `--port <n>` | `47808` | UDP port to listen on (BACnet/IP). |
 | `--deviceID <n>` | `389022` | The device's BACnet instance number (BACnet requires this to be configurable). |
-| `--help`, `-h` | - | Show usage and exit. |
+| `--sc-port <n>` | `47819` | WebSocket/TLS port for the BACnet/SC hub accept URI. |
+| `--sc-cert-dir <dir>` | `./certs` | Directory holding `hub.crt`/`hub.key`/`ca.crt` (see [Generate lab test certificates](#generate-lab-test-certificates) above). |
+| `--sc-hub-uri <wss://host:port/path>` | *(none)* | Also run the hub **connector** role: dial out to another hub at this URI. Off by default - this hub-only example needs only the listener role above for NM-SCH-B. |
+| `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
+| `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
 
 ### Interactive commands
@@ -353,25 +433,68 @@ against a running instance of this example:
 You can repeat this with the [CAS BACnet
 Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer).
 
-### Over BACnet/SC (NOT wire-verified - flagged, not faked)
+### Over BACnet/SC (verified against a real peer)
 
-**This was not verified on the wire**, and this README says so rather than
-implying otherwise: verifying an actual SC node connecting to this hub and
-reading its Device object requires a second BACnet/SC-capable process (a real
-WebSocket/TLS client, or another SC-capable BACnet stack/tool) and, on this
-example's own side, a working WebSocket/TLS transport behind the stub
-callbacks - see [BACnet/SC support](#bacnetsc-support-read-this-first) above.
-Neither was available in this session. What **is** verified instead: the SC
-protocol/configuration calls all return success at runtime
-(`BACnetStack_SetBACnetSCUuid`, `BACnetStack_AddBACnetSCAcceptUri`,
-`BACnetStack_SetBACnetSCHubFunctionConfig` - every one is
-`if (!BACnetStack_...) return 1;`-guarded and none trips), and the stack's own
-state machine calls back into this example asking to listen on the configured
-`wss://` URI exactly as documented - i.e. the code path is real and exercised
-up to the transport boundary, not merely code-reviewed.
+Unlike the transport-stub era of this repository, this **was** verified on the
+wire, against a real second process, not just against this repository's own
+test scripts:
+
+1. **Generate lab certificates** - `cmake --build build --target test-certs`
+   (see [Generate lab test certificates](#generate-lab-test-certificates)
+   above).
+2. **Listener (hub-function accept role)** - `tests/sc/hub_listener_test.py`
+   drives a hand-built BACnet/SC client against the running example and
+   asserts: TLS 1.3 negotiates; the `hub.bsc.bacnet.org` subprotocol is
+   echoed; a client with no certificate, TLS 1.2, or the wrong subprotocol is
+   all refused/rejected; a text WebSocket frame is closed with code 1003; and
+   a hand-built BVLC-SC Connect-Request gets a real Connect-Accept back:
+   ```bash
+   python -m pip install -r tests/sc/requirements.txt
+   ./build/BACnetExampleBSCHUB.exe --sc-port 47819 --sc-cert-dir ./certs &
+   python tests/sc/hub_listener_test.py --port 47819 --cert-dir certs
+   ```
+   Then, independently, a **real** BACnet/SC node
+   (`BACnetSCCli.exe`, `Role=node`) completed Who-Is -> I-Am -> ReadProperty
+   discovery of this device (`Object_Name` = `"Rainbow"`) over the SC
+   connection.
+3. **Connector (hub/node initiate role, `--sc-hub-uri`)** -
+   `tests/sc/fake_hub_server.py` (a hand-built mutual-TLS fake hub) answers
+   the example's Connect-Request with a Connect-Accept and the example's own
+   console shows the hub-connector state machine reach `Connected`; killing
+   the fake hub produces a `Disconnected` log line, with the **stack** (not
+   this example's transport code) doing the later re-dial, per its own retry
+   timer. Independently, against a **real** hub (`BACnetSCCli.exe`,
+   `Role=hub`), the example's hub-connector state machine reaches
+   `ConnectedPrimary`.
+4. **Certificate File objects** - `tests/sc/file_object_test.py` (a real
+   `bacpypes3` BACnet/IP client) confirms `AtomicReadFile(File 1, "Ivory")`
+   returns `certs/hub.crt` byte-for-byte, Network Port 2's
+   `Issuer_Certificate_Files` has exactly 2 entries, and none of the 4 File
+   objects ever serve `certs/hub.key`.
+5. **Mux fairness** - with an SC peer connection held open, BACnet/IP
+   Who-Is/I-Am keeps answering normally on port 47808 (or whatever `--port`
+   is), confirming `ScTransportRouter`'s IP-first/SC-first alternating poll
+   does not starve either datalink while both are busy.
+
+See `tests/sc/README.md` for the full command lines and what each script
+checks, and `docs/bacnet-sc-transport-plan.md`'s "Verification" section
+(V1-V7) for the complete verification record across all four implementation
+phases.
 
 For a property-by-property review against the conformance statement, see
 [TUTORIAL.md](TUTORIAL.md).
+
+## Licence
+
+The example source code (this repository, excluding `submodules/`) is
+dedicated to the public domain under [CC0-1.0](LICENSE). Building this example
+also links **third-party dependencies with their own licences**:
+[libwebsockets](https://libwebsockets.org/) (MIT) and
+[OpenSSL 3](https://www.openssl.org/) (Apache-2.0), both pulled in via vcpkg -
+see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the full text/
+pointers. The CAS BACnet Stack itself is a separate, commercially licensed
+product (see [Requires the CAS BACnet Stack](#requires-the-cas-bacnet-stack-licensed-product)
+above) and is not covered by any of the above.
 
 
 ## The BACnet profile example series
