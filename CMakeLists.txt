@@ -19,6 +19,30 @@
 # =============================================================================
 
 cmake_minimum_required(VERSION 3.15)
+
+# --- vcpkg toolchain auto-detection ------------------------------------------
+# Must happen BEFORE project() - the toolchain file is what makes
+# find_package(libwebsockets)/find_package(OpenSSL) below resolve at all.
+# If the caller already passed -D CMAKE_TOOLCHAIN_FILE=..., respect it as-is
+# (this keeps CI, which sets the toolchain explicitly, working unchanged).
+# Otherwise, if VCPKG_ROOT is set in the environment (Visual Studio bundles
+# one; so does a manual vcpkg install), point at its toolchain file so the
+# documented two-command build (cmake -B build -S . / cmake --build build)
+# keeps working with no extra flags.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        CACHE STRING "Vcpkg toolchain file")
+endif()
+
+# On Windows, default to the static triplet so libwebsockets/OpenSSL match
+# the CAS BACnet Stack adapter's own static-runtime default below - a mixed
+# triplet here is the #1 way to hit an LNK2038 _ITERATOR_DEBUG_LEVEL / MD-vs-MT
+# mismatch at link time. Only takes effect on a fresh vcpkg-toolchain configure;
+# an explicit -D VCPKG_TARGET_TRIPLET=... on the command line still wins.
+if(WIN32 AND NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet")
+endif()
+
 project(BACnetProfileExample_CPP_B_SCHUB CXX C)
 
 
@@ -58,6 +82,23 @@ if(NOT EXISTS "${CAS_STACK_DIR}/adapters/cpp/CMakeLists.txt")
         "Or pass -D CAS_STACK_DIR=/path/to/cas-bacnet-stack to use a stack elsewhere.")
 endif()
 
+# --- MSVC runtime library (must match across the whole link) ----------------
+# vcpkg's x64-windows-static triplet builds libwebsockets/OpenSSL against the
+# static CRT (/MT, /MTd for Debug). Set CMAKE_MSVC_RUNTIME_LIBRARY the same way
+# BEFORE add_subdirectory(adapter) below, so the CAS BACnet Stack adapter's own
+# SOURCE-mode compile of ~600 stack files picks up the identical setting -
+# otherwise the link fails with LNK2038 _ITERATOR_DEBUG_LEVEL / MD-vs-MT
+# mismatches between the stack, this example, and the vcpkg libraries.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+# --- BACnet/SC transport dependencies (vcpkg) --------------------------------
+# libwebsockets + OpenSSL back the WebSocket+TLS transport in sc_transport/.
+# Resolved via the vcpkg toolchain set up above (VCPKG_ROOT / CMAKE_TOOLCHAIN_FILE).
+find_package(libwebsockets CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
+
 # --- The CAS BACnet Stack, via its CMake adapter target ---------------------
 # CAS_BACNET_STACK_LINK is the adapter's own cache variable (SOURCE/STATIC/DLL,
 # default SOURCE) - set it BEFORE add_subdirectory() so the adapter target picks it up.
@@ -70,14 +111,24 @@ set(COMMON_SOURCES
     "${EXAMPLES_COMMON_DIR}/SimpleUDP.cpp")
 
 # --- The executable ---------------------------------------------------------
+# sc_transport_spike.cpp is Phase 1 ("Spike") scratch code only: it settles
+# which lws Service() non-blocking mechanism to use and proves the vcpkg/CMake
+# wiring above actually links. It is NOT the real sc_transport/ architecture
+# (that's Phase 2/3 per docs/bacnet-sc-transport-plan.md) and is expected to be
+# removed/replaced once that lands.
 add_executable(BACnetExampleBSCHUB
     main.cpp
+    sc_transport_spike.cpp
     ${COMMON_SOURCES})
 
 target_include_directories(BACnetExampleBSCHUB PRIVATE
     "${EXAMPLES_COMMON_DIR}")
 
-target_link_libraries(BACnetExampleBSCHUB PRIVATE CASBACnetStack::Adapter)
+target_link_libraries(BACnetExampleBSCHUB PRIVATE
+    CASBACnetStack::Adapter
+    websockets
+    OpenSSL::SSL
+    OpenSSL::Crypto)
 
 # --- Warnings on OUR sources only -------------------------------------------
 # Apply strict warnings to the example + helper sources, but NOT to the bundled
@@ -91,8 +142,12 @@ endif()
 set_source_files_properties(main.cpp ${COMMON_SOURCES}
     PROPERTIES COMPILE_OPTIONS "${EXAMPLE_WARNINGS}")
 
-# --- Platform sockets -------------------------------------------------------
-# ws2_32  = Winsock (UDP); iphlpapi = GetAdaptersInfo (local broadcast address).
+# --- Platform sockets --------------------------------------------------------
+# ws2_32  = Winsock (UDP); iphlpapi = GetAdaptersInfo (local broadcast address);
+# dbghelp/winmm = required by libuv (pulled in transitively by libwebsockets'
+# static libuv event-loop backend, even though sc_transport doesn't use it) -
+# same fix as ../plugfest-example/CMakeLists.txt for the identical LNK2019s
+# (SymSetOptions/SymGetOptions/MiniDumpWriteDump from libuv's process.c).
 if(WIN32)
-    target_link_libraries(BACnetExampleBSCHUB PRIVATE ws2_32 iphlpapi)
+    target_link_libraries(BACnetExampleBSCHUB PRIVATE ws2_32 iphlpapi dbghelp winmm)
 endif()

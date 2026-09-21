@@ -82,9 +82,11 @@
 #include "CASBACnetStackAdapter.h" // the CAS BACnet Stack C API (BACnetStack_*); call
                                     // LoadBACnetFunctions() before any BACnetStack_* call -
                                     // see the top of main() below.
+#include "sc_transport_spike.h"    // PHASE 1 SPIKE - TEMPORARY, see that header.
 
 #include <stdio.h>
 #include <string.h>
+#include <string>
 
 #if defined(_WIN32)
 #include <windows.h> // Sleep()
@@ -638,6 +640,19 @@ void CallbackBACnetSCStateChange(const uint32_t deviceInstance, const uint32_t n
 int main(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    // --- PHASE 1 SPIKE HOOK - TEMPORARY, see sc_transport_spike.h ------------
+    // `--sc-spike` is not a documented/real CLI option: it exists only so the
+    // Phase 1 spike program can be run and timed from the real, fully-linked
+    // executable (proving the vcpkg/CMake wiring + static-CRT link against the
+    // CAS BACnet Stack, not just a standalone test binary). Remove this block
+    // together with sc_transport_spike.{h,cpp} once Phase 2/3 lands the real
+    // sc_transport/ classes.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--sc-spike") {
+            return RunScTransportSpike();
+        }
+    }
 
     // --- Load the CAS BACnet Stack -------------------------------------------
     if (!LoadBACnetFunctions()) {
