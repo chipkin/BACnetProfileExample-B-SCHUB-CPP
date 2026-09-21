@@ -1,1 +1,2 @@
 websockets>=12.0
+bacpypes3>=0.0.100  # tests/sc/file_object_test.py (V6: File objects over BACnet/IP)

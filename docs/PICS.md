@@ -240,6 +240,66 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Changes_Pending | Boolean | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
+### File 1 "Ivory" - read-only; serves the hub's operational certificate (certs/hub.crt) via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date are the real on-disk size/mtime of that file, so they always agree with what AtomicReadFile actually returns. Never certs/hub.key - see main.cpp section 2d
+
+| Property | Datatype | Served by | Writable |
+|---|---|---|:---:|
+| Object_Identifier | BACnetObjectIdentifier | stack | no |
+| Object_Name | CharacterString | app | no |
+| Object_Type | BACnetObjectType | stack | no |
+| File_Type | CharacterString | app | no |
+| File_Size | Unsigned | app | no |
+| Modification_Date | BACnetDateTime | app | no |
+| Archive | Boolean | app | no |
+| Read_Only | Boolean | app | no |
+| File_Access_Method | BACnetFileAccessMethod | stack | no |
+| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
+
+### File 2 "Ivory 2" - read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1
+
+| Property | Datatype | Served by | Writable |
+|---|---|---|:---:|
+| Object_Identifier | BACnetObjectIdentifier | stack | no |
+| Object_Name | CharacterString | app | no |
+| Object_Type | BACnetObjectType | stack | no |
+| File_Type | CharacterString | app | no |
+| File_Size | Unsigned | app | no |
+| Modification_Date | BACnetDateTime | app | no |
+| Archive | Boolean | app | no |
+| Read_Only | Boolean | app | no |
+| File_Access_Method | BACnetFileAccessMethod | stack | no |
+| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
+
+### File 3 "Ivory 3" - read-only; issuer certificate slot 1 (certs/ca.crt) - one of Network Port 2's 2 Issuer_Certificate_Files entries (the stack requires exactly 2 slots)
+
+| Property | Datatype | Served by | Writable |
+|---|---|---|:---:|
+| Object_Identifier | BACnetObjectIdentifier | stack | no |
+| Object_Name | CharacterString | app | no |
+| Object_Type | BACnetObjectType | stack | no |
+| File_Type | CharacterString | app | no |
+| File_Size | Unsigned | app | no |
+| Modification_Date | BACnetDateTime | app | no |
+| Archive | Boolean | app | no |
+| Read_Only | Boolean | app | no |
+| File_Access_Method | BACnetFileAccessMethod | stack | no |
+| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
+
+### File 4 "Ivory 4" - read-only; issuer certificate slot 2 - also certs/ca.crt (same file as File 3): this lab setup has one CA, and the stack requires exactly 2 issuer slots regardless of how many distinct CAs exist
+
+| Property | Datatype | Served by | Writable |
+|---|---|---|:---:|
+| Object_Identifier | BACnetObjectIdentifier | stack | no |
+| Object_Name | CharacterString | app | no |
+| Object_Type | BACnetObjectType | stack | no |
+| File_Type | CharacterString | app | no |
+| File_Size | Unsigned | app | no |
+| Modification_Date | BACnetDateTime | app | no |
+| Archive | Boolean | app | no |
+| Read_Only | Boolean | app | no |
+| File_Access_Method | BACnetFileAccessMethod | stack | no |
+| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
+
 <!-- OBJECTS-PROPERTIES:END -->
 
 ## 12. References

@@ -25,6 +25,15 @@
 //                                                    active so the device stays
 //                                                    discoverable over plain BACnet/IP)
 //     Network Port 2                "Vermilion 2"  (the BACnet/SC port - hub function)
+//     File 1                        "Ivory"        (read-only; serves the hub's operational
+//                                                    certificate, certs/hub.crt)
+//     File 2                        "Ivory 2"      (read-only; serves the hub's CSR, certs/hub.csr)
+//     File 3                        "Ivory 3"      (read-only; issuer certificate slot 1,
+//                                                    certs/ca.crt)
+//     File 4                        "Ivory 4"      (read-only; issuer certificate slot 2, also
+//                                                    certs/ca.crt - the stack requires exactly 2
+//                                                    issuer slots; this lab setup has one CA, so
+//                                                    both slots point at it)
 //
 // This profile does NOT require WriteProperty, COV, alarms, scheduling or
 // trending, so this example leaves those off (unlike B-ASC, its seed, it does
@@ -69,6 +78,15 @@
 // The BACnet/IP Network Port (1, "Vermilion") stays active and fully functional
 // throughout, so the example remains discoverable and testable over plain
 // BACnet/IP regardless of BACnet/SC.
+//
+// THIS PHASE (4) adds the certificate File objects Network Port 2's SC properties
+// (Operational_Certificate_File, Certificate_Signing_Request_File,
+// Issuer_Certificate_Files) point at: 4 read-only File objects (see the object
+// list above) served from --sc-cert-dir by RegisterCallbackReadFile (section 2d
+// below) - never the private key. RegisterCallbackValidateBACnetSCOperationalCertificate
+// and RegisterCallbackGenerateBACnetSCCertificateSigningRequest are also registered
+// (section 2d) for documentation/completeness only - see that section's comment for
+// why they do nothing in this stack build.
 // -----------------------------------------------------------------------------
 
 #include "CASExampleHelper.h"
@@ -83,6 +101,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <string>
+#include <sys/stat.h> // stat()/_stat() - File objects' File_Size + Modification_Date (section 2d)
+#include <time.h>     // gmtime() - File objects' Modification_Date
 
 #if defined(_WIN32)
 #include <windows.h> // Sleep()
@@ -179,6 +199,45 @@ static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 static const uint8_t NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT = 11;
 static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "Vermilion 2"
 static const uint16_t SC_MAX_HUB_CONNECTIONS = 4;       // small, demo-sized limit
+
+// The 4 read-only File objects (phase 4) Network Port 2's SC certificate properties point at -
+// see BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
+// in section 2d. Same "local constant, not common/" rationale as
+// NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT above: File is a series-wide object type (colour
+// "Ivory" per ../docs/colour-table.md; second..fourth instance "Ivory 2".."Ivory 4" per that
+// file's own numbering convention), but no other example in the series has needed one yet, so
+// there is nothing to share in common/.
+static const uint32_t FILE_OPERATIONAL_CERT_INSTANCE = 1;  // "Ivory"   - certs/hub.crt
+static const uint32_t FILE_CSR_INSTANCE = 2;                // "Ivory 2" - certs/hub.csr
+static const uint32_t FILE_ISSUER_CERT_1_INSTANCE = 3;      // "Ivory 3" - certs/ca.crt
+static const uint32_t FILE_ISSUER_CERT_2_INSTANCE = 4;      // "Ivory 4" - certs/ca.crt (same file;
+                                                              // BACnetStack_SetBACnetSCCertificateFileObjects
+                                                              // requires exactly 2 issuer slots
+                                                              // regardless - this lab setup has one
+                                                              // CA, so both point at it, per plan)
+// File_Access_Method (135-2024 Table 12-16): 0 = Record Access, 1 = Stream Access
+// (BACnetStack_AddFileObject's own doc comment). All 4 File objects above are stream access -
+// there is no record structure to a PEM file.
+static const uint8_t FILE_ACCESS_METHOD_STREAM = 1;
+
+// BACnetObjectType::file (submodules/cas-bacnet-stack/source/BACnetObjectType.h) and the File
+// object's own required-property identifiers (BACnetPropertyIdentifier.h) - none of these are in
+// common/CASBACnetStackExampleConstants.h (no other example in the series has a File object yet),
+// so, same as OBJECT_TYPE_FILE's sibling local constants above, they are defined locally here.
+static const uint16_t OBJECT_TYPE_FILE = 10;
+static const uint32_t PROPERTY_IDENTIFIER_ARCHIVE = 13;
+static const uint32_t PROPERTY_IDENTIFIER_FILE_SIZE = 42;
+static const uint32_t PROPERTY_IDENTIFIER_FILE_TYPE = 43;
+static const uint32_t PROPERTY_IDENTIFIER_MODIFICATION_DATE = 71;
+static const uint32_t PROPERTY_IDENTIFIER_READ_ONLY = 99;
+
+// AtomicReadFile (BACnetServicesSupported.h: atomicReadFile = 6) - its own
+// confirmed service, NOT implied by adding a File object (BACnetStack_AddFileObject's
+// own doc comment says nothing about enabling it, and in practice a client's
+// AtomicReadFile against an unserviced device times out rather than erroring -
+// found by testing V6, not documented). Same "local constant" rationale as the
+// other File-object constants above.
+static const uint32_t SERVICE_ATOMIC_READ_FILE = 6;
 
 // The BACnet/SC hub accept role's WebSocket/TLS listener - CLI-configurable
 // (--sc-port, --sc-cert-dir; see ParseSCPortArg/ParseSCCertDirArg below), since
@@ -277,6 +336,61 @@ static float g_analogInput1Value = 21.5f;
 // catch-all `return false` at the end of each callback deliberately leaves
 // errorCode alone.
 // -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// 2a-i. File object helpers (phase 4) - map a File object instance to the file
+// it serves under --sc-cert-dir, and read that file's size/bytes/mtime off
+// disk. Shared by GetPropertyCharString/UnsignedInteger/Bool/Date/Time and
+// RegisterCallbackReadFile below (section 2d). NEVER lists hub.key here - the
+// private key has no File object and is never reachable through any of these.
+// -----------------------------------------------------------------------------
+
+// Returns the filename (relative to g_scCertDir) for one of the 4 File object
+// instances above, or NULL if fileInstance isn't one of them.
+static const char* ScCertFileRelativePath(const uint32_t fileInstance) {
+    switch (fileInstance) {
+        case FILE_OPERATIONAL_CERT_INSTANCE: return "hub.crt";
+        case FILE_CSR_INSTANCE:               return "hub.csr";
+        case FILE_ISSUER_CERT_1_INSTANCE:     return "ca.crt";
+        case FILE_ISSUER_CERT_2_INSTANCE:     return "ca.crt"; // same CA both slots - see the
+                                                                // instance's own comment above
+        default: return NULL;
+    }
+}
+
+// Full on-disk path for a File object instance, or "" if it isn't one of the 4.
+static std::string ScCertFilePath(const uint32_t fileInstance) {
+    const char* relative = ScCertFileRelativePath(fileInstance);
+    if (relative == NULL) {
+        return std::string();
+    }
+    return g_scCertDir + "/" + relative;
+}
+
+// Stats the file for a File object instance. Returns false (leaving *size/*mtime
+// untouched) if it isn't one of the 4 File objects or the file can't be stat'd
+// (e.g. --sc-cert-dir doesn't have it yet - same "certs missing" case ScTransport
+// already handles for the listener).
+static bool StatScCertFile(const uint32_t fileInstance, long* size, time_t* mtime) {
+    const std::string path = ScCertFilePath(fileInstance);
+    if (path.empty()) {
+        return false;
+    }
+#if defined(_WIN32)
+    struct _stat st;
+    if (_stat(path.c_str(), &st) != 0) {
+        return false;
+    }
+#else
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        return false;
+    }
+#endif
+    *size = (long)st.st_size;
+    *mtime = st.st_mtime;
+    return true;
+}
 
 // REAL (floating point) - the Analog Input's Present_Value.
 bool GetPropertyReal(const uint32_t deviceInstance, const uint16_t objectType,
@@ -391,6 +505,21 @@ bool GetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t ob
             return true;
         }
     }
+    // File_Size (required; no stack default) - the real on-disk byte count of the
+    // file this File object serves, so it always agrees with what
+    // RegisterCallbackReadFile (section 2d) actually returns. If the cert file is
+    // missing (StatScCertFile fails), decline without an error code (see the
+    // errorCode-out-parameter note at the top of this file) rather than claim 0 -
+    // the stack falls back to its own generic default.
+    if (objectType == OBJECT_TYPE_FILE && propertyIdentifier == PROPERTY_IDENTIFIER_FILE_SIZE) {
+        long size = 0;
+        time_t mtime = 0;
+        if (StatScCertFile(objectInstance, &size, &mtime)) {
+            *value = (uint32_t)size;
+            return true;
+        }
+        return false;
+    }
     return false;
 }
 
@@ -404,7 +533,6 @@ bool GetPropertyBool(const uint32_t deviceInstance, const uint16_t objectType,
     (void)errorCode;
     (void)useArrayIndex;
     (void)propertyArrayIndex;
-    (void)objectInstance;
     if (deviceInstance != g_deviceInstance) {
         return false;
     }
@@ -416,7 +544,87 @@ bool GetPropertyBool(const uint32_t deviceInstance, const uint16_t objectType,
         *value = false;
         return true;
     }
+    // Archive / Read_Only (both required; no stack default) - all 4 File objects
+    // are plain, never-archived, read-only certificate/CSR files. Read_Only mirrors
+    // the isWritable=false given to BACnetStack_AddFileObject; Archive is served
+    // here because it has no stack default either, even though nothing ever writes
+    // it (this device does not implement WriteProperty - see the file header).
+    if (objectType == OBJECT_TYPE_FILE && ScCertFileRelativePath(objectInstance) != NULL) {
+        if (propertyIdentifier == PROPERTY_IDENTIFIER_ARCHIVE) {
+            *value = false;
+            return true;
+        }
+        if (propertyIdentifier == PROPERTY_IDENTIFIER_READ_ONLY) {
+            *value = true;
+            return true;
+        }
+    }
     return false;
+}
+
+// DATE / TIME - together they answer Modification_Date (BACnetDateTime), the
+// only Date/Time-typed property this device serves; the stack calls both
+// callbacks with propertyIdentifier == PROPERTY_IDENTIFIER_MODIFICATION_DATE for
+// the one BACnetDateTime read. No other object in this device has a Date- or
+// Time-typed property, so these two callbacks exist only for the 4 File objects.
+// Required; no stack default (property-profile-reference.md's File section) -
+// the real on-disk mtime of the file this File object serves, in UTC.
+bool GetPropertyDate(const uint32_t deviceInstance, const uint16_t objectType,
+                     const uint32_t objectInstance, const uint32_t propertyIdentifier,
+                     uint8_t* yearMinus1900, uint8_t* month, uint8_t* day, uint8_t* weekday,
+                     const bool useArrayIndex, const uint32_t propertyArrayIndex, uint32_t* errorCode) {
+    (void)errorCode;
+    (void)useArrayIndex;
+    (void)propertyArrayIndex;
+    if (deviceInstance != g_deviceInstance || objectType != OBJECT_TYPE_FILE ||
+        propertyIdentifier != PROPERTY_IDENTIFIER_MODIFICATION_DATE) {
+        return false;
+    }
+    long size = 0;
+    time_t mtime = 0;
+    if (!StatScCertFile(objectInstance, &size, &mtime)) {
+        return false;
+    }
+    struct tm utc;
+#if defined(_WIN32)
+    gmtime_s(&utc, &mtime);
+#else
+    gmtime_r(&mtime, &utc);
+#endif
+    *yearMinus1900 = (uint8_t)utc.tm_year; // struct tm's tm_year is already "years since 1900"
+    *month = (uint8_t)(utc.tm_mon + 1);    // struct tm's tm_mon is 0-based; BACnet's Month is 1-based
+    *day = (uint8_t)utc.tm_mday;
+    *weekday = (uint8_t)(utc.tm_wday == 0 ? 7 : utc.tm_wday); // BACnet Weekday: Monday=1..Sunday=7
+    return true;
+}
+
+bool GetPropertyTime(const uint32_t deviceInstance, const uint16_t objectType,
+                     const uint32_t objectInstance, const uint32_t propertyIdentifier,
+                     uint8_t* hour, uint8_t* minute, uint8_t* second, uint8_t* hundredthSecond,
+                     const bool useArrayIndex, const uint32_t propertyArrayIndex, uint32_t* errorCode) {
+    (void)errorCode;
+    (void)useArrayIndex;
+    (void)propertyArrayIndex;
+    if (deviceInstance != g_deviceInstance || objectType != OBJECT_TYPE_FILE ||
+        propertyIdentifier != PROPERTY_IDENTIFIER_MODIFICATION_DATE) {
+        return false;
+    }
+    long size = 0;
+    time_t mtime = 0;
+    if (!StatScCertFile(objectInstance, &size, &mtime)) {
+        return false;
+    }
+    struct tm utc;
+#if defined(_WIN32)
+    gmtime_s(&utc, &mtime);
+#else
+    gmtime_r(&mtime, &utc);
+#endif
+    *hour = (uint8_t)utc.tm_hour;
+    *minute = (uint8_t)utc.tm_min;
+    *second = (uint8_t)utc.tm_sec;
+    *hundredthSecond = 0; // struct tm has no sub-second resolution
+    return true;
 }
 
 // OCTET STRING - the BACnet/IP Network Port's addressing. The stack cannot know
@@ -448,6 +656,7 @@ bool GetPropertyOctetString(const uint32_t deviceInstance, const uint16_t object
     *valueElementCount = 4;
     return true;
 }
+
 
 // Small helper: copy a C string into the stack's character-string buffer and
 // set the element count + encoding. Returns true (so callers can `return`).
@@ -512,6 +721,22 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
         if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
             return ReturnCharacterString("Vermilion 2", value, valueElementCount, maxElementCount, encodingType);
         }
+        if (objectType == OBJECT_TYPE_FILE) {
+            switch (objectInstance) {
+                case FILE_OPERATIONAL_CERT_INSTANCE: return ReturnCharacterString("Ivory", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_CSR_INSTANCE:               return ReturnCharacterString("Ivory 2", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_ISSUER_CERT_1_INSTANCE:     return ReturnCharacterString("Ivory 3", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_ISSUER_CERT_2_INSTANCE:     return ReturnCharacterString("Ivory 4", value, valueElementCount, maxElementCount, encodingType);
+                default: break;
+            }
+        }
+    }
+
+    // File_Type (required; no stack default - property-profile-reference.md's File
+    // section) - all 4 File objects hold PEM text (certificates/CSR), never the key.
+    if (propertyIdentifier == PROPERTY_IDENTIFIER_FILE_TYPE && objectType == OBJECT_TYPE_FILE &&
+        ScCertFileRelativePath(objectInstance) != NULL) {
+        return ReturnCharacterString("application/x-pem-file", value, valueElementCount, maxElementCount, encodingType);
     }
 
     // The remaining strings are all on the Device object - its identity, read
@@ -655,6 +880,107 @@ void CallbackBACnetSCStateChange(const uint32_t deviceInstance, const uint32_t n
 }
 
 // -----------------------------------------------------------------------------
+// 2d. File objects (phase 4) - AtomicReadFile for the 4 certificate/CSR File
+// objects Network Port 2's SC certificate properties point at (see
+// BACnetStack_SetBACnetSCCertificateFileObjects in main()). NEVER serves
+// certs/hub.key - see the file header and each function's own comment below.
+// -----------------------------------------------------------------------------
+
+// Serves AtomicReadFile against the 4 File objects above by reading the actual
+// bytes of the file ScCertFileRelativePath maps that instance to, straight off
+// disk under --sc-cert-dir. Every one of those 4 files is a public certificate
+// or a CSR - never the private key (hub.key has no File object at all, so there
+// is no fileInstance value that reaches it). Any other File object instance -
+// there are none in this device today - falls through to Abort(other), per this
+// callback's own doc comment for an unrecognised file.
+bool CallbackReadFile(const uint32_t deviceInstance, const uint32_t fileInstance,
+                      const uint32_t fileStart, const uint32_t requestedCount,
+                      uint8_t* fileData, uint32_t* fileDataLength,
+                      const uint32_t maxFileDataLength, bool* endOfFile,
+                      uint32_t* errorCode) {
+    (void)errorCode; // no case here needs a specific error; unhandled falls through to Abort(other)
+    if (deviceInstance != g_deviceInstance) {
+        return false;
+    }
+    const std::string path = ScCertFilePath(fileInstance);
+    if (path.empty()) {
+        return false;
+    }
+    FILE* f = fopen(path.c_str(), "rb");
+    if (f == NULL) {
+        // Cert file missing under --sc-cert-dir (same condition ScTransport's
+        // listener already handles for the TLS side) - Abort(other) rather than a
+        // fabricated empty file, so a client sees this failed rather than believing
+        // it read a real, empty certificate.
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    const long totalSize = ftell(f);
+    if (totalSize < 0 || (uint32_t)totalSize < fileStart) {
+        fclose(f);
+        return false; // fileStart past end-of-file
+    }
+    fseek(f, (long)fileStart, SEEK_SET);
+    uint32_t remaining = (uint32_t)totalSize - fileStart;
+    uint32_t toRead = requestedCount < remaining ? requestedCount : remaining;
+    if (toRead > maxFileDataLength) {
+        toRead = maxFileDataLength; // stream reads are silently clamped, per this
+                                     // callback's own doc comment - never abort here
+    }
+    const size_t bytesRead = toRead > 0 ? fread(fileData, 1, toRead, f) : 0;
+    fclose(f);
+    *fileDataLength = (uint32_t)bytesRead;
+    *endOfFile = (fileStart + bytesRead) >= (uint32_t)totalSize;
+    return true;
+}
+
+// Registered for documentation/completeness only (plan fact 10 / stack item S6) -
+// NOT WIRED UP in this stack build: BACnetStack_RegisterCallbackValidateBACnetSCOperationalCertificate's
+// own doc comment says the stack stores this pointer and never calls it (verified: no
+// call site anywhere in submodules/cas-bacnet-stack/source other than the
+// registration function itself). Registering it does NOT validate any certificate,
+// and does NOT provide any real security control - this device's actual (and only)
+// cert policy is the CA-chain check ScTransport's TLS contexts perform (see
+// ScTransport.h). This function's body is unreachable in this stack build.
+bool CallbackValidateBACnetSCOperationalCertificate(
+        const uint32_t deviceInstance, const uint32_t networkPortInstance,
+        const uint8_t* operationalCertificateFileData, const uint32_t operationalCertificateFileDataLength,
+        const uint8_t* issuerCertificateFile1Data, const uint32_t issuerCertificateFile1DataLength,
+        const uint8_t* issuerCertificateFile2Data, const uint32_t issuerCertificateFile2DataLength,
+        const CASBACnetTime timestamp, uint32_t* failingPropertyIdentifier,
+        char* details, uint32_t* detailsLength, const uint32_t maxDetailsLength) {
+    (void)deviceInstance; (void)networkPortInstance;
+    (void)operationalCertificateFileData; (void)operationalCertificateFileDataLength;
+    (void)issuerCertificateFile1Data; (void)issuerCertificateFile1DataLength;
+    (void)issuerCertificateFile2Data; (void)issuerCertificateFile2DataLength;
+    (void)timestamp; (void)failingPropertyIdentifier;
+    *detailsLength = 0; // unreachable - see this function's own comment above
+    (void)details; (void)maxDetailsLength;
+    return true;
+}
+
+// Registered for documentation/completeness only - same "NOT WIRED UP" situation
+// as CallbackValidateBACnetSCOperationalCertificate above (plan fact 10 / stack
+// item S6): BACnetStack_RegisterCallbackGenerateBACnetSCCertificateSigningRequest's
+// own doc comment says there is no call site, in particular no WriteProperty path
+// reaches it. This device does not implement WriteProperty at all (see the file
+// header), so even if the stack wired this callback up later, nothing in this
+// device would trigger it today. Unreachable in this stack build.
+bool CallbackGenerateBACnetSCCertificateSigningRequest(
+        const uint32_t deviceInstance, const uint32_t networkPortInstance,
+        const uint8_t* activeOperationalCertificateFileData, const uint32_t activeOperationalCertificateFileDataLength,
+        uint8_t* generatedCsrFileData, uint32_t* generatedCsrFileDataLength, const uint32_t maxGeneratedCsrFileDataLength,
+        char* details, uint32_t* detailsLength, const uint32_t maxDetailsLength) {
+    (void)deviceInstance; (void)networkPortInstance;
+    (void)activeOperationalCertificateFileData; (void)activeOperationalCertificateFileDataLength;
+    (void)generatedCsrFileData; (void)maxGeneratedCsrFileDataLength;
+    (void)details; (void)maxDetailsLength;
+    *generatedCsrFileDataLength = 0; // unreachable - see this function's own comment above
+    *detailsLength = 0;
+    return false;
+}
+
+// -----------------------------------------------------------------------------
 // 3. main()
 // -----------------------------------------------------------------------------
 // Parse "--sc-port <n>" (1..65535); returns defaultPort if not given/invalid.
@@ -785,6 +1111,8 @@ int main(int argc, char** argv) {
     BACnetStack_RegisterCallbackGetPropertyCharacterString(GetPropertyCharString);
     BACnetStack_RegisterCallbackGetPropertyBool(GetPropertyBool);
     BACnetStack_RegisterCallbackGetPropertyOctetString(GetPropertyOctetString);
+    BACnetStack_RegisterCallbackGetPropertyDate(GetPropertyDate);
+    BACnetStack_RegisterCallbackGetPropertyTime(GetPropertyTime);
     // DeviceCommunicationControl (DM-DCC-B).
     BACnetStack_RegisterCallbackDeviceCommunicationControl(DeviceCommunicationControl);
     // BACnet/SC transport callbacks (NM-SCH-B) - both roles are real, see 2c above.
@@ -793,6 +1121,14 @@ int main(int argc, char** argv) {
     BACnetStack_RegisterCallbackSCStartListening(CallbackSCStartListening);
     BACnetStack_RegisterCallbackSCStopListening(CallbackSCStopListening);
     BACnetStack_RegisterCallbackBACnetSCStateChange(CallbackBACnetSCStateChange);
+    // File objects (phase 4) - AtomicReadFile for the 4 certificate/CSR File
+    // objects, see section 2d above.
+    BACnetStack_RegisterCallbackReadFile(CallbackReadFile);
+    // Registered for documentation/completeness only - NOT WIRED UP in this stack
+    // build (no WriteFile registered either: this device stays read-only). See
+    // section 2d's comment on each function above.
+    BACnetStack_RegisterCallbackValidateBACnetSCOperationalCertificate(CallbackValidateBACnetSCOperationalCertificate);
+    BACnetStack_RegisterCallbackGenerateBACnetSCCertificateSigningRequest(CallbackGenerateBACnetSCCertificateSigningRequest);
 
     // --- Create the device --------------------------------------------------
     if (!BACnetStack_AddDevice(g_deviceInstance)) {
@@ -811,6 +1147,12 @@ int main(int argc, char** argv) {
     }
     if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_DEVICE_COMMUNICATION_CONTROL, true)) {
         printf("Error: Failed to enable the DeviceCommunicationControl service.\n");
+        return 1;
+    }
+    // AtomicReadFile (phase 4) - required for the 4 certificate/CSR File objects
+    // to actually answer reads; see SERVICE_ATOMIC_READ_FILE's own comment above.
+    if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_ATOMIC_READ_FILE, true)) {
+        printf("Error: Failed to enable the AtomicReadFile service.\n");
         return 1;
     }
 
@@ -886,6 +1228,53 @@ int main(int argc, char** argv) {
                                                   true, SC_MAX_HUB_CONNECTIONS)) {
         printf("Error: Failed to enable the BACnet/SC hub function.\n");
         return 1;
+    }
+
+    // --- Add the 4 read-only certificate/CSR File objects (phase 4) ---------
+    // and bind them to Network Port 2's SC certificate properties. Content is
+    // served from --sc-cert-dir by CallbackReadFile (section 2d) - never
+    // hub.key. See the FILE_*_INSTANCE constants' own comment above for which
+    // file each instance serves and why the two issuer slots are the same file
+    // in this lab setup.
+    if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_OPERATIONAL_CERT_INSTANCE,
+                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   FILE_ACCESS_METHOD_STREAM)) {
+        printf("Error: Failed to add File %u (Ivory, operational certificate).\n", FILE_OPERATIONAL_CERT_INSTANCE);
+        return 1;
+    }
+    if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_CSR_INSTANCE,
+                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   FILE_ACCESS_METHOD_STREAM)) {
+        printf("Error: Failed to add File %u (Ivory 2, certificate signing request).\n", FILE_CSR_INSTANCE);
+        return 1;
+    }
+    if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_ISSUER_CERT_1_INSTANCE,
+                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   FILE_ACCESS_METHOD_STREAM)) {
+        printf("Error: Failed to add File %u (Ivory 3, issuer certificate 1).\n", FILE_ISSUER_CERT_1_INSTANCE);
+        return 1;
+    }
+    if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_ISSUER_CERT_2_INSTANCE,
+                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   FILE_ACCESS_METHOD_STREAM)) {
+        printf("Error: Failed to add File %u (Ivory 4, issuer certificate 2).\n", FILE_ISSUER_CERT_2_INSTANCE);
+        return 1;
+    }
+    {
+        // Exactly 2 issuer slots - the stack requires this regardless of how many
+        // distinct CAs the lab setup actually has (see the FILE_ISSUER_CERT_2_INSTANCE
+        // comment above: both slots point at the same certs/ca.crt here).
+        const uint32_t issuerCertificateFileInstances[2] = {
+            FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE
+        };
+        if (!BACnetStack_SetBACnetSCCertificateFileObjects(
+                g_deviceInstance, SC_NETWORK_PORT_INSTANCE,
+                /*hasOperationalCertificateFile*/ true, FILE_OPERATIONAL_CERT_INSTANCE,
+                /*hasCertificateSigningRequestFile*/ true, FILE_CSR_INSTANCE,
+                issuerCertificateFileInstances, 2)) {
+            printf("Error: Failed to bind Network Port %u's SC certificate File objects.\n", SC_NETWORK_PORT_INSTANCE);
+            return 1;
+        }
     }
 
     // --- Optionally ALSO configure the hub CONNECTOR (initiator) role -------

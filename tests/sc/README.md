@@ -65,3 +65,29 @@ calls itself; see `ScTransport.h`'s "NO AUTO-RECONNECT" note).
 Manual, against `BACnetSCCli.exe` in `Role=hub` mode (or a second local
 instance of this same example) - see the plan's V5. Not run by any script
 here.
+
+## `file_object_test.py` (V6 - Phase 4, the certificate/CSR File objects)
+
+A real BACnet/IP client (`bacpypes3`) - no BACnet/SC connection needed, since
+these 4 File objects are read over plain ReadProperty/AtomicReadFile on
+Network Port 1.
+
+```
+pip install -r tests/sc/requirements.txt
+cmake -P scripts/generate-test-certs.cmake   # once, if certs/ is empty
+./build/BACnetExampleBSCHUB.exe --sc-cert-dir ./certs
+# in a separate terminal:
+python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47808 --cert-dir certs
+```
+
+Checks:
+
+- `AtomicReadFile(File 1, "Ivory")` returns the bytes of `certs/hub.crt`
+  byte-for-byte.
+- Network Port 2's `Issuer_Certificate_Files` (property 511) has exactly 2
+  entries.
+- Negative test: File objects 1-4 are all read via AtomicReadFile and compared
+  against `certs/hub.key` - none may match (the private key has no File
+  object at all, so this proves the negative rather than assuming it).
+
+Exit code 0 = every check passed.

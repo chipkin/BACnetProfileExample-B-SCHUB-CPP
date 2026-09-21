@@ -47,6 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the example's own hub-connector state machine reaches
   `HubConnectorState_ConnectedPrimary`, independently confirmed by the real
   hub's own log decoding the example's Connect-Request.
+- **4 read-only File objects** (Phase 4 of `docs/bacnet-sc-transport-plan.md`):
+  File 1 "Ivory" (operational certificate, `certs/hub.crt`), File 2 "Ivory 2"
+  (certificate signing request, `certs/hub.csr`), and File 3/4 "Ivory 3"/"Ivory
+  4" (the 2 required issuer-certificate slots, both `certs/ca.crt` in this lab
+  setup), all stream-access via `BACnetStack_AddFileObject` and bound to
+  Network Port 2 with `BACnetStack_SetBACnetSCCertificateFileObjects`.
+  `main.cpp`'s new `CallbackReadFile` (section 2d) serves the real bytes of
+  each file straight off disk under `--sc-cert-dir` - never `certs/hub.key`,
+  which has no File object at all. `RegisterCallbackValidateBACnetSCOperationalCertificate`/
+  `RegisterCallbackGenerateBACnetSCCertificateSigningRequest` are also
+  registered, for documentation/completeness only - both have zero call sites
+  in this stack build (plan fact 10 / stack item S6), so registering them
+  provides no real certificate-validation security. AtomicReadFile
+  (`SERVICE_ATOMIC_READ_FILE`) is now enabled - its own confirmed service, not
+  implied by adding a File object. No WriteFile: this device stays read-only.
+- Verified (V6 in the plan), over BACnet/IP with a hand-built `bacpypes3`
+  client (`tests/sc/file_object_test.py`): `AtomicReadFile(File 1)` returns
+  the bytes of `certs/hub.crt` byte-for-byte; Network Port 2's
+  `Issuer_Certificate_Files` has exactly 2 entries; every File object (1-4)
+  was enumerated and read, and none served `certs/hub.key`.
 
 ### Changed
 
