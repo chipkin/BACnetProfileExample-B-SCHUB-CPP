@@ -3,7 +3,7 @@
 BACnet/SC certificate properties point at, over plain BACnet/IP.
 
 Checks, against a running instance of this example (default 127.0.0.1:47808):
-  1. AtomicReadFile of File 1 (the operational certificate, "Ivory") returns the bytes of
+  1. AtomicReadFile of File 1 (the operational certificate, "Operational Certificate") returns the bytes of
      certs/hub.crt on disk, byte-for-byte.
   2. Network Port 2's Issuer_Certificate_Files property (511) has exactly 2 entries.
   3. Negative test: every File object in the device's Object_List is read via AtomicReadFile and
@@ -100,7 +100,7 @@ async def main():
                 f"certs/hub.crt on disk is {len(on_disk)} bytes - MISMATCH"
             )
         else:
-            print(f"PASS: AtomicReadFile(File 1, \"Ivory\") == certs/hub.crt byte-for-byte ({len(on_disk)} bytes)")
+            print(f"PASS: AtomicReadFile(File 1, \"Operational Certificate\") == certs/hub.crt byte-for-byte ({len(on_disk)} bytes)")
 
         # --- 2. Network Port 2's Issuer_Certificate_Files has exactly 2 entries --------
         response = await app.request(

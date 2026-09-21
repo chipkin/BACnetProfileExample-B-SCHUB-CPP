@@ -113,6 +113,30 @@ phase-by-phase verification record this entry summarizes.
   distinguished list) plus genuinely open items for the user (push/PR
   permission, whether to file the stack issues upstream, CI cache-eviction
   economics, a production certificate story).
+- **Network Port and File object names changed from colour names to purpose
+  names**, a deliberate departure from this series' usual colour-naming
+  convention for these 6 objects specifically: Network Port 1 "Vermilion" ->
+  "BACnet IP", Network Port 2 "Vermilion 2" -> "BACnet SC", File 1 "Ivory" ->
+  "Operational Certificate", File 2 "Ivory 2" -> "CSR", File 3 "Ivory 3" ->
+  "Issuer Certificate Slot 1", File 4 "Ivory 4" -> "Issuer Certificate Slot
+  2". The Device and the three sensor inputs (Rainbow/Bronze/Emerald/Hot
+  Pink) keep their colour names. Re-verified live: `tests/sc/file_object_test.py`
+  still passes 3/3 (`AtomicReadFile(File 1, "Operational Certificate")`
+  byte-for-byte, `Issuer_Certificate_Files` still 2 entries, the key still
+  unreachable).
+- **README.md, TUTORIAL.md and tests/sc/README.md rewritten to drop
+  process-history framing** ("used to be a stub," "Phase N," comparisons to
+  the pre-transport state) in favour of describing only the current,
+  present-tense behaviour. `docs/bacnet-sc-transport-plan.md` and
+  `docs/bacnet-sc-planning-prompt.md` remain in the repository as the design
+  record, but README.md no longer cites them as the primary source for what
+  the transport does - it cites `sc_transport/README.md` and `TODO.md`
+  instead. Two stale claims left over from before the transport went from
+  stub to real were also found and fixed in `docs/objects.json`/`docs/PICS.md`
+  (Network Port 2's note, the NM-SCH-B BIBB row, and the Annex 7/9 datalink
+  sections still said "the WebSocket/TLS transport is a documented stub... no
+  BACnet/SC node can connect in this build") - these were checked, not
+  assumed, and corrected to match the real, verified current behaviour.
 
 ### Verified
 

@@ -46,7 +46,7 @@ superset of B-GENERAL's, a conformant B-SCHUB device also satisfies
 | DM-DDB-B | Device Management - Dynamic Device Binding - B | |
 | DM-DOB-B | Device Management - Dynamic Object Binding - B | |
 | DM-DCC-B | Device Management - DeviceCommunicationControl - B | |
-| NM-SCH-B | Network - Secure Connect Hub Function - B | protocol/configuration real and stack-verified; the WebSocket/TLS transport is a documented stub - see §9 and [README.md "BACnet/SC support"](../README.md#bacnetsc-support-read-this-first) |
+| NM-SCH-B | Network - Secure Connect Hub Function - B | protocol and WebSocket/TLS transport both real and verified against real peers - see §9 and [README.md "BACnet/SC support"](../README.md#bacnetsc-support-read-this-first) |
 
 No other BIBBs are supported. In particular this device does **not** support
 DS-WP-B (WriteProperty), DS-RPM-B (ReadPropertyMultiple), DS-COV-B, any alarm
@@ -100,8 +100,9 @@ transport outcome below.
 
 **BACnet/SC (Annex AB)** is configured on Network Port 2 (hub function,
 NM-SCH-B) - the SC UUID, hub accept URI and hub function config are all set
-and accepted by the stack - but the underlying WebSocket/TLS transport is a
-documented stub (see §9). No BACnet/SC node can connect in this build.
+and accepted by the stack, and the underlying WebSocket/TLS transport
+(mutual TLS 1.3, both the hub-function and hub-connector roles) is real -
+see §9.
 
 BBMD is not supported, Foreign Device registration is not supported, and
 MS/TP, Ethernet (Annex H) and PTP are not supported.
@@ -118,17 +119,17 @@ Not a router, not a BBMD, and does not register as a foreign device.
 **BACnet/SC hub function (NM-SCH-B) - precise status:** the stack-level
 configuration is real and stack-verified: `BACnetStack_SetBACnetSCUuid`,
 `BACnetStack_AddBACnetSCAcceptUri` and `BACnetStack_SetBACnetSCHubFunctionConfig`
-all succeed at start-up, and the stack's own state machine calls back into this
-example (`CallbackSCStartListening`) asking to listen on the configured
-`wss://` accept URI, exactly as a hub-function-enabled port is documented to
-do. **What is not implemented is the WebSocket/TLS transport underneath it** -
-`CallbackInitiateWebsocket`, `CallbackSCStartListening` and their disconnect
-counterparts are honest stubs that log the request and return `false` /
-do nothing, rather than claiming a connection that does not exist. No
-BACnet/SC node can therefore actually connect to this hub in this build. See
+all succeed at start-up. `CallbackSCStartListening`/`CallbackSCStopListening`
+and `CallbackInitiateWebsocket`/`CallbackDisconnectWebsocket` forward to a
+real libwebsockets + OpenSSL transport (`sc_transport/ScTransport`) - mutual
+TLS 1.3, the `hub.bsc.bacnet.org` subprotocol, both the hub-function/listener
+role and the (off-by-default) hub-connector/dial-out role. A real BACnet/SC
+node can connect to this hub, and this device can dial out to a real
+BACnet/SC hub, both verified against real peers. See
 [README.md "BACnet/SC support"](../README.md#bacnetsc-support-read-this-first)
-and [`../TODO.md`](../TODO.md) for the full finding and exactly what a real
-transport implementation needs to add.
+and [`../TODO.md`](../TODO.md) for the remaining, genuinely open items
+(certificate validation callbacks not wired up in this stack build, no
+hostname checking on the connector, no CRL support).
 
 ## 10. Character sets supported
 
@@ -210,7 +211,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | State_Text *(optional, enabled)* | BACnetARRAY[N] of CharacterString | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 1 "Vermilion" - BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal)
+### Network Port 1 "BACnet IP" - BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal)
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -225,7 +226,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Changes_Pending | Boolean | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 2 "Vermilion 2" - BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function - see README "BACnet/SC support". The hub function's BACnet-level configuration (UUID, accept URI, SetBACnetSCHubFunctionConfig) is real and stack-verified; the underlying WebSocket/TLS transport is a documented stub (RegisterCallbackInitiateWebsocket/DisconnectWebsocket/SCStartListening/SCStopListening all log and decline - see main.cpp section 2c and TODO.md), so this Network Port never reaches a connected SC node in this build. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability is accepted at the generic default (normal) for the same reason as Network Port 1
+### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function - see README "BACnet/SC support". Both the protocol configuration (UUID, accept URI, SetBACnetSCHubFunctionConfig) and the WebSocket/TLS transport underneath it (sc_transport/ScTransport) are real and verified against real BACnet/SC peers - both the hub-function/listener and hub-connector roles. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability is accepted at the generic default (normal) for the same reason as Network Port 1
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -240,7 +241,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Changes_Pending | Boolean | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 1 "Ivory" - read-only; serves the hub's operational certificate (certs/hub.crt) via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date are the real on-disk size/mtime of that file, so they always agree with what AtomicReadFile actually returns. Never certs/hub.key - see main.cpp section 2d
+### File 1 "Operational Certificate" - read-only; serves the hub's operational certificate (certs/hub.crt) via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date are the real on-disk size/mtime of that file, so they always agree with what AtomicReadFile actually returns. Never certs/hub.key - see main.cpp section 2d
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -255,7 +256,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 2 "Ivory 2" - read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1
+### File 2 "CSR" - read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -270,7 +271,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 3 "Ivory 3" - read-only; issuer certificate slot 1 (certs/ca.crt) - one of Network Port 2's 2 Issuer_Certificate_Files entries (the stack requires exactly 2 slots)
+### File 3 "Issuer Certificate Slot 1" - read-only; issuer certificate slot 1 (certs/ca.crt) - one of Network Port 2's 2 Issuer_Certificate_Files entries (the stack requires exactly 2 slots)
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -285,7 +286,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 4 "Ivory 4" - read-only; issuer certificate slot 2 - also certs/ca.crt (same file as File 3): this lab setup has one CA, and the stack requires exactly 2 issuer slots regardless of how many distinct CAs exist
+### File 4 "Issuer Certificate Slot 2" - read-only; issuer certificate slot 2 - also certs/ca.crt (same file as File 3): this lab setup has one CA, and the stack requires exactly 2 issuer slots regardless of how many distinct CAs exist
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|

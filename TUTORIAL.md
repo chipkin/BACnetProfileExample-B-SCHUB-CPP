@@ -38,11 +38,10 @@ rejects a mismatch with `password-failure` instead of accepting any request.
 
 ### Implement the BACnet/SC transport for real
 
-This used to be the biggest gap in this example; it no longer is. Both
-transport roles are real, compiled, and verified against real peers - see
-[README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first)
-and `docs/bacnet-sc-transport-plan.md` for the full design and verification
-record. This section is the "how it works, and how to take it further" a
+Both transport roles are real, compiled, and verified against real peers -
+see [README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first)
+for what's implemented and `sc_transport/README.md` for the wire-level
+contract. This section is the "how it works, and how to take it further" a
 reader who wants to productionize the pattern needs - not a build-it-yourself
 checklist.
 
@@ -200,7 +199,7 @@ to miss and the one BTL will fail you for.
 // 1) a new instance number (in section 1).
 //    Naming: a second object of a type is "<Colour> 2" - so Analog Input 2 is
 //    "Bronze 2", NOT a new colour. Each object TYPE owns one colour series-wide
-//    (Network Port 2 in this example, "Vermilion 2", already follows this rule).
+//    (Network Port 2 in this example, "BACnet SC", already follows this rule).
 static const uint32_t ANALOG_INPUT_2_INSTANCE = 2;   // "Bronze 2"
 static float g_analogInput2Value = 23.1f;            // its live value
 

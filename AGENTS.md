@@ -112,8 +112,8 @@ Interactive keys while running: `h` help, `q` quit, up/down nudge Analog Input 1
   but expose **every required property** of each object for Protocol_Revision
   24. No WriteProperty, no commandable outputs - this profile does not require
   DS-WP-B.
-- Two Network Port objects: 1 "Vermilion" (BACnet/IP - keep this fully
-  functional, it is the example's fallback discovery path) and 2 "Vermilion 2"
+- Two Network Port objects: 1 "BACnet IP" (BACnet/IP - keep this fully
+  functional, it is the example's fallback discovery path) and 2 "BACnet SC"
   (BACnet/SC, `Network_Type = secureConnect (11)`, a **local** constant in
   `main.cpp` - not added to `common/`, see below).
 - DeviceCommunicationControl (DM-DCC-B): the stack runs the enable/disable state

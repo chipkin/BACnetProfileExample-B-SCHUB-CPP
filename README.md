@@ -30,20 +30,16 @@ This example is canonical for **F-SC**. **Both the BACnet/SC protocol and the
 WebSocket/TLS transport underneath it are real and verified against real
 peers** - a real BACnet/SC node connects to this hub, mutually authenticates
 over TLS 1.3, and is discovered/read over BACnet/SC; this example can, in
-turn, dial out to (and be discovered/relayed by) a real BACnet/SC hub. There
-is no remaining "documented stub" in this repository's BACnet/SC transport -
-see `docs/bacnet-sc-transport-plan.md` for the full design/verification
-record and `TODO.md` for what is left as a genuine, documented limitation
-(certificate validation callbacks, hostname checking, CRLs - none of them
-bugs in this example; see below).
+turn, dial out to (and be discovered/relayed by) a real BACnet/SC hub. See
+`TODO.md` for the genuine, documented limitations that remain (certificate
+validation callbacks, hostname checking, CRLs - none of them bugs in this
+example; see below).
 
-**The finding (read from the stack's doc comments and
-`submodules/cas-bacnet-stack/docs/CAS BACnet Stack - BACnet SC Manual_v6.md`,
-not assumed):** the CAS BACnet Stack owns the BACnet/SC *protocol* - the Hello
-handshake, the hub/node/direct-connect connection state machines, BVLC framing,
-certificate-object bookkeeping, and every SC-related Network Port property. It
-does **not** own the transport. Verbatim, from the doc comment on
-`BACnetStack_RegisterCallbackInitiateWebsocket` in `CASBACnetStackDLL.h`:
+**Architecture:** the CAS BACnet Stack owns the BACnet/SC *protocol* - the
+Hello handshake, the hub/node/direct-connect connection state machines, BVLC
+framing, certificate-object bookkeeping, and every SC-related Network Port
+property. It does **not** own the transport. Verbatim, from the doc comment
+on `BACnetStack_RegisterCallbackInitiateWebsocket` in `CASBACnetStackDLL.h`:
 
 > "The stack implements no WebSocket or TLS itself."
 
@@ -57,10 +53,10 @@ generation are likewise host callbacks. This example supplies all of that:
 `sc_transport/` (below) for the WebSocket/TLS transport, and 4 read-only File
 objects (see the device tree below) for the certificate/CSR content.
 
-**What this example implements (real, compiled, stack-verified, both roles):**
+**What this example implements (both roles):**
 
 - `BACnetStack_SetBACnetSCUuid` - the required device-wide SC UUID.
-- A second Network Port object (2, "Vermilion 2", `Network_Type = secureConnect
+- A second Network Port object (2, "BACnet SC", `Network_Type = secureConnect
   (11)`) representing the BACnet/SC data link.
 - `BACnetStack_AddBACnetSCAcceptUri` + `BACnetStack_SetBACnetSCHubFunctionConfig`
   - configures and **enables** the NM-SCH-B hub function with a `wss://` accept
@@ -92,7 +88,7 @@ objects (see the device tree below) for the certificate/CSR content.
   node certificate set under `certs/` (gitignored; **lab testing only** - see
   [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real) for
   what a production certificate story needs).
-- 4 read-only File objects (`Ivory`/`Ivory 2`/`Ivory 3`/`Ivory 4`) serving the
+- 4 read-only File objects (`Operational Certificate`/`CSR`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
   hub's operational certificate, CSR, and issuer certificate (×2 slots) over
   AtomicReadFile - **never the private key**, which has no File object at
   all. Verified byte-for-byte over BACnet/IP against `certs/hub.crt`, with the
@@ -109,7 +105,7 @@ support; and the stack's SC ingress path is capped at 1497 bytes, one octet
 short of Annex AB's 1600-octet minimum BVLC size a conformant hub should be
 able to relay.
 
-**The BACnet/IP Network Port (1, "Vermilion") stays fully active** throughout,
+**The BACnet/IP Network Port (1, "BACnet IP") stays fully active** throughout,
 so this example remains discoverable and testable over plain BACnet/IP
 regardless of BACnet/SC, including while BACnet/SC peers are connected - see
 [Verify](#verify) below.
@@ -163,12 +159,12 @@ Device 389022  "Rainbow"   (Vendor 389 - Chipkin Automation Systems)
     ├── Analog Input  1       "Bronze"        Present_Value  21.5    (REAL, degrees Celsius; read-only)
     ├── Binary Input  1       "Emerald"       Present_Value  inactive  (0 = inactive / 1 = active; read-only)
     ├── Multi-State Input 1   "Hot Pink"      Present_Value  1       (state, 1..3; read-only)
-    ├── Network Port 1        "Vermilion"     BACnet/IP - active, discoverable (required on every device)
-    ├── Network Port 2        "Vermilion 2"   BACnet/SC hub function - CONFIGURED, transport is real (both roles)
-    ├── File 1                "Ivory"         operational certificate (certs/hub.crt), read-only
-    ├── File 2                "Ivory 2"       certificate signing request (certs/hub.csr), read-only
-    ├── File 3                "Ivory 3"       issuer certificate slot 1 (certs/ca.crt), read-only
-    └── File 4                "Ivory 4"       issuer certificate slot 2 (certs/ca.crt), read-only
+    ├── Network Port 1        "BACnet IP"     BACnet/IP - active, discoverable (required on every device)
+    ├── Network Port 2        "BACnet SC"   BACnet/SC hub function - CONFIGURED, transport is real (both roles)
+    ├── File 1                "Operational Certificate"         operational certificate (certs/hub.crt), read-only
+    ├── File 2                "CSR"       certificate signing request (certs/hub.csr), read-only
+    ├── File 3                "Issuer Certificate Slot 1"       issuer certificate slot 1 (certs/ca.crt), read-only
+    └── File 4                "Issuer Certificate Slot 2"       issuer certificate slot 2 (certs/ca.crt), read-only
 ```
 
 ## What this example supports
@@ -209,12 +205,12 @@ still claims exactly one profile.
 | Analog Input | 1 | Bronze | read-only |
 | Binary Input | 1 | Emerald | read-only |
 | Multi-State Input | 1 | Hot Pink | read-only |
-| Network Port | 1 | Vermilion | - (BACnet/IP) |
-| Network Port | 2 | Vermilion 2 | - (BACnet/SC) |
-| File | 1 | Ivory | read-only (operational certificate) |
-| File | 2 | Ivory 2 | read-only (certificate signing request) |
-| File | 3 | Ivory 3 | read-only (issuer certificate slot 1) |
-| File | 4 | Ivory 4 | read-only (issuer certificate slot 2) |
+| Network Port | 1 | BACnet IP | - (BACnet/IP) |
+| Network Port | 2 | BACnet SC | - (BACnet/SC) |
+| File | 1 | Operational Certificate | read-only (operational certificate) |
+| File | 2 | CSR | read-only (certificate signing request) |
+| File | 3 | Issuer Certificate Slot 1 | read-only (issuer certificate slot 1) |
+| File | 4 | Issuer Certificate Slot 2 | read-only (issuer certificate slot 2) |
 
 Every required property of every object, and who answers it, is in
 [docs/PICS.md](docs/PICS.md).
@@ -354,7 +350,7 @@ Common helper (common/) version: 2.5.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
 TX 21 bytes to 192.168.3.255:47808 (broadcast) (Network Port 1)
 FYI: Device 389022 ("Rainbow") ready. Vendor ID 389. Press 'h' for help.
-FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (Vermilion 2), accept URI wss://0.0.0.0:47819/. Certificates: ./certs. See README.md "BACnet/SC support" for how to generate lab test certs.
+FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (BACnet SC), accept URI wss://0.0.0.0:47819/. Certificates: ./certs. See README.md "BACnet/SC support" for how to generate lab test certs.
 RX 21 bytes from 192.168.3.64:47808 (Network Port 1)
 BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
 ```
@@ -423,7 +419,7 @@ against a running instance of this example:
    `Vendor_Identifier` = `389`; `Model_Name` = `"CAS BACnet Stack Example -
    B-SCHUB"`.
 3. **Read Analog Input 1** - `Present_Value` = `21.5`.
-4. **Read Network Port 2** - `Object_Name` = `"Vermilion 2"`; `Network_Type` =
+4. **Read Network Port 2** - `Object_Name` = `"BACnet SC"`; `Network_Type` =
    `11` (`secureConnect`) - confirming the BACnet/SC Network Port object is
    present and correctly typed, over ordinary BACnet/IP ReadProperty.
 5. **Confirm the profile boundary** - a **WriteProperty** to any object is
@@ -435,9 +431,8 @@ Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer).
 
 ### Over BACnet/SC (verified against a real peer)
 
-Unlike the transport-stub era of this repository, this **was** verified on the
-wire, against a real second process, not just against this repository's own
-test scripts:
+Verified on the wire, against a real second process, not just against this
+repository's own test scripts:
 
 1. **Generate lab certificates** - `cmake --build build --target test-certs`
    (see [Generate lab test certificates](#generate-lab-test-certificates)
@@ -467,7 +462,7 @@ test scripts:
    `Role=hub`), the example's hub-connector state machine reaches
    `ConnectedPrimary`.
 4. **Certificate File objects** - `tests/sc/file_object_test.py` (a real
-   `bacpypes3` BACnet/IP client) confirms `AtomicReadFile(File 1, "Ivory")`
+   `bacpypes3` BACnet/IP client) confirms `AtomicReadFile(File 1, "Operational Certificate")`
    returns `certs/hub.crt` byte-for-byte, Network Port 2's
    `Issuer_Certificate_Files` has exactly 2 entries, and none of the 4 File
    objects ever serve `certs/hub.key`.
@@ -477,9 +472,7 @@ test scripts:
    does not starve either datalink while both are busy.
 
 See `tests/sc/README.md` for the full command lines and what each script
-checks, and `docs/bacnet-sc-transport-plan.md`'s "Verification" section
-(V1-V7) for the complete verification record across all four implementation
-phases.
+checks, and `sc_transport/README.md` for the transport's wire-level contract.
 
 For a property-by-property review against the conformance statement, see
 [TUTORIAL.md](TUTORIAL.md).

@@ -4,7 +4,7 @@ Verification scripts for `sc_transport/` - see
 `../../docs/bacnet-sc-transport-plan.md`'s "Verification" section for what
 each one proves.
 
-## `hub_listener_test.py` (V1, V2 - Phase 2, the listener/hub-function half)
+## `hub_listener_test.py` (V1, V2 - the listener/hub-function half)
 
 ```
 pip install -r tests/sc/requirements.txt
@@ -35,7 +35,7 @@ Manual, against `C:\dev\chipkin\BACnetSCCli\app\build\Release\BACnetSCCli.exe`
 in `Role=node` mode - see the plan's V3 for the exact config. Not run by any
 script here.
 
-## `fake_hub_server.py` (V4 - Phase 3, the connector half)
+## `fake_hub_server.py` (V4 - the connector half)
 
 A mutual-TLS `websockets` server offering the `hub.bsc.bacnet.org`
 subprotocol, standing in as a fake hub so the CONNECTOR half
@@ -66,7 +66,7 @@ Manual, against `BACnetSCCli.exe` in `Role=hub` mode (or a second local
 instance of this same example) - see the plan's V5. Not run by any script
 here.
 
-## `file_object_test.py` (V6 - Phase 4, the certificate/CSR File objects)
+## `file_object_test.py` (V6 - the certificate/CSR File objects)
 
 A real BACnet/IP client (`bacpypes3`) - no BACnet/SC connection needed, since
 these 4 File objects are read over plain ReadProperty/AtomicReadFile on
@@ -82,7 +82,7 @@ python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47808 --cer
 
 Checks:
 
-- `AtomicReadFile(File 1, "Ivory")` returns the bytes of `certs/hub.crt`
+- `AtomicReadFile(File 1, "Operational Certificate")` returns the bytes of `certs/hub.crt`
   byte-for-byte.
 - Network Port 2's `Issuer_Certificate_Files` (property 511) has exactly 2
   entries.

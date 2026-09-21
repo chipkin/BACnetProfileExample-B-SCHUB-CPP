@@ -48,7 +48,7 @@
     {
       "type": "Network Port",
       "instance": 1,
-      "name": "Vermilion",
+      "name": "BACnet IP",
       "app": ["Object_Name", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
       "enabled": [],
       "writable": [],
@@ -58,17 +58,17 @@
     {
       "type": "Network Port",
       "instance": 2,
-      "name": "Vermilion 2",
+      "name": "BACnet SC",
       "app": ["Object_Name", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
       "enabled": [],
       "writable": [],
       "accepted": ["Reliability"],
-      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function - see README \"BACnet/SC support\". The hub function's BACnet-level configuration (UUID, accept URI, SetBACnetSCHubFunctionConfig) is real and stack-verified; the underlying WebSocket/TLS transport is a documented stub (RegisterCallbackInitiateWebsocket/DisconnectWebsocket/SCStartListening/SCStopListening all log and decline - see main.cpp section 2c and TODO.md), so this Network Port never reaches a connected SC node in this build. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability is accepted at the generic default (normal) for the same reason as Network Port 1"
+      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function - see README \"BACnet/SC support\". Both the protocol configuration (UUID, accept URI, SetBACnetSCHubFunctionConfig) and the WebSocket/TLS transport underneath it (sc_transport/ScTransport) are real and verified against real BACnet/SC peers - both the hub-function/listener and hub-connector roles. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability is accepted at the generic default (normal) for the same reason as Network Port 1"
     },
     {
       "type": "File",
       "instance": 1,
-      "name": "Ivory",
+      "name": "Operational Certificate",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
       "writable": [],
@@ -78,7 +78,7 @@
     {
       "type": "File",
       "instance": 2,
-      "name": "Ivory 2",
+      "name": "CSR",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
       "writable": [],
@@ -88,7 +88,7 @@
     {
       "type": "File",
       "instance": 3,
-      "name": "Ivory 3",
+      "name": "Issuer Certificate Slot 1",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
       "writable": [],
@@ -98,7 +98,7 @@
     {
       "type": "File",
       "instance": 4,
-      "name": "Ivory 4",
+      "name": "Issuer Certificate Slot 2",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
       "writable": [],

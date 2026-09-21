@@ -15,25 +15,30 @@
 //                 and relay traffic between them.
 //
 // It keeps the base series objects - three read-only sensor inputs, each with a
-// colour name (the convention shared across this example series):
+// colour name (the convention shared across this example series). The two
+// Network Ports and four File objects below deliberately break from that
+// convention: they are purpose-named instead, because a BACnet/SC hub's
+// operator-facing tooling (and this file's own comments) benefit far more
+// from "which port is the SC one" and "which File is the CSR" being
+// self-evident than from another colour:
 //
-//     Device 389022                "Rainbow"      (instance configurable with --deviceID)
-//     Analog Input  1               "Bronze"       (REAL, degrees Celsius; read-only)
-//     Binary Input  1               "Emerald"      (active / inactive; read-only)
-//     Multi-State Input 1           "Hot Pink"     (state 1..3; read-only)
-//     Network Port 1                "Vermilion"    (the BACnet/IP port - required, kept
-//                                                    active so the device stays
-//                                                    discoverable over plain BACnet/IP)
-//     Network Port 2                "Vermilion 2"  (the BACnet/SC port - hub function)
-//     File 1                        "Ivory"        (read-only; serves the hub's operational
-//                                                    certificate, certs/hub.crt)
-//     File 2                        "Ivory 2"      (read-only; serves the hub's CSR, certs/hub.csr)
-//     File 3                        "Ivory 3"      (read-only; issuer certificate slot 1,
-//                                                    certs/ca.crt)
-//     File 4                        "Ivory 4"      (read-only; issuer certificate slot 2, also
-//                                                    certs/ca.crt - the stack requires exactly 2
-//                                                    issuer slots; this lab setup has one CA, so
-//                                                    both slots point at it)
+//     Device 389022                "Rainbow"                   (instance configurable with --deviceID)
+//     Analog Input  1               "Bronze"                    (REAL, degrees Celsius; read-only)
+//     Binary Input  1               "Emerald"                   (active / inactive; read-only)
+//     Multi-State Input 1           "Hot Pink"                  (state 1..3; read-only)
+//     Network Port 1                "BACnet IP"                 (the BACnet/IP port - required, kept
+//                                                                 active so the device stays
+//                                                                 discoverable over plain BACnet/IP)
+//     Network Port 2                "BACnet SC"                 (the BACnet/SC port - hub function)
+//     File 1                        "Operational Certificate"   (read-only; serves the hub's operational
+//                                                                 certificate, certs/hub.crt)
+//     File 2                        "CSR"                       (read-only; serves the hub's CSR, certs/hub.csr)
+//     File 3                        "Issuer Certificate Slot 1" (read-only; issuer certificate slot 1,
+//                                                                 certs/ca.crt)
+//     File 4                        "Issuer Certificate Slot 2" (read-only; issuer certificate slot 2, also
+//                                                                 certs/ca.crt - the stack requires exactly 2
+//                                                                 issuer slots; this lab setup has one CA, so
+//                                                                 both slots point at it)
 //
 // This profile does NOT require WriteProperty, COV, alarms, scheduling or
 // trending, so this example leaves those off (unlike B-ASC, its seed, it does
@@ -84,7 +89,7 @@
 //     (tests/sc/fake_hub_server.py) and a real hub (BACnetSCCli.exe,
 //     Role=hub), reaching hub-connector state ConnectedPrimary.
 //
-// The BACnet/IP Network Port (1, "Vermilion") stays active and fully functional
+// The BACnet/IP Network Port (1, "BACnet IP") stays active and fully functional
 // throughout, so the example remains discoverable and testable over plain
 // BACnet/IP regardless of BACnet/SC - including while SC peers are connected
 // (main()'s loop alternates IP-first/SC-first each Tick so neither starves the
@@ -212,7 +217,7 @@ static const uint32_t MULTI_STATE_INPUT_NUMBER_OF_STATES = 3;
 // Network Port 1 - the BACnet/IP port every BACnet device must have. Kept
 // active so this example stays discoverable over plain BACnet/IP regardless of
 // the BACnet/SC transport outcome (see the file header note above).
-static const uint32_t NETWORK_PORT_INSTANCE = 1;       // "Vermilion"
+static const uint32_t NETWORK_PORT_INSTANCE = 1;       // "BACnet IP"
 static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 
 // Network Port 2 - the BACnet/SC port, hosting the hub function (NM-SCH-B).
@@ -222,20 +227,21 @@ static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 // it is a separate, serialised protocol - see the series runbook §1). A single
 // example needing one extra constant does not justify a common/ change.
 static const uint8_t NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT = 11;
-static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "Vermilion 2"
+static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "BACnet SC"
 static const uint16_t SC_MAX_HUB_CONNECTIONS = 4;       // small, demo-sized limit
 
-// The 4 read-only File objects (phase 4) Network Port 2's SC certificate properties point at -
-// see BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
+// The 4 read-only File objects Network Port 2's SC certificate properties point at - see
+// BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
 // in section 2d. Same "local constant, not common/" rationale as
-// NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT above: File is a series-wide object type (colour
-// "Ivory" per ../docs/colour-table.md; second..fourth instance "Ivory 2".."Ivory 4" per that
-// file's own numbering convention), but no other example in the series has needed one yet, so
-// there is nothing to share in common/.
-static const uint32_t FILE_OPERATIONAL_CERT_INSTANCE = 1;  // "Ivory"   - certs/hub.crt
-static const uint32_t FILE_CSR_INSTANCE = 2;                // "Ivory 2" - certs/hub.csr
-static const uint32_t FILE_ISSUER_CERT_1_INSTANCE = 3;      // "Ivory 3" - certs/ca.crt
-static const uint32_t FILE_ISSUER_CERT_2_INSTANCE = 4;      // "Ivory 4" - certs/ca.crt (same file;
+// NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT above: File is a series-wide object type, but no
+// other example in the series has needed one yet, so there is nothing to share in common/.
+// Named for what each one is (Operational Certificate / CSR / Issuer Certificate Slot 1-2)
+// rather than a colour, deliberately breaking from this series' usual naming convention - see
+// the file header note above for why.
+static const uint32_t FILE_OPERATIONAL_CERT_INSTANCE = 1;  // "Operational Certificate"   - certs/hub.crt
+static const uint32_t FILE_CSR_INSTANCE = 2;                // "CSR" - certs/hub.csr
+static const uint32_t FILE_ISSUER_CERT_1_INSTANCE = 3;      // "Issuer Certificate Slot 1" - certs/ca.crt
+static const uint32_t FILE_ISSUER_CERT_2_INSTANCE = 4;      // "Issuer Certificate Slot 2" - certs/ca.crt (same file;
                                                               // BACnetStack_SetBACnetSCCertificateFileObjects
                                                               // requires exactly 2 issuer slots
                                                               // regardless - this lab setup has one
@@ -726,7 +732,9 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
         return false;
     }
 
-    // Object_Name - the colour name for each object.
+    // Object_Name - a colour name for the Device/sensor objects (this series'
+    // convention); a purpose name for the Network Ports and File objects
+    // (deliberately not a colour - see the file header note).
     if (propertyIdentifier == PROPERTY_IDENTIFIER_OBJECT_NAME) {
         if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
             return ReturnCharacterString(DEVICE_NAME, value, valueElementCount, maxElementCount, encodingType);
@@ -741,17 +749,17 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
             return ReturnCharacterString("Hot Pink", value, valueElementCount, maxElementCount, encodingType);
         }
         if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
-            return ReturnCharacterString("Vermilion", value, valueElementCount, maxElementCount, encodingType);
+            return ReturnCharacterString("BACnet IP", value, valueElementCount, maxElementCount, encodingType);
         }
         if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
-            return ReturnCharacterString("Vermilion 2", value, valueElementCount, maxElementCount, encodingType);
+            return ReturnCharacterString("BACnet SC", value, valueElementCount, maxElementCount, encodingType);
         }
         if (objectType == OBJECT_TYPE_FILE) {
             switch (objectInstance) {
-                case FILE_OPERATIONAL_CERT_INSTANCE: return ReturnCharacterString("Ivory", value, valueElementCount, maxElementCount, encodingType);
-                case FILE_CSR_INSTANCE:               return ReturnCharacterString("Ivory 2", value, valueElementCount, maxElementCount, encodingType);
-                case FILE_ISSUER_CERT_1_INSTANCE:     return ReturnCharacterString("Ivory 3", value, valueElementCount, maxElementCount, encodingType);
-                case FILE_ISSUER_CERT_2_INSTANCE:     return ReturnCharacterString("Ivory 4", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_OPERATIONAL_CERT_INSTANCE: return ReturnCharacterString("Operational Certificate", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_CSR_INSTANCE:               return ReturnCharacterString("CSR", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_ISSUER_CERT_1_INSTANCE:     return ReturnCharacterString("Issuer Certificate Slot 1", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_ISSUER_CERT_2_INSTANCE:     return ReturnCharacterString("Issuer Certificate Slot 2", value, valueElementCount, maxElementCount, encodingType);
                 default: break;
             }
         }
@@ -1207,7 +1215,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --- Add Network Port 1 (BACnet/IP, "Vermilion") -------------------------
+    // --- Add Network Port 1 (BACnet/IP, "BACnet IP") -------------------------
     if (!BACnetStack_AddNetworkPortObject(
             g_deviceInstance, NETWORK_PORT_INSTANCE,
             NETWORK_PORT_NETWORK_TYPE_IPV4,
@@ -1215,11 +1223,11 @@ int main(int argc, char** argv) {
             0,  // networkNumber: not configured
             NETWORK_NUMBER_QUALITY_UNKNOWN,
             NETWORK_PORT_REFERENCE_PORT_NONE)) {
-        printf("Error: Failed to add Network Port 1 (Vermilion).\n");
+        printf("Error: Failed to add Network Port 1 (BACnet IP).\n");
         return 1;
     }
 
-    // --- Add Network Port 2 (BACnet/SC, "Vermilion 2") + configure the hub ---
+    // --- Add Network Port 2 (BACnet/SC, "BACnet SC") + configure the hub ---
     // function (NM-SCH-B). The SC protocol/state-machine side is fully real,
     // and (this phase) so is the listener transport (see 2c) - a real SC node
     // can connect to g_scHubAcceptUri once certs exist under --sc-cert-dir.
@@ -1229,7 +1237,7 @@ int main(int argc, char** argv) {
             NETWORK_PORT_PROTOCOL_LEVEL_BACNET_APPLICATION,
             0, NETWORK_NUMBER_QUALITY_UNKNOWN,
             NETWORK_PORT_REFERENCE_PORT_NONE)) {
-        printf("Error: Failed to add Network Port 2 (Vermilion 2, BACnet/SC).\n");
+        printf("Error: Failed to add Network Port 2 (BACnet SC, BACnet/SC).\n");
         return 1;
     }
 
@@ -1264,25 +1272,25 @@ int main(int argc, char** argv) {
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_OPERATIONAL_CERT_INSTANCE,
                                    /*isWritable*/ false, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
-        printf("Error: Failed to add File %u (Ivory, operational certificate).\n", FILE_OPERATIONAL_CERT_INSTANCE);
+        printf("Error: Failed to add File %u (Operational Certificate, operational certificate).\n", FILE_OPERATIONAL_CERT_INSTANCE);
         return 1;
     }
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_CSR_INSTANCE,
                                    /*isWritable*/ false, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
-        printf("Error: Failed to add File %u (Ivory 2, certificate signing request).\n", FILE_CSR_INSTANCE);
+        printf("Error: Failed to add File %u (CSR, certificate signing request).\n", FILE_CSR_INSTANCE);
         return 1;
     }
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_ISSUER_CERT_1_INSTANCE,
                                    /*isWritable*/ false, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
-        printf("Error: Failed to add File %u (Ivory 3, issuer certificate 1).\n", FILE_ISSUER_CERT_1_INSTANCE);
+        printf("Error: Failed to add File %u (Issuer Certificate Slot 1, issuer certificate 1).\n", FILE_ISSUER_CERT_1_INSTANCE);
         return 1;
     }
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_ISSUER_CERT_2_INSTANCE,
                                    /*isWritable*/ false, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
-        printf("Error: Failed to add File %u (Ivory 4, issuer certificate 2).\n", FILE_ISSUER_CERT_2_INSTANCE);
+        printf("Error: Failed to add File %u (Issuer Certificate Slot 2, issuer certificate 2).\n", FILE_ISSUER_CERT_2_INSTANCE);
         return 1;
     }
     {
@@ -1362,7 +1370,7 @@ int main(int argc, char** argv) {
     printf("FYI: Device %u (\"%s\") ready. Vendor ID %u. Press 'h' for help.\n",
            g_deviceInstance, DEVICE_NAME, VENDOR_IDENTIFIER);
     printf("FYI: BACnet/SC hub function is CONFIGURED on Network Port %u "
-           "(Vermilion 2), accept URI %s. Certificates: %s. See README.md "
+           "(BACnet SC), accept URI %s. Certificates: %s. See README.md "
            "\"BACnet/SC support\" for how to generate lab test certs.\n",
            SC_NETWORK_PORT_INSTANCE, g_scHubAcceptUri.c_str(), g_scCertDir.c_str());
 
