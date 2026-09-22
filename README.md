@@ -363,11 +363,31 @@ BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subp
 ```
 
 Without `certs/`, the last line instead reads (and BACnet/IP keeps working
-exactly the same either way):
+exactly the same either way) - naming specifically which file(s) are
+missing/unreadable, not all three regardless of which one actually failed:
 
 ```
-BACnet/SC: cannot start listening on wss://0.0.0.0:47819/: certificate files are missing/unreadable (cert="./certs/hub.crt" key="./certs/hub.key" ca="./certs/ca.crt"). Run: cmake -P scripts/generate-test-certs.cmake
+BACnet/SC: cannot start listening on wss://0.0.0.0:47819/: certificate file(s) missing/unreadable: key="./certs/hub.key". Run: cmake -P scripts/generate-test-certs.cmake
 ```
+
+When the cert files ARE present and readable, startup also logs a
+self-diagnosis of them - subject/issuer CN, days until expiry (a `Warning` if
+under 30 days or already expired), whether the private key actually matches
+the certificate (the most common real misconfiguration), and any SAN
+entries:
+
+```
+2026-09-22 05:35:34 [INFO] cert diagnostics: operational certificate ("./certs/hub.crt") subject CN="BACnetExampleBSCHUB-hub" issuer CN="BACnet SC Example Test CA" notBefore=(0 day(s) ago) notAfter=(824 day(s) from now)
+2026-09-22 05:35:34 [INFO] cert diagnostics: operational certificate ("./certs/hub.crt") SAN entries: DNS:localhost, IP Address:127.0.0.1, DNS:blackstar
+2026-09-22 05:35:34 [INFO] cert diagnostics: private key "./certs/hub.key" MATCHES the public key in "./certs/hub.crt"
+2026-09-22 05:35:34 [INFO] cert diagnostics: CA certificate ("./certs/ca.crt") subject CN="BACnet SC Example Test CA" issuer CN="BACnet SC Example Test CA" notBefore=(0 day(s) ago) notAfter=(3649 day(s) from now)
+```
+
+This diagnosis also runs before the connector role's `Connect()` (same
+identity cert, same checks), and libwebsockets' own internal logging (e.g.
+`lws_tls_check_cert_lifetime`) now goes through this same
+`CASExampleHelper::Log` facility too - `lws: ...`-prefixed lines carrying
+this app's own UTC timestamp, instead of lws's unformatted stderr default.
 
 The `TX` line is the start-up I-Am the device broadcasts to announce itself. It
 goes to the **local subnet broadcast** address (computed from the Network
@@ -501,11 +521,11 @@ the same batch:
 **Connect/disconnect audit trail.** Every accepted BACnet/SC peer connection
 logs when it connects and disconnects, via the `common/CASExampleLog.h`
 facility at `Info` level (visible on stdout by default), in a
-grep/pipe-friendly format:
+grep/pipe-friendly format, including the peer's source IP:port:
 
 ```
-2026-09-21 18:15:33 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" connected
-2026-09-21 18:15:36 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" disconnected (closeCode=1000)
+2026-09-21 18:15:33 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" connected from 127.0.0.1:50581
+2026-09-21 18:15:36 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" (127.0.0.1:50581) disconnected (closeCode=1000)
 ```
 
 The identifier is the accepted-peer connection string
@@ -518,7 +538,22 @@ relays but does not parse), so using it here would mean inventing/guessing an
 identifier rather than reporting one this layer genuinely has - see
 `sc_transport/ScTransport.cpp`'s `LWS_CALLBACK_ESTABLISHED`/`LWS_CALLBACK_CLOSED`
 cases. `CASExampleHelper::Log` already prefixes every line with a UTC
-timestamp, so the audit lines do not duplicate one of their own.
+timestamp, so the audit lines do not duplicate one of their own. The source
+address (`PeerAddressPort()` in `ScTransport.cpp`) combines
+`lws_get_peer_simple()` with a raw `getpeername()` on the underlying socket -
+captured once at connect and reused at disconnect (the socket may already be
+gone by then).
+
+**A rejected mTLS handshake is now visible.** A client whose certificate does
+not chain to `certs/ca.crt` fails inside OpenSSL before this transport's
+`LWS_CALLBACK_ESTABLISHED` (or any other application callback) ever fires -
+previously this had zero application-level trace. It now logs a `Warning`
+naming the OpenSSL verify error and the presented certificate's CN, without
+changing the accept/reject decision itself:
+
+```
+2026-09-22 05:35:37 [WARNING] SC TLS handshake REJECTED - client certificate failed verification: "self-signed certificate" (OpenSSL error code 18); presented cert subject CN="rogue-test-peer" issuer CN="rogue-test-peer"
+```
 
 **`--sc-rate-limit <n>`** bounds how fast the listener accepts *new
 connection attempts* - a token bucket (burst capacity = `n`, refilling at `n`
@@ -526,10 +561,14 @@ tokens/second), checked in `ScTransport::HandleServerCallback`'s
 `LWS_CALLBACK_FILTER_NETWORK_CONNECTION` case - the earliest point lws offers
 a hook, firing at raw-socket accept() time, **before** the TLS handshake
 starts. An attempt beyond the limit is refused immediately (no TLS/WebSocket
-resources spent) and logged at `Warning`:
+resources spent) and logged at `Warning`, including a source address when one
+is available at this early point in the connection's lifecycle (`?:?` when
+it genuinely is not - see `ScTransport.cpp`'s `PeerAddressPort()` for why
+this specific call site can't always resolve one, verified during this
+example's own rate-limit testing):
 
 ```
-2026-09-21 18:15:57 [WARNING] SC rate limit: rejecting new connection attempt on wss://0.0.0.0:47819/ - more than 3 attempt(s)/sec (rejected before TLS handshake; see --sc-rate-limit)
+2026-09-21 18:15:57 [WARNING] SC rate limit: rejecting new connection attempt from 127.0.0.1:50581 on wss://0.0.0.0:47819/ - more than 3 attempt(s)/sec (rejected before TLS handshake; see --sc-rate-limit)
 ```
 
 This is deliberately a *different* control from `--sc-max-hub-connections`:

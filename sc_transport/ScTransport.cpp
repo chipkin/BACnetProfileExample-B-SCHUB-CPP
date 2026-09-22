@@ -6,11 +6,29 @@
 #include "CASExampleLog.h"
 
 #include <libwebsockets.h>
-#include <openssl/ssl.h>  // SSL_OP_NO_TLSv1* - TLS 1.3-only restriction
+#include <openssl/ssl.h>    // SSL_OP_NO_TLSv1* - TLS 1.3-only restriction
+#include <openssl/x509.h>   // startup cert diagnostics (Item 3) + client-cert-verify logging (Item 1)
+#include <openssl/x509v3.h> // GENERAL_NAME_print - SAN entries, startup cert diagnostics (Item 3)
+#include <openssl/pem.h>    // PEM_read_X509/PEM_read_PrivateKey - startup cert diagnostics (Item 3)
+#include <openssl/bio.h>    // in-memory BIO - SAN entries via GENERAL_NAME_print (Item 3)
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+
+#if defined(_WIN32)
+// lws_sockfd_type is SOCKET on Windows (libwebsockets.h) - sockaddr_storage/
+// getpeername/ntohs come from winsock2.h/ws2tcpip.h, already pulled in
+// transitively by libwebsockets.h ahead of this include (see
+// AllowNewConnectionAttempt's own comment on the windows.h/min-max footgun
+// for why this repo already knows libwebsockets.h drags windows.h in).
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 
 namespace CASSc {
 
@@ -118,6 +136,313 @@ bool SubprotocolListContains(const char* headerValue, const std::string& wanted)
     return false;
 }
 
+// Diagnostic Item 2: best-effort "ip:port" for a peer wsi. lws_get_peer_simple()
+// gives only the IP (verified against its own doc comment in
+// lws-network-helper.h - "provides a 123.123.123.123 type IP address", no
+// port); lws has no higher-level accessor for the port itself, so this falls
+// back to a raw getpeername() on the underlying socket (lws_get_socket_fd()) -
+// the same information a peer's own OS-level connection table has, just not
+// exposed through lws's own API.
+//
+// Tested from LWS_CALLBACK_FILTER_NETWORK_CONNECTION (the earliest call site
+// here, Item 2's rate-limit-rejection case) - the raw accept() socket already
+// EXISTS at that point (lws's own doc comment on the reason: "wsi still
+// pointing to the main server socket"), and lws_get_peer_simple()/
+// getpeername() are both syntactically callable there. In practice, though,
+// this batch's own --sc-rate-limit verification test (repeated: a burst of
+// connection attempts against a 1/sec limit, several always rejected) found
+// BOTH consistently unable to resolve an address for the wsi FILTER_NETWORK_
+// CONNECTION hands the callback at this Windows/lws-4.5.8 build - not an
+// occasional race, a reproducible result across multiple runs of this exact
+// test (see this task's own report for the captured log lines). On failure,
+// lws_get_peer_simple() writes ITS OWN diagnostic text (e.g. "getpeername:
+// wsaerrno 10057") into the output buffer rather than leaving it empty or
+// returning NULL - left unguarded, that text would leak into this app's log
+// line looking like a real address. The digit-or-colon check below tells a
+// real numeric IPv4/IPv6 address (lws_get_peer_simple() never does reverse
+// DNS - "without RDNS" is in its own name) apart from that failure text, so
+// this function honestly reports "?" instead - exactly the "log whatever IS
+// available instead of nothing, with an honest note" case this task's own
+// instructions anticipated for this call site, not a fabricated address.
+// ESTABLISHED (below, a later point in the SAME connection's lifecycle, once
+// lws's own accept processing has moved further along) is NOT affected -
+// PeerAddressPort() resolves real addresses there every time in this same
+// verification pass (see the connect/disconnect audit-line evidence).
+std::string PeerAddressPort(lws* wsi) {
+    char ip[64] = {0};
+    lws_get_peer_simple(wsi, ip, sizeof(ip));
+    const bool looksLikeAddress = ip[0] != '\0' && (std::isdigit(static_cast<unsigned char>(ip[0])) || ip[0] == ':');
+    if (!looksLikeAddress) {
+        std::strcpy(ip, "?");
+    }
+    uint16_t port = 0;
+    const lws_sockfd_type fd = lws_get_socket_fd(wsi);
+    sockaddr_storage addr;
+    std::memset(&addr, 0, sizeof(addr));
+    socklen_t addrLen = sizeof(addr);
+    if (getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &addrLen) == 0) {
+        if (addr.ss_family == AF_INET) {
+            port = ntohs(reinterpret_cast<sockaddr_in*>(&addr)->sin_port);
+        } else if (addr.ss_family == AF_INET6) {
+            port = ntohs(reinterpret_cast<sockaddr_in6*>(&addr)->sin6_port);
+        }
+    }
+    char result[80];
+    if (port != 0) {
+        std::snprintf(result, sizeof(result), "%s:%u", ip, (unsigned)port);
+    } else {
+        std::snprintf(result, sizeof(result), "%s:?", ip);
+    }
+    return std::string(result);
+}
+
+// Diagnostic Item 1: makes a rejected mTLS handshake visible. Before this, a
+// client whose certificate did not chain to m_tls.caCertPath failed inside
+// OpenSSL's own verification, deep under lws_create_context's
+// LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT enforcement, before
+// LWS_CALLBACK_ESTABLISHED or any other application callback ever fired - the
+// ONLY trace was a raw, unformatted libwebsockets debug line, if lws's own log
+// level happened to be verbose enough to print it. Investigated (per this
+// task's own instructions) whether LWS_CALLBACK_SSL_INFO /
+// ssl_info_event_mask could serve this instead: read against the pinned lws
+// 4.5.8 headers (lws-context-vhost.h), that mask only carries OpenSSL's
+// SSL_CB_ALERT-style info-callback events (TLS protocol-level alert
+// send/receive), not a client-cert verification outcome or the failing cert
+// itself - the wrong tool for this. What the pinned header DOES expose,
+// exactly for this purpose, is LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION
+// (reason 23, lws-callbacks.h): "if the libwebsockets vhost was created with
+// [...] LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT [already set,
+// StartListening() below], this callback is generated during OpenSSL
+// verification of the cert sent from the client [...] user is the x509_ctx,
+// in is the ssl pointer and len is preverify_ok". This is a direct,
+// lws-provided tap on the SAME OpenSSL SSL_CTX_set_verify callback the
+// "install our own SSL_CTX_set_verify directly" fallback this task's
+// instructions called out would have had to install by hand - lws already
+// wires it up, so that heavier fallback was not needed. The one wrinkle
+// (verified against the SAME header comment): "the libwebsockets context and
+// wsi are both NULL during this callback" - LwsServerCallbackTrampoline below
+// special-cases this reason BEFORE its normal lws_get_context(wsi) lookup
+// (which would otherwise discard the callback outright, wsi being null - see
+// the trampoline's own comment).
+//
+// This function does not change the accept/reject DECISION - it mirrors
+// OpenSSL's own preverify_ok back to lws unchanged (return 0/1 exactly as
+// preverify_ok dictates, matching the reason's own "return 0 to mean the cert
+// is OK or 1 to fail it" contract) - the mandatory chain check
+// LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT already performs is
+// unaffected either way. It only adds the missing observability: on a
+// failure, the OpenSSL verify error (X509_STORE_CTX_get_error, decoded via
+// X509_verify_cert_error_string - e.g. "unable to get local issuer
+// certificate" for a cert not signed by our CA) and the failing cert's own
+// subject/issuer CN (X509_STORE_CTX_get_current_cert - the cert AT THE DEPTH
+// verification failed, which for a self-signed rogue cert is the peer's own
+// presented cert).
+int LogClientCertVerificationResult(void* user, void* in, std::size_t len) {
+    (void)in;  // the SSL* - not needed; X509_STORE_CTX already carries the failing cert + error
+    const int preverifyOk = static_cast<int>(len);
+    if (preverifyOk) {
+        return 0;  // OpenSSL's own chain verification already passed this cert - nothing to log
+    }
+    X509_STORE_CTX* x509Ctx = static_cast<X509_STORE_CTX*>(user);
+    std::string subjectCn = "<unknown>";
+    std::string issuerCn = "<unknown>";
+    int errorCode = -1;
+    const char* errorText = "unknown error (no X509_STORE_CTX available)";
+    if (x509Ctx != nullptr) {
+        errorCode = X509_STORE_CTX_get_error(x509Ctx);
+        errorText = X509_verify_cert_error_string(errorCode);
+        X509* cert = X509_STORE_CTX_get_current_cert(x509Ctx);
+        if (cert != nullptr) {
+            char buf[256] = {0};
+            X509_NAME* subject = X509_get_subject_name(cert);
+            if (subject != nullptr && X509_NAME_get_text_by_NID(subject, NID_commonName, buf, sizeof(buf)) > 0) {
+                subjectCn = buf;
+            }
+            char issuerBuf[256] = {0};
+            X509_NAME* issuer = X509_get_issuer_name(cert);
+            if (issuer != nullptr && X509_NAME_get_text_by_NID(issuer, NID_commonName, issuerBuf, sizeof(issuerBuf)) > 0) {
+                issuerCn = issuerBuf;
+            }
+        }
+    }
+    CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+        "SC TLS handshake REJECTED - client certificate failed verification: \"%s\" (OpenSSL error code %d); "
+        "presented cert subject CN=\"%s\" issuer CN=\"%s\"",
+        errorText, errorCode, subjectCn.c_str(), issuerCn.c_str());
+    return 1;  // fail the cert - mirrors OpenSSL's own preverify_ok=0 decision, does not override it
+}
+
+// Diagnostic Item 3: human-readable "N day(s) ago"/"N day(s) from now" from
+// an ASN1_TIME, via ASN1_TIME_diff(..., NULL /* from=now */, ...) rather than
+// logging the raw ASN1_TIME (a GeneralizedTime/UTCTime byte string - not
+// something an operator should have to decode by hand). Deliberately does
+// NOT say "EXPIRED" for a past date by itself - a PAST notBefore is normal
+// (every valid cert's validity period started in the past); only the caller
+// (LogOneCertificate below, for notAfter specifically) knows whether "in the
+// past" means "expired" for the field it is describing.
+std::string DaysRelativeToNow(const ASN1_TIME* when) {
+    if (when == nullptr) {
+        return "<unknown>";
+    }
+    int days = 0;
+    int seconds = 0;
+    if (!ASN1_TIME_diff(&days, &seconds, nullptr, when)) {
+        return "<unparseable>";
+    }
+    if (days < 0 || (days == 0 && seconds < 0)) {
+        const int pastDays = (days < 0) ? -days : 0;
+        return std::to_string(pastDays) + " day(s) ago";
+    }
+    return std::to_string(days) + " day(s) from now";
+}
+
+// Diagnostic Item 3: logs one X.509 certificate's subject/issuer CN,
+// notBefore/notAfter (as a day count via DaysUntil above - Warning if
+// under 30 days or already expired), and SAN entries (Info; this transport's
+// connector deliberately skips hostname checking - see ScTransport::Connect's
+// own comment and sc_transport/README.md - so SAN entries are informational
+// here, not used for any policy decision). `label` distinguishes the log
+// lines when this is called for more than one file (operational cert vs. CA)
+// in the same LogCertificateDiagnostics call below.
+void LogOneCertificate(const std::string& label, X509* cert) {
+    char subjectCn[256] = {0};
+    char issuerCn[256] = {0};
+    X509_NAME* subject = X509_get_subject_name(cert);
+    X509_NAME* issuer = X509_get_issuer_name(cert);
+    const bool hasSubjectCn = subject != nullptr &&
+        X509_NAME_get_text_by_NID(subject, NID_commonName, subjectCn, sizeof(subjectCn)) > 0;
+    const bool hasIssuerCn = issuer != nullptr &&
+        X509_NAME_get_text_by_NID(issuer, NID_commonName, issuerCn, sizeof(issuerCn)) > 0;
+
+    const ASN1_TIME* notBefore = X509_get0_notBefore(cert);
+    const ASN1_TIME* notAfter = X509_get0_notAfter(cert);
+    int daysLeft = 0, secsLeft = 0;
+    const bool haveExpiry = notAfter != nullptr && ASN1_TIME_diff(&daysLeft, &secsLeft, nullptr, notAfter) != 0;
+    const bool expiringSoon = haveExpiry && (daysLeft < 30);
+    CASExampleHelper::Log(expiringSoon ? CASExampleHelper::LogLevel::Warning : CASExampleHelper::LogLevel::Info,
+        "cert diagnostics: %s subject CN=\"%s\" issuer CN=\"%s\" notBefore=(%s) notAfter=(%s)%s",
+        label.c_str(), hasSubjectCn ? subjectCn : "<none>", hasIssuerCn ? issuerCn : "<none>",
+        DaysRelativeToNow(notBefore).c_str(), DaysRelativeToNow(notAfter).c_str(),
+        expiringSoon ? " - EXPIRING SOON OR ALREADY EXPIRED (notAfter)" : "");
+
+    GENERAL_NAMES* sans = static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(cert, NID_subject_alt_name, nullptr, nullptr));
+    if (sans == nullptr) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+            "cert diagnostics: %s has no Subject Alternative Name extension "
+            "(not a problem - this transport's connector skips hostname checking, see ScTransport::Connect)",
+            label.c_str());
+    } else {
+        BIO* bio = BIO_new(BIO_s_mem());
+        if (bio != nullptr) {
+            const int count = sk_GENERAL_NAME_num(sans);
+            for (int i = 0; i < count; ++i) {
+                if (i > 0) {
+                    BIO_printf(bio, ", ");
+                }
+                GENERAL_NAME_print(bio, sk_GENERAL_NAME_value(sans, i));
+            }
+            char* data = nullptr;
+            const long dataLen = BIO_get_mem_data(bio, &data);
+            const std::string sanText(data != nullptr ? data : "", dataLen > 0 ? static_cast<std::size_t>(dataLen) : 0);
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                "cert diagnostics: %s SAN entries: %s", label.c_str(), sanText.c_str());
+            BIO_free(bio);
+        }
+        GENERAL_NAMES_free(sans);
+    }
+}
+
+// Diagnostic Item 3: startup certificate self-diagnosis, called once per
+// StartListening()/Connect() (NOT per-connection) - see the header comment on
+// each call site below. Loads m_tls.certPath/caCertPath with OpenSSL's X.509
+// API and logs what a misconfigured cert/key/CA would otherwise only surface
+// as the generic "lws_create_context failed [...] cert files malformed?"
+// guess. Runs even when FileReadable() already passed (a file that EXISTS but
+// is wrong - expired, mismatched key, wrong CA - is exactly what this
+// diagnoses; the per-file missing/unreadable check, Item 4, is a separate,
+// earlier gate). Best-effort throughout: a file that fails to PARSE as PEM
+// (as opposed to merely being unreadable, already caught earlier) is logged
+// as a Warning and skipped, never treated as fatal here - lws_create_context
+// itself is still the authority on whether the listener/connect actually
+// starts.
+void LogCertificateDiagnostics(const ScTlsFiles& tls) {
+    FILE* certFile = fopen(tls.certPath.c_str(), "rb");
+    X509* cert = (certFile != nullptr) ? PEM_read_X509(certFile, nullptr, nullptr, nullptr) : nullptr;
+    if (certFile != nullptr) {
+        fclose(certFile);
+    }
+    if (cert == nullptr) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "cert diagnostics: could not parse \"%s\" as a PEM X.509 certificate - skipping self-diagnosis "
+            "(lws_create_context will report whether this actually blocks startup)", tls.certPath.c_str());
+    } else {
+        LogOneCertificate("operational certificate (\"" + tls.certPath + "\")", cert);
+
+        FILE* keyFile = fopen(tls.keyPath.c_str(), "rb");
+        EVP_PKEY* pkey = (keyFile != nullptr) ? PEM_read_PrivateKey(keyFile, nullptr, nullptr, nullptr) : nullptr;
+        if (keyFile != nullptr) {
+            fclose(keyFile);
+        }
+        if (pkey == nullptr) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                "cert diagnostics: could not parse \"%s\" as a PEM private key - cannot check it against "
+                "\"%s\"", tls.keyPath.c_str(), tls.certPath.c_str());
+        } else {
+            // The single most common real misconfiguration this diagnoses
+            // (per this task's own instructions) - a cert/key pair that does
+            // not actually match, previously indistinguishable from every
+            // other "cert files malformed?" failure.
+            const bool matches = X509_check_private_key(cert, pkey) == 1;
+            CASExampleHelper::Log(matches ? CASExampleHelper::LogLevel::Info : CASExampleHelper::LogLevel::Warning,
+                "cert diagnostics: private key \"%s\" %s the public key in \"%s\"", tls.keyPath.c_str(),
+                matches ? "MATCHES" : "DOES NOT MATCH", tls.certPath.c_str());
+            EVP_PKEY_free(pkey);
+        }
+        X509_free(cert);
+    }
+
+    FILE* caFile = fopen(tls.caCertPath.c_str(), "rb");
+    X509* caCert = (caFile != nullptr) ? PEM_read_X509(caFile, nullptr, nullptr, nullptr) : nullptr;
+    if (caFile != nullptr) {
+        fclose(caFile);
+    }
+    if (caCert == nullptr) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "cert diagnostics: could not parse \"%s\" as a PEM X.509 certificate - skipping self-diagnosis",
+            tls.caCertPath.c_str());
+    } else {
+        LogOneCertificate("CA certificate (\"" + tls.caCertPath + "\")", caCert);
+        X509_free(caCert);
+    }
+}
+
+// Diagnostic Item 4: names specifically which of cert/key/ca is missing or
+// unreadable, instead of bundling all three into one message regardless of
+// which actually failed. Returns "" (nothing missing) or a
+// "cert=\"...\"[, key=\"...\"][, ca=\"...\"]"-style fragment naming only the
+// file(s) that actually failed FileReadable() - shared by StartListening()
+// and Connect(), whose per-file checks were previously identical bundled
+// messages.
+std::string DescribeMissingTlsFiles(const ScTlsFiles& tls) {
+    std::string result;
+    if (!FileReadable(tls.certPath)) {
+        result += "cert=\"" + tls.certPath + "\"";
+    }
+    if (!FileReadable(tls.keyPath)) {
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += "key=\"" + tls.keyPath + "\"";
+    }
+    if (!FileReadable(tls.caCertPath)) {
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += "ca=\"" + tls.caCertPath + "\"";
+    }
+    return result;
+}
+
 // The single, process-wide instance currently bound to the listener context.
 // lws hands callbacks to a plain C function pointer with no way to pass a
 // C++ `this` other than through lws_context_user()/info.user, which we do
@@ -125,6 +450,17 @@ bool SubprotocolListContains(const char* headerValue, const std::string& wanted)
 // has something to call `HandleServerCallback` through without becoming a
 // member function itself (lws_protocols::callback must be a free function).
 int LwsServerCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user, void* in, std::size_t len) {
+    // LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION (reason 23) fires
+    // with wsi AND context both NULL (lws's own doc comment, lws-callbacks.h -
+    // verified against the pinned 4.5.8 header) - handled BEFORE the
+    // lws_get_context(wsi) lookup below, which would otherwise silently
+    // discard it (wsi is null, so ctx would be null, so this function would
+    // return 0 without ever reaching HandleServerCallback). See
+    // LogClientCertVerificationResult's own comment above for why this reason
+    // is used at all (Item 1 - making a rejected mTLS handshake visible).
+    if (reason == LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION) {
+        return LogClientCertVerificationResult(user, in, len);
+    }
     lws_context* ctx = wsi != nullptr ? lws_get_context(wsi) : nullptr;
     if (ctx == nullptr) {
         return 0;  // called before/without a context (e.g. protocol init on a template wsi) - nothing to do
@@ -235,13 +571,24 @@ bool ScTransport::StartListening(const std::string& uri) {
         return false;
     }
 
-    if (!FileReadable(m_tls.certPath) || !FileReadable(m_tls.keyPath) || !FileReadable(m_tls.caCertPath)) {
-        LogListenFailureOnce(
-            "cannot start listening on " + uri + ": certificate files are missing/unreadable "
-            "(cert=\"" + m_tls.certPath + "\" key=\"" + m_tls.keyPath + "\" ca=\"" + m_tls.caCertPath + "\"). "
-            "Run: cmake -P scripts/generate-test-certs.cmake");
-        return false;
+    {
+        // Item 4: names specifically which file(s) failed, instead of
+        // bundling cert/key/ca into one message regardless of which is
+        // actually missing/unreadable - see DescribeMissingTlsFiles's own
+        // comment.
+        const std::string missing = DescribeMissingTlsFiles(m_tls);
+        if (!missing.empty()) {
+            LogListenFailureOnce(
+                "cannot start listening on " + uri + ": certificate file(s) missing/unreadable: " +
+                missing + ". Run: cmake -P scripts/generate-test-certs.cmake");
+            return false;
+        }
     }
+    // Item 3: startup certificate self-diagnosis - runs even though the files
+    // above ARE readable (this diagnoses a file that exists but is WRONG -
+    // expired, mismatched key, unparseable - not a replacement for the
+    // missing-file check above). See LogCertificateDiagnostics's own comment.
+    LogCertificateDiagnostics(m_tls);
 
     // The protocol name string must outlive the context, so it lives on this
     // object (m_protocolNameStorage), not as a temporary. m_protocols itself
@@ -409,13 +756,22 @@ bool ScTransport::Connect(const std::string& uri) {
         fprintf(stderr, "BACnet/SC: Connect(\"%s\") requested before Configure()\n", uri.c_str());
         return false;
     }
-    if (!FileReadable(m_tls.certPath) || !FileReadable(m_tls.keyPath) || !FileReadable(m_tls.caCertPath)) {
-        fprintf(stderr,
-                "BACnet/SC: cannot Connect(\"%s\"): certificate files are missing/unreadable "
-                "(cert=\"%s\" key=\"%s\" ca=\"%s\"). Run: cmake -P scripts/generate-test-certs.cmake\n",
-                uri.c_str(), m_tls.certPath.c_str(), m_tls.keyPath.c_str(), m_tls.caCertPath.c_str());
-        return false;
+    {
+        // Item 4 - same per-file naming as StartListening() above.
+        const std::string missing = DescribeMissingTlsFiles(m_tls);
+        if (!missing.empty()) {
+            fprintf(stderr,
+                    "BACnet/SC: cannot Connect(\"%s\"): certificate file(s) missing/unreadable: %s. "
+                    "Run: cmake -P scripts/generate-test-certs.cmake\n",
+                    uri.c_str(), missing.c_str());
+            return false;
+        }
     }
+    // Item 3 - same startup self-diagnosis as StartListening() above; the
+    // connector presents the SAME identity cert (this device has one identity
+    // regardless of role - see the class header comment), so it is worth
+    // diagnosing here too, not only for the listener.
+    LogCertificateDiagnostics(m_tls);
 
     std::string host;
     std::string path;
@@ -639,10 +995,15 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             // handshake CPU/memory is spent on a rejected attempt.
             if (!AllowNewConnectionAttempt()) {
                 ++m_rateLimitRejections;
+                // Item 2: no PeerConnection/connection string exists yet at
+                // this point in the lifecycle (this callback's own comment
+                // above) - PeerAddressPort(wsi) is the ONLY peer identity
+                // available here, verified callable this early against the
+                // raw accept() socket (see that function's own comment).
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                    "SC rate limit: rejecting new connection attempt on %s - more than %u attempt(s)/sec "
+                    "SC rate limit: rejecting new connection attempt from %s on %s - more than %u attempt(s)/sec "
                     "(rejected before TLS handshake; see --sc-rate-limit)",
-                    m_listenUri.c_str(), (unsigned)m_maxConnAttemptsPerSecond);
+                    PeerAddressPort(wsi).c_str(), m_listenUri.c_str(), (unsigned)m_maxConnAttemptsPerSecond);
                 return -1;
             }
             break;
@@ -686,9 +1047,11 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             PeerConnection& peer = m_peers[wsi];
             peer.wsi = wsi;
             peer.connectionString = connStr;
+            peer.peerAddress = PeerAddressPort(wsi);  // Item 2 - captured once here, reused at CLOSED below
             m_connStringToWsi[connStr] = wsi;
             ++m_totalConnects;
-            printf("BACnet/SC: accepted WebSocket connection - peer=\"%s\"\n", connStr.c_str());
+            printf("BACnet/SC: accepted WebSocket connection - peer=\"%s\" from %s\n",
+                   connStr.c_str(), peer.peerAddress.c_str());
             // Audit trail (Task 1): the accepted-peer connection string
             // ("<acceptUri>|client=N") is the identity this transport layer
             // actually has at this point - it is the SAME identifier the
@@ -702,8 +1065,11 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             // boundary. CASExampleHelper::Log already prefixes every line
             // with a UTC timestamp (common/CASExampleLog.cpp), which is the
             // "<UTC timestamp>" this audit line needs - not duplicated here.
+            // Item 2 adds the actual source IP:port alongside the connection
+            // string - previously this line only ever had the connection
+            // string identity, never the real remote address.
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-                "SC audit: peer \"%s\" connected", connStr.c_str());
+                "SC audit: peer \"%s\" connected from %s", connStr.c_str(), peer.peerAddress.c_str());
             // Deliberately NOT queuing a Connected(2) status event here - see
             // ScStatusEvent's doc comment and plan open risk #7: an accepted
             // socket is not yet a BACnet/SC "connection" until the stack's own
@@ -771,13 +1137,17 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 evt.closeCode = peer->lastCloseCode;
                 m_statusQueue.push_back(evt);
                 ++m_totalDisconnects;
-                printf("BACnet/SC: peer \"%s\" disconnected (status=%u closeCode=%u)\n",
-                       peer->connectionString.c_str(), (unsigned)status, (unsigned)peer->lastCloseCode);
+                printf("BACnet/SC: peer \"%s\" (%s) disconnected (status=%u closeCode=%u)\n",
+                       peer->connectionString.c_str(), peer->peerAddress.c_str(), (unsigned)status,
+                       (unsigned)peer->lastCloseCode);
                 // Audit trail (Task 1) - same identity/timestamp rationale as
-                // the "connected" line above.
+                // the "connected" line above. Item 2: reuses the peerAddress
+                // captured once at ESTABLISHED (see PeerConnection::peerAddress's
+                // own comment) rather than re-querying lws here - by CLOSED the
+                // underlying socket may already be torn down.
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-                    "SC audit: peer \"%s\" disconnected (closeCode=%u)",
-                    peer->connectionString.c_str(), (unsigned)peer->lastCloseCode);
+                    "SC audit: peer \"%s\" (%s) disconnected (closeCode=%u)",
+                    peer->connectionString.c_str(), peer->peerAddress.c_str(), (unsigned)peer->lastCloseCode);
                 m_connStringToWsi.erase(peer->connectionString);
                 m_peers.erase(wsi);
             }
@@ -850,7 +1220,13 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
                 break;
             }
             conn->wsi = wsi;
-            printf("BACnet/SC: connected to hub \"%s\"\n", conn->uri.c_str());
+            // Item 2 (lower priority for the connector half - it already
+            // knows what URI it dialed; this adds the actual resolved
+            // remote address/port, useful when the URI names a hostname
+            // rather than a bare IP, or when failover has multiple A
+            // records).
+            conn->peerAddress = PeerAddressPort(wsi);
+            printf("BACnet/SC: connected to hub \"%s\" (%s)\n", conn->uri.c_str(), conn->peerAddress.c_str());
             ScStatusEvent evt;
             evt.uri = conn->uri;
             evt.status = 2;  // WebsocketStatus_Connected (plan fact 3)
@@ -867,7 +1243,14 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
                 break;
             }
             const std::string detail = (in != nullptr) ? std::string(static_cast<const char*>(in), len) : std::string();
-            fprintf(stderr, "BACnet/SC: Connect(\"%s\") failed: %s\n", conn->uri.c_str(), detail.c_str());
+            // Item 2: best-effort only - a connection error can fire before
+            // the socket is far enough along for lws_get_peer_simple()/
+            // getpeername() to know anything (e.g. a DNS failure), in which
+            // case PeerAddressPort() honestly reports "?:?" rather than
+            // fabricating an address.
+            const std::string peerAddr = (wsi != nullptr) ? PeerAddressPort(wsi) : std::string("?:?");
+            fprintf(stderr, "BACnet/SC: Connect(\"%s\") failed (peer %s): %s\n", conn->uri.c_str(),
+                    peerAddr.c_str(), detail.c_str());
             ScStatusEvent evt;
             evt.uri = conn->uri;
             evt.status = 4;  // WebsocketStatus_Error (plan fact 3)
@@ -938,8 +1321,11 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
             evt.status = 3;  // WebsocketStatus_Disconnected (plan fact 3)
             evt.closeCode = conn->lastCloseCode;
             m_statusQueue.push_back(evt);
-            printf("BACnet/SC: hub connection \"%s\" closed (closeCode=%u)\n",
-                   conn->uri.c_str(), (unsigned)conn->lastCloseCode);
+            // Item 2: reuses the address captured at CLIENT_ESTABLISHED
+            // (conn->peerAddress) - same "the socket may already be gone by
+            // CLOSED" reasoning as the listener half's PeerConnection::peerAddress.
+            printf("BACnet/SC: hub connection \"%s\" (%s) closed (closeCode=%u)\n",
+                   conn->uri.c_str(), conn->peerAddress.c_str(), (unsigned)conn->lastCloseCode);
             conn->wsi = nullptr;
             break;
         }

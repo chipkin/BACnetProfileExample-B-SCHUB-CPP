@@ -251,7 +251,20 @@ mistake the behaviour for a bug in this example.
     "Certificate upload endpoint" for the full reasoning) - revisit if this
     example ever needs to catch a malformed-but-PEM-shaped upload before it
     reaches disk, rather than only before it reaches a TLS handshake.
-13. **An arbitrary, unrecognised WebSocket subprotocol still drops the raw
+13. **`DeviceCommunicationControl` password-failure log lines cannot name a
+    source address.** Investigated for the 2026-09-21 diagnostics pass (see
+    `CHANGELOG.md`'s 1.1.8 entry): `CASBACnetStack_RegisterCallbackDeviceCommunicationControl`'s
+    callback signature (`submodules/cas-bacnet-stack/adapters/cpp/
+    CASBACnetStackAdapterTypes.h:191` - `deviceInstance, enableDisable,
+    password, passwordLength, useTimeDuration, timeDuration, errorCode`) has
+    no source-address parameter, and no other stack API exposes "which peer
+    sent the message currently being processed" at the point this callback
+    fires - confirmed by grepping the stack adapter headers, not assumed. A
+    global "last-seen source address" set by `ReceiveMessageForPort` and
+    read back here would be fragile (wrong under any request pipelining/
+    reordering the stack itself does internally) for a logging nice-to-have,
+    so this is left unimplemented rather than forced in.
+14. **An arbitrary, unrecognised WebSocket subprotocol still drops the raw
     TCP connection with no HTTP response and no WS close frame** - the part
     of [#8](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/8)
     that the fix landed alongside this item did NOT close. `"dc.bsc.bacnet.org"`

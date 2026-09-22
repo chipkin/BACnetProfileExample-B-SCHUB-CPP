@@ -278,6 +278,9 @@ private:
     struct PeerConnection {
         lws* wsi = nullptr;
         std::string connectionString;     // "<acceptUri>|client=N"
+        std::string peerAddress;           // "ip:port" (best-effort - see PeerAddressPort() in the .cpp), captured
+                                            // once at ESTABLISHED and reused at CLOSED (the socket may no longer
+                                            // answer lws_get_peer_simple()/getpeername() by the time CLOSED fires)
         std::vector<uint8_t> rxAssembly;   // in-progress reassembly for this peer
         bool rxOverflow = false;           // true once rxAssembly exceeded the 1600B ceiling
         std::deque<std::vector<uint8_t>> txQueue;  // pending frames, each padded with LWS_PRE
@@ -293,6 +296,9 @@ private:
         lws_context* context = nullptr;
         lws* wsi = nullptr;                // null before ESTABLISHED and after CLOSED/error
         std::string uri;
+        std::string peerAddress;           // "ip:port" the URI actually resolved/connected to - best-effort,
+                                            // see PeerAddressPort() in the .cpp; lower priority than the
+                                            // listener half (the connector already knows what it dialed)
         std::vector<uint8_t> rxAssembly;
         bool rxOverflow = false;
         std::deque<std::vector<uint8_t>> txQueue;

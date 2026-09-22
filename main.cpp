@@ -131,6 +131,13 @@
 #include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
 
+// Unlike sc_transport/ScTransport.h (which forward-declares lws types
+// specifically to avoid this), main.cpp already needs the real
+// libwebsockets.h here for LwsLogCallback/lws_set_log_level below (Item 5 -
+// see that section's own comment) - main.cpp has no equivalent header/
+// implementation split to protect.
+#include <libwebsockets.h>
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -151,7 +158,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.7";
+static const char* APP_VERSION = "1.1.8";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -1212,6 +1219,52 @@ static void PrintHealthSnapshot() {
 }
 
 // -----------------------------------------------------------------------------
+// 2f. libwebsockets logging integration (Item 5 of this batch's diagnostics
+// pass). Before this, lws's own internal debug/warning/error lines (e.g.
+// "lws_tls_server_accept: client cert CN '...'") printed however lws's build
+// default configured them - unformatted, no timestamp, not through
+// CASExampleHelper::Log, not controllable independently of this app's own
+// log level. lws_set_log_level(level, callback) below routes them through
+// the SAME facility every other log line in this batch's diagnostics work
+// uses.
+//
+// Level choice: LLL_ERR | LLL_WARN | LLL_NOTICE - roughly what was already
+// visible before this change (lws's own build default is "err, warn, notice"
+// per lws_set_log_level's own doc comment in lws-logs.h), so this does not
+// silence anything that was already printing. Deliberately NOT LLL_DEBUG/
+// LLL_PARSER/etc - those are lws's per-frame/per-byte protocol trace, far too
+// noisy for a tutorial's default log output (this app has no --verbose/
+// --debug flag to gate a heavier level behind, and adding one is out of
+// scope for this batch).
+static void LwsLogCallback(int level, const char* line) {
+    // lws hands us its own already-formatted line, which may carry a
+    // trailing '\n' (and sometimes '\r\n' - observed on Windows builds) -
+    // strip it so it does not produce a blank line between lws's text and
+    // CASExampleHelper::Log's own trailing '\n', and so lws's text sits
+    // cleanly after Log's "<UTC timestamp> [LEVEL] " prefix instead of
+    // wrapping onto its own line.
+    std::string text(line != nullptr ? line : "");
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+        text.pop_back();
+    }
+    if (text.empty()) {
+        return;
+    }
+    // LLL_ERR/LLL_WARN map to this app's Error/Warning (both already go to
+    // stderr in CASExampleHelper::Log, matching where lws's own default
+    // stderr emitter would have put them); everything else this level mask
+    // enables (LLL_NOTICE) maps to Info - see this function's own header
+    // comment for why DEBUG/PARSER/etc are never enabled in the first place.
+    CASExampleHelper::LogLevel mapped = CASExampleHelper::LogLevel::Info;
+    if (level & LLL_ERR) {
+        mapped = CASExampleHelper::LogLevel::Error;
+    } else if (level & LLL_WARN) {
+        mapped = CASExampleHelper::LogLevel::Warning;
+    }
+    CASExampleHelper::Log(mapped, "lws: %s", text.c_str());
+}
+
+// -----------------------------------------------------------------------------
 // 3. main()
 // -----------------------------------------------------------------------------
 // Parse "--sc-port <n>" (1..65535); returns defaultPort if not given/invalid.
@@ -1439,6 +1492,13 @@ int main(int argc, char** argv) {
     }
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
     g_startTime = std::chrono::steady_clock::now();
+
+    // Item 5: route libwebsockets' own internal logging through this app's
+    // log facility, before ANY lws_context is created (g_scRouter.Start()
+    // below binds BACnet/IP only - no lws involved there; the first lws
+    // context this process creates is g_scTransport's, further down, or
+    // g_httpServer's later still) - see LwsLogCallback's own comment above.
+    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE, &LwsLogCallback);
 
     // --- Bind the BACnet/IP socket --------------------------------------------
     // Owned by g_scRouter (sc_transport/ScTransportRouter.h), NOT

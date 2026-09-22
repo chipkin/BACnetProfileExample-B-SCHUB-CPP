@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.8] - unreleased
+
+### Added
+
+Diagnostic/observability pass answering "what other information can we add
+to the log to help diagnose issues with the BACnet/SC connect, or the
+certificates, or other errors" - 5 real, verified gaps closed, all in
+`sc_transport/ScTransport.cpp`/`.h` and `main.cpp`:
+
+- **A rejected mTLS handshake is now visible.** Previously a client whose
+  certificate did not chain to `certs/ca.crt` failed inside OpenSSL, under
+  `LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT`, before
+  `LWS_CALLBACK_ESTABLISHED` or any other application callback fired - zero
+  application-level trace. `sc_transport/ScTransport.cpp` now handles
+  `LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION` (verified against
+  the pinned lws 4.5.8 header: this reason fires during OpenSSL's own
+  client-cert chain verification, with `user`/`in`/`len` giving the
+  `X509_STORE_CTX*`/`SSL*`/`preverify_ok`) and logs a `Warning` naming the
+  OpenSSL verify error (`X509_verify_cert_error_string`) and the presented
+  certificate's subject/issuer CN, without changing the accept/reject
+  decision itself (the mandatory chain check is unaffected either way - this
+  callback mirrors `preverify_ok` back to lws unchanged). Verified against a
+  self-signed rogue certificate not signed by `certs/ca.crt` - see this
+  task's own report for the exact log line.
+- **Source IP:port added to connect/disconnect/rate-limit-rejection log
+  lines.** `PeerAddressPort(lws*)` (new, `ScTransport.cpp`) combines
+  `lws_get_peer_simple()` (IP only) with a raw `getpeername()` on the
+  underlying socket (`lws_get_socket_fd()`) for the port lws has no
+  higher-level accessor for. Added to the listener's accept log + `SC audit:
+  ... connected` line, the disconnect audit line (reusing the address
+  captured once at `ESTABLISHED`, since the socket may already be gone by
+  `CLOSED`), the `--sc-rate-limit` rejection line (verified callable that
+  early, against the raw `LWS_CALLBACK_FILTER_NETWORK_CONNECTION` accept
+  socket), and - lower priority, since the connector already knows what URI
+  it dialed - the connector's own established/error/closed lines.
+- **Startup certificate self-diagnosis.** New `LogCertificateDiagnostics()`
+  (`ScTransport.cpp`), called once per `StartListening()`/`Connect()` (not
+  per-connection, and independent of the missing-file check below - it runs
+  even when the files ARE readable): parses `certPath`/`caCertPath` with
+  OpenSSL's X.509 API and logs subject/issuer CN, notBefore/notAfter as a
+  human day-count (`Warning` under 30 days or already expired - never a raw
+  `ASN1_TIME`), whether `keyPath`'s private key actually matches `certPath`
+  (`X509_check_private_key` - the single most common real misconfiguration,
+  previously indistinguishable from every other "cert files malformed?"
+  failure), and SAN entries (`Info` only - this transport's connector still
+  deliberately skips hostname checking, unchanged).
+- **Per-file missing/unreadable detail.** `StartListening()`'s and
+  `Connect()`'s cert-file checks now name specifically which of
+  cert/key/ca actually failed `FileReadable()` (new
+  `DescribeMissingTlsFiles()` helper), instead of bundling all three into
+  one message regardless of which one is the actual problem.
+- **libwebsockets' own logging now goes through `CASExampleHelper::Log`.**
+  `main.cpp` calls `lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE,
+  &LwsLogCallback)` once at startup, before any `lws_context` is created.
+  `LwsLogCallback` strips lws's own trailing newline and maps `LLL_ERR`/
+  `LLL_WARN`/everything-else to this app's Error/Warning/Info levels -
+  lws's internal debug lines (e.g. the `lws_tls_server_accept: client cert
+  CN '...'` line that used to be the ONLY trace of a rejected handshake) now
+  carry this app's own UTC timestamp and level tag instead of printing
+  however lws's build default happened to configure them.
+
+Investigated (per this task's own instructions) whether
+`DeviceCommunicationControl` password-failure log lines could also name a
+source address - **confirmed NOT cleanly implementable**:
+`CASBACnetStack_RegisterCallbackDeviceCommunicationControl`'s callback
+signature (`submodules/cas-bacnet-stack/adapters/cpp/
+CASBACnetStackAdapterTypes.h:191`) carries no source-address parameter, and
+no other stack API exposes "which peer sent the message currently being
+processed" at that callback's firing point (grepped the stack adapter
+headers for anything resembling a "current source"/"last message" accessor -
+none exists). See `TODO.md`'s "Genuinely open items" for the honest note
+added there instead of a fragile global-variable workaround.
+
 ## [1.1.7] - unreleased
 
 ### Added
