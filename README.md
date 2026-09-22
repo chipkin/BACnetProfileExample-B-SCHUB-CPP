@@ -398,8 +398,9 @@ firewall. To use a different port, pass `--port` (see below).
 | `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
 | `--sc-max-hub-connections <n>` | `4` | Max simultaneous inbound BACnet/SC peer connections the hub function accepts - enforced by the stack (see [Configuration file](#configuration-file) and `TODO.md`/this option's own doc comment in `main.cpp` for how). |
 | `--sc-rate-limit <n>` | `10` | Max NEW inbound BACnet/SC connection *attempts*/second the listener accepts before rejecting the excess - enforced by this example's transport (`sc_transport/ScTransport`), before the TLS handshake. Distinct from `--sc-max-hub-connections`, which bounds *concurrent* connections, not the rate of new attempts - see [Rate-limiting and the audit trail](#rate-limiting-and-the-audit-trail) below. `0` = no limit. |
-| `--http-port <n>` | `8080` | TCP port for `GET /health`, `GET /metrics` and `POST /certs/<slot>`, bound to `127.0.0.1` only - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) and [Certificate upload endpoint](#certificate-upload-endpoint) below. |
-| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `http-port`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file - **except `dcc-password`, which has no CLI flag at all** (see [Secrets handling](#secrets-handling)). |
+| `--http-port <n>` | `8080` | TCP port for `GET /health`, `GET /metrics` and `POST /certs/<slot>` - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) and [Certificate upload endpoint](#certificate-upload-endpoint) below. |
+| `--http-bind <addr>` | `127.0.0.1` | Interface the HTTP endpoints above bind to. Loopback-only by default; see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) before setting this to anything else - this listener has no TLS and `GET /health`/`GET /metrics` have no authentication at all. |
+| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `http-port`, `http-bind`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file - **except `dcc-password`, which has no CLI flag at all** (see [Secrets handling](#secrets-handling)). |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
 
@@ -571,12 +572,27 @@ BACnet/SC TX: 12 message(s), 456 byte(s)
 
 ### Health/metrics HTTP endpoint
 
-`GET http://127.0.0.1:<http-port>/health` and `GET .../metrics` (identical -
+`GET http://<http-bind>:<http-port>/health` and `GET .../metrics` (identical -
 two paths for whatever a monitoring tool expects) return the same data as the
 `m` keypress above, as JSON, **with no authentication** - this is a
-deliberate, documented tradeoff: the endpoint is read-only, low-risk, and
-bound to loopback only (see `sc_transport/HttpServer.h`), and a tutorial
-monitoring integration should not need a secret just to poll uptime.
+deliberate, documented tradeoff: the endpoint is read-only and low-risk
+**as long as it stays on loopback**, which is its default (`--http-bind`
+defaults to `127.0.0.1`) - a tutorial monitoring integration should not need
+a secret just to poll uptime from the same host.
+
+**`--http-bind` (and the config file's `http-bind` key) can point this
+listener at a non-loopback address** (`0.0.0.0`, or a specific LAN address)
+if you need to reach it from another machine. Understand what that actually
+removes before doing it: this HTTP server has **no TLS at all**, and neither
+`GET /health` nor `GET /metrics` check any credential - binding off loopback
+makes both of those readable, in plaintext, by anything that can reach the
+port. `sc_transport/HttpServer::Start()` logs a `Warning`-level line every
+single time it starts bound to anything other than `127.0.0.1`/`localhost`,
+specifically so this cannot go unnoticed in a log an operator only skims. If
+you need this reachable from another host, prefer terminating TLS in front of
+it (an SSH tunnel, or a reverse proxy like nginx/Caddy) over binding it
+directly to a LAN interface - that keeps this example's own code and default
+posture unchanged.
 
 ```
 $ curl -s http://127.0.0.1:8080/health
@@ -600,7 +616,7 @@ see `HttpServer.h`'s file header for the full reasoning.
 
 ### Certificate upload endpoint
 
-`POST http://127.0.0.1:<http-port>/certs/<slot>` (`<slot>` one of
+`POST http://<http-bind>:<http-port>/certs/<slot>` (`<slot>` one of
 `operational`, `csr`, `issuer1`, `issuer2`, mapping to the same
 `hub.crt`/`hub.csr`/`ca.crt`/`ca.crt` files under `--sc-cert-dir` the 4 read-only
 File objects already serve - see [The device this example
@@ -617,11 +633,18 @@ before using it.**
 - **Disabled entirely if `dcc-password` is unset/empty** (the default) -
   the endpoint refuses every upload with `503` rather than accepting one with
   no protection. An empty password does **not** mean "no auth required".
-- Bound to `127.0.0.1` only, same listener/port as the health/metrics
-  endpoint above - but the auth requirement does **not** leak between the two
-  routes in either direction: `GET /health`/`GET /metrics` never check the
-  token; `POST /certs/<slot>` always does (or is disabled) regardless of
-  whether `GET` is reachable.
+- Same listener/port (and the same `--http-bind` setting) as the
+  health/metrics endpoint above - but the auth requirement does **not** leak
+  between the two routes in either direction: `GET /health`/`GET /metrics`
+  never check the token; `POST /certs/<slot>` always does (or is disabled)
+  regardless of whether `GET` is reachable. If you bind this off loopback
+  (see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint)), the
+  bearer-token check is your ONLY protection on this endpoint - it is a
+  plain string compare over plain HTTP, not a real auth scheme (no rate
+  limiting on upload attempts, no TLS, no protection against the token being
+  sniffed on the wire). Keeping this on loopback and reaching it through an
+  SSH tunnel or a TLS-terminating reverse proxy is the safer choice if you
+  need it reachable at all from off-host.
 - **PEM sanity check, not full X.509 validation.** The upload must contain
   `-----BEGIN CERTIFICATE-----` (or `-----BEGIN CERTIFICATE REQUEST-----` for
   the `csr` slot) and be 64..65536 bytes. This is **not** a real parse -
@@ -652,10 +675,12 @@ curl -X POST -H "Authorization: Bearer $DCC_PASSWORD" \
 
 **What is honestly NOT hardened here** (this is lab/tutorial-grade, not a
 production upload path): no rate limiting on upload *attempts* specifically
-(only the BACnet/SC listener has `--sc-rate-limit`), no mutual TLS on the
-HTTP listener itself (it isn't TLS at all - plain HTTP, acceptable only
-because it never leaves `127.0.0.1`), and a bearer token in a header rather
-than a real auth scheme (mTLS, OAuth). See `TODO.md`'s "Genuinely open
+(only the BACnet/SC listener has `--sc-rate-limit`), no TLS on the HTTP
+listener itself at all - plain HTTP, acceptable by default only because
+`--http-bind` defaults to `127.0.0.1` and stops being acceptable the moment
+that default is changed (see [Health/metrics HTTP
+endpoint](#healthmetrics-http-endpoint)) - and a bearer token in a header
+rather than a real auth scheme (mTLS, OAuth). See `TODO.md`'s "Genuinely open
 items" for the full list.
 
 ## Verify

@@ -8,8 +8,8 @@
 // This example's `--config <path>` support: a dependency-free, INI-like
 // "key = value" config file supplying DEFAULTS for a handful of this
 // example's settings (device-id, port, sc-port, sc-cert-dir, sc-hub-uri,
-// sc-failover-uri, dcc-password, http-port, sc-max-hub-connections,
-// sc-rate-limit).
+// sc-failover-uri, dcc-password, http-port, http-bind,
+// sc-max-hub-connections, sc-rate-limit).
 //
 // Precedence is CLI args > config file > main.cpp's own built-in defaults -
 // see main.cpp's CLI-parsing block for how ExampleConfig is threaded through:
@@ -74,12 +74,24 @@ struct ExampleConfig {
 
     // http-port: TCP port for the read-only health/metrics HTTP endpoint
     // (Task 3) and the certificate-upload endpoint (Task 4) - both served by
-    // sc_transport/HttpServer on 127.0.0.1 only (never 0.0.0.0 - see
-    // HttpServer.h). Distinct from --port (BACnet/IP UDP) and --sc-port
-    // (BACnet/SC WebSocket/TLS TCP) - three different listeners, three
-    // different defaults (47808 / 47819 / 8080), no overlap.
+    // sc_transport/HttpServer. Distinct from --port (BACnet/IP UDP) and
+    // --sc-port (BACnet/SC WebSocket/TLS TCP) - three different listeners,
+    // three different defaults (47808 / 47819 / 8080), no overlap.
     bool hasHttpPort = false;
     uint16_t httpPort = 0;
+
+    // http-bind: the interface HttpServer binds to. Defaults to "127.0.0.1"
+    // (loopback-only) - deliberately requiring an EXPLICIT setting to bind
+    // anywhere else, since this listener has no TLS and GET /health, GET
+    // /metrics have no authentication at all (see HttpServer.h's Start() doc
+    // comment and README.md "Health/metrics HTTP endpoint" for the full risk
+    // reasoning). Binding to "0.0.0.0" or a specific LAN address is a real,
+    // reviewed decision this example now supports but does not default to -
+    // HttpServer::Start() logs a loud warning every time it binds to
+    // anything other than "127.0.0.1"/"localhost", every run, not just once,
+    // so it cannot go unnoticed in a log an operator only skims.
+    bool hasHttpBind = false;
+    std::string httpBind;
 
     bool hasScMaxHubConnections = false;
     uint16_t scMaxHubConnections = 0;
@@ -104,7 +116,7 @@ std::string ParseConfigPathArg(int argc, char** argv);
 // for why; leading/trailing whitespace around key and value is trimmed, and
 // "key=value" with no spaces is also accepted). Recognised keys: device-id,
 // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, dcc-password,
-// http-port, sc-max-hub-connections, sc-rate-limit. An unrecognised key or an
+// http-port, http-bind, sc-max-hub-connections, sc-rate-limit. An unrecognised key or an
 // unparsable numeric value is WARNED about (via CASExampleHelper::Log) and
 // otherwise skipped, never fatal - a config file is a convenience, not a
 // contract the device refuses to start over. If dcc-password is set to a

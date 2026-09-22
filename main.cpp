@@ -151,7 +151,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.6";
+static const char* APP_VERSION = "1.1.7";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -349,11 +349,15 @@ static std::string g_scHubUri;      // primary hub URI to dial; empty = connecto
 static std::string g_scFailoverUri; // optional failover hub URI; empty = none configured
 
 // The read-only health/metrics HTTP endpoint (Task 3) and the certificate
-// upload endpoint (Task 4) - both served by g_httpServer below, bound to
-// 127.0.0.1 ONLY (see HttpServer.h's Start()). --http-port / config-file
-// http-port; distinct from --port (BACnet/IP, default 47808) and --sc-port
-// (BACnet/SC, default 47819).
+// upload endpoint (Task 4) - both served by g_httpServer below.
+// --http-port / config-file http-port; distinct from --port (BACnet/IP,
+// default 47808) and --sc-port (BACnet/SC, default 47819).
 static uint16_t g_httpPort = 8080;
+// --http-bind / config-file http-bind. Defaults to loopback-only; see
+// HttpServer.h's Start() doc comment for why binding this anywhere else is
+// an explicit opt-in this example warns loudly about, every run, rather than
+// a setting with no consequence.
+static std::string g_httpBindAddress = "127.0.0.1";
 static CASSc::HttpServer g_httpServer;
 
 // Process start time (steady clock - immune to wall-clock adjustments),
@@ -1353,17 +1357,22 @@ int main(int argc, char** argv) {
                 printf("                      limit. Default 10.\n");
                 printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
                 printf("  --http-port <n>     TCP port for the read-only GET /health, GET /metrics and\n");
-                printf("                      POST /certs/<slot> HTTP endpoints, bound to 127.0.0.1 ONLY\n");
-                printf("                      (never exposed off-host by this example). Default 8080.\n");
+                printf("                      POST /certs/<slot> HTTP endpoints. Default 8080.\n");
                 printf("                      GET /health and GET /metrics need no authentication.\n");
                 printf("                      POST /certs/<slot> (slot: operational, csr, issuer1, issuer2)\n");
                 printf("                      requires \"Authorization: Bearer <dcc-password>\" and is\n");
                 printf("                      DISABLED ENTIRELY if dcc-password is not set - see\n");
                 printf("                      README.md \"Certificate upload endpoint\".\n");
+                printf("  --http-bind <addr>  Interface the HTTP endpoints above bind to. Default\n");
+                printf("                      127.0.0.1 (loopback only). Binding anywhere else (e.g.\n");
+                printf("                      0.0.0.0, or a LAN address) is a real security tradeoff -\n");
+                printf("                      this listener has NO TLS, and GET /health, GET /metrics have\n");
+                printf("                      NO authentication at all - see README.md \"Health/metrics\n");
+                printf("                      HTTP endpoint\" before setting this to anything else.\n");
                 printf("\nConfig file:\n");
                 printf("  --config <path>     Read defaults for device-id, port, sc-port, sc-cert-dir,\n");
                 printf("                      sc-hub-uri, sc-failover-uri, dcc-password, http-port,\n");
-                printf("                      sc-max-hub-connections and sc-rate-limit from a\n");
+                printf("                      http-bind, sc-max-hub-connections and sc-rate-limit from a\n");
                 printf("                      \"key = value\" file (see example.conf and README.md\n");
                 printf("                      \"Configuration file\"). Any of those flags given on the\n");
                 printf("                      command line still wins over the config file - EXCEPT\n");
@@ -1419,6 +1428,15 @@ int main(int argc, char** argv) {
     g_scRateLimit = ParseScRateLimitArg(
         argc, argv, fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
     g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
+    {
+        const std::string httpBindArg = ParseStringArg(argc, argv, "--http-bind");
+        if (!httpBindArg.empty()) {
+            g_httpBindAddress = httpBindArg;  // CLI wins
+        } else if (fileConfig.hasHttpBind && !fileConfig.httpBind.empty()) {
+            g_httpBindAddress = fileConfig.httpBind;  // then config file
+        }
+        // else: g_httpBindAddress keeps its "127.0.0.1" built-in default.
+    }
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
     g_startTime = std::chrono::steady_clock::now();
 
@@ -1719,6 +1737,7 @@ int main(int argc, char** argv) {
     {
         CASSc::HttpServerConfig httpConfig;
         httpConfig.port = g_httpPort;
+        httpConfig.bindAddress = g_httpBindAddress;
         httpConfig.certDir = g_scCertDir;
         httpConfig.bearerToken = g_dccPassword;  // Task 4: empty => upload endpoint disabled entirely
         httpConfig.resolveCertSlot = ResolveCertUploadSlot;

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7] - unreleased
+
+### Added
+
+- **`--http-bind <addr>` setting** (config-file key `http-bind`, same
+  CLI-over-config precedence as everything else): the interface
+  `sc_transport/HttpServer` binds to, previously hardcoded to `127.0.0.1`
+  with no way to change it. Defaults to `127.0.0.1` unchanged. Binding to
+  `0.0.0.0` or a LAN address now works (verified: a real HTTP client on the
+  loopback-external side of a non-loopback bind successfully reached
+  `GET /health`), but this listener still has **no TLS**, and `GET /health`/
+  `GET /metrics` still have **no authentication** - `HttpServer::Start()` now
+  logs a `Warning`-level line every single run it binds to anything other
+  than `127.0.0.1`/`localhost`, so this cannot go unnoticed. See README.md
+  "Health/metrics HTTP endpoint" for the recommended safer alternative (an
+  SSH tunnel or TLS-terminating reverse proxy) if off-host access is needed
+  without accepting that tradeoff. `TODO.md` items 9-11 updated to reflect
+  that the loopback-only mitigation they described is now opt-out, not
+  guaranteed.
+
 ## [1.1.6] - unreleased
 
 ### Fixed

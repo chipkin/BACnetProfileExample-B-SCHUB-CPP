@@ -202,6 +202,9 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
                 outConfig->httpPort = (uint16_t)numeric;
                 outConfig->hasHttpPort = true;
             }
+        } else if (key == "http-bind") {
+            outConfig->httpBind = value;
+            outConfig->hasHttpBind = true;
         } else if (key == "sc-max-hub-connections") {
             if (ParseConfigUint(key, value, 1, 65535, &numeric)) {
                 outConfig->scMaxHubConnections = (uint16_t)numeric;

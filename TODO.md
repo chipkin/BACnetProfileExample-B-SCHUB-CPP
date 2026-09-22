@@ -205,15 +205,23 @@ mistake the behaviour for a bug in this example.
    to), but a natural next step if VMAC/UUID-level audit correlation is
    needed.
 9. **The HTTP health/metrics + certificate-upload listener (`sc_transport/HttpServer`,
-   added 2026-09-21) has no TLS at all** - plain HTTP, `127.0.0.1`-only by
-   design (see README.md "Health/metrics HTTP endpoint"). Acceptable because
-   loopback traffic never crosses a real network boundary, but this means the
-   listener cannot safely be rebound to a non-loopback address without first
-   adding TLS (or moving it to a Unix domain socket / Windows named pipe,
-   which would not need TLS at all for a local-only integration). There is no
-   `--http-bind-address` option in this batch, deliberately, precisely so a
-   config file cannot accidentally expose this off-host by omission - adding
-   one is a real, scoped follow-up, not an oversight.
+   added 2026-09-21) has no TLS at all** - plain HTTP, always. `127.0.0.1`
+   loopback was the ONLY bindable address in the original batch, precisely so
+   the missing TLS could not matter; as of `--http-bind` (added 2026-09-22),
+   that address is now a config-file/CLI-settable default, not a hard
+   constraint - a deliberate, scoped follow-up the original entry here
+   already anticipated ("adding one is a real, scoped follow-up, not an
+   oversight"). The gap this creates is real, not just theoretical: binding
+   off loopback puts `GET /health`/`GET /metrics` (no auth at all) and
+   `POST /certs/<slot>`'s bearer-token check on the wire in plaintext,
+   readable/interceptable by anything on that network. Mitigated, not
+   eliminated, by `HttpServer::Start()` logging a `Warning` every single run
+   it binds off loopback (see README.md "Health/metrics HTTP endpoint" for
+   the recommended safer alternative - an SSH tunnel or a TLS-terminating
+   reverse proxy in front of this listener, keeping the loopback default
+   unchanged). Real TLS on this listener itself (or moving it to a Unix
+   domain socket / Windows named pipe for same-host-only integrations that
+   want no address to bind at all) remains unimplemented.
 10. **`POST /certs/<slot>`'s authentication is a bearer token equal to
     `dcc-password`, checked with a plain string compare - not constant-time,
     not mTLS, not OAuth/a real credential/token-issuance scheme.** Reusing
@@ -223,13 +231,18 @@ mistake the behaviour for a bug in this example.
     deployment should use a dedicated, rotatable upload credential (or real
     mTLS client-cert auth reusing the same PKI the BACnet/SC transport
     already has) instead of overloading the DCC password for two purposes.
+    This is a strictly bigger risk now that `--http-bind` can put this
+    listener on a real network (see item 9) - a plaintext bearer token is a
+    materially weaker protection off loopback than on it.
 11. **No rate limiting on `POST /certs/<slot>` upload *attempts* specifically**
     (as distinct from `--sc-rate-limit`, which only bounds new BACnet/SC
     WebSocket connection attempts) - an attacker who already has a valid
     `dcc-password` (or is brute-forcing a weak one) can hammer the upload
-    endpoint as fast as TCP allows. Low risk at this example's scale (the
-    endpoint is loopback-only and every attempt is logged), but a real
-    product should add one.
+    endpoint as fast as TCP allows. Was low risk at this example's scale
+    partly BECAUSE the endpoint used to be loopback-only unconditionally;
+    with `--http-bind` (item 9), that mitigation is now opt-out, not
+    guaranteed - a real product should add real rate limiting here regardless
+    of bind address.
 12. **The uploaded-certificate check is a PEM-header + size sanity check,
     not a real X.509 parse.** OpenSSL is already vendored (for the SC
     transport's TLS) and could be used for a real parse-and-sanity-check;

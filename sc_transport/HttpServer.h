@@ -26,8 +26,8 @@
 // ScTransport's listener context is TLS 1.3 + mutual-client-cert, speaks the
 // "hub.bsc.bacnet.org" WebSocket subprotocol, and its per-connection state
 // (PeerConnection) is BACnet/SC-specific. This HTTP server is plain HTTP
-// (no TLS - see Start()'s own comment on why 127.0.0.1-only makes that an
-// acceptable tutorial tradeoff), a completely different protocol handler
+// (no TLS - see Start()'s own comment on the risk this creates once bound
+// off loopback), a completely different protocol handler
 // (LWS_CALLBACK_HTTP/_BODY/_BODY_COMPLETION/_WRITEABLE, not the WebSocket
 // RECEIVE/WRITEABLE reasons ScTransport handles), and deliberately isolated
 // from the BACnet/SC transport's own state so a bug in one cannot corrupt
@@ -75,7 +75,11 @@ using CertSlotResolver = std::function<bool(const std::string& slot, std::string
 using HealthJsonBuilder = std::function<std::string()>;
 
 struct HttpServerConfig {
-    uint16_t port = 0;             // TCP port to bind (127.0.0.1 only - see Start())
+    uint16_t port = 0;             // TCP port to bind - see Start()
+    // Interface to bind. Defaults to "127.0.0.1" (main.cpp's own default,
+    // not enforced here) - see Start()'s doc comment for the risk of setting
+    // this to anything else (--http-bind / config-file http-bind).
+    std::string bindAddress = "127.0.0.1";
     std::string certDir;           // --sc-cert-dir - where an accepted upload is written
     std::string bearerToken;       // dcc-password (Task 1's config-file-only setting).
                                     // EMPTY means the upload endpoint is DISABLED entirely
@@ -90,14 +94,22 @@ public:
     HttpServer();
     ~HttpServer();
 
-    // Starts listening on 127.0.0.1:config.port. ALWAYS binds 127.0.0.1
-    // specifically (never 0.0.0.0/an empty iface) - this is a tutorial
-    // default, not a policy switch: there is no --http-bind-address option
-    // in this batch, deliberately, so a config file cannot accidentally
-    // expose this endpoint (particularly the upload one) to the network by
-    // omission - see TODO.md "Genuinely open items" for what a real product
-    // would need instead (TLS on this listener, a real auth scheme, a bind
-    // address that is an explicit, reviewed decision rather than a default).
+    // Starts listening on config.bindAddress:config.port. Defaults to
+    // 127.0.0.1 (main.cpp never sets bindAddress unless --http-bind / the
+    // config file's http-bind key was given) - a deliberate default, not
+    // just a convenient one: this server has NO TLS, and GET /health, GET
+    // /metrics have NO authentication at all (see the class comment above
+    // for why that is an accepted tradeoff on loopback specifically). Every
+    // time this binds to anything other than "127.0.0.1"/"localhost", it
+    // logs a Warning-level line via CASExampleHelper::Log naming the address
+    // it bound to and what that exposes - once per Start() call, not just
+    // once ever, so an operator scanning a log cannot miss it even if they
+    // start skimming partway through. See README.md "Health/metrics HTTP
+    // endpoint" and TODO.md "Genuinely open items" for the fuller risk
+    // reasoning (still no TLS, still only a bearer-token check on the
+    // upload endpoint, not a real auth scheme) that this setting does NOT
+    // fix - it only removes the loopback-only guarantee, which was masking
+    // those gaps rather than closing them.
     // Returns false (logs) if the bind fails - NOT fatal to the rest of the
     // program (main.cpp keeps running with this endpoint simply absent) so a
     // busy --http-port does not take down BACnet/SC or BACnet/IP.

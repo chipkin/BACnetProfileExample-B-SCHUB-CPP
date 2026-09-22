@@ -105,20 +105,23 @@ bool HttpServer::Start(const HttpServerConfig& config) {
     m_protocols[0].per_session_data_size = 0;  // per-connection state lives in m_sessions, keyed by wsi*
     m_protocols[0].rx_buffer_size = 4096;
 
+    if (m_config.bindAddress.empty()) {
+        m_config.bindAddress = "127.0.0.1";  // same default as main.cpp's g_httpBindAddress - belt and suspenders
+    }
+    const bool isLoopback = (m_config.bindAddress == "127.0.0.1" || m_config.bindAddress == "localhost");
+
     lws_context_creation_info info;
     std::memset(&info, 0, sizeof(info));
     info.port = m_config.port;
-    // ALWAYS 127.0.0.1 - see HttpServer.h's Start() doc comment. This is not
-    // read from config; there is deliberately no way to bind this listener
-    // (health/metrics AND the cert-upload endpoint) to anything else in this
-    // batch.
-    info.iface = "127.0.0.1";
+    info.iface = m_config.bindAddress.c_str();
     info.protocols = m_protocols;
-    // No TLS - this is plain HTTP. Acceptable ONLY because it is bound to
-    // 127.0.0.1 (loopback-only traffic never leaves the host) - see
-    // TODO.md "Genuinely open items" for why this would need TLS (or a unix
-    // domain socket / named pipe instead of TCP) before ever binding
-    // anywhere else.
+    // No TLS - this is plain HTTP. Was acceptable UNCONDITIONALLY when this
+    // listener could only ever bind 127.0.0.1; now that --http-bind /
+    // config-file http-bind can point it elsewhere, that safety margin is
+    // gone the moment an operator opts in - see the loud warning just below
+    // and TODO.md "Genuinely open items" for why this would need real TLS
+    // (or a unix domain socket / named pipe instead of TCP) to be a sound
+    // default off loopback, which this fix does NOT add.
     info.user = this;
     info.gid = static_cast<gid_t>(-1);
     info.uid = static_cast<uid_t>(-1);
@@ -126,19 +129,35 @@ bool HttpServer::Start(const HttpServerConfig& config) {
     lws_context* ctx = lws_create_context(&info);
     if (ctx == nullptr) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
-            "HTTP server: failed to bind 127.0.0.1:%u (port already in use?). "
+            "HTTP server: failed to bind %s:%u (port already in use? address not assigned to this host?). "
             "Health/metrics (Task 3) and certificate upload (Task 4) endpoints are NOT available "
             "this run; BACnet/IP and BACnet/SC are unaffected.",
-            (unsigned)m_config.port);
+            m_config.bindAddress.c_str(), (unsigned)m_config.port);
         return false;
     }
 
     m_context = ctx;
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-        "HTTP server: listening on http://127.0.0.1:%u (GET /health, GET /metrics - no auth; "
+        "HTTP server: listening on http://%s:%u (GET /health, GET /metrics - no auth; "
         "POST /certs/<slot> - %s)",
-        (unsigned)m_config.port,
+        m_config.bindAddress.c_str(), (unsigned)m_config.port,
         m_config.bearerToken.empty() ? "DISABLED, dcc-password not configured" : "requires Authorization: Bearer <dcc-password>");
+
+    // Logged every Start() (not once-ever) so this cannot scroll past an
+    // operator who only checks the tail of a long-running log - see
+    // HttpServer.h's Start() doc comment for the full reasoning. Deliberately
+    // separate from the INFO line above (a Warning-level line an operator's
+    // own log filtering is more likely to surface) rather than folded into it.
+    if (!isLoopback) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "HTTP server: bound to %s, NOT 127.0.0.1/localhost - GET /health and GET /metrics are now "
+            "reachable from off this host with NO authentication and NO TLS, and POST /certs/<slot> "
+            "(if enabled) has only a bearer-token check, not a real auth scheme, also over plain HTTP. "
+            "This is a deliberate opt-in (--http-bind / config-file http-bind), not this example's "
+            "default - see README.md \"Health/metrics HTTP endpoint\" before doing this on a network "
+            "you do not fully trust.",
+            m_config.bindAddress.c_str());
+    }
     return true;
 }
 
