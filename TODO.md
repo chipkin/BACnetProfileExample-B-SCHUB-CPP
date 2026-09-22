@@ -238,3 +238,22 @@ mistake the behaviour for a bug in this example.
     "Certificate upload endpoint" for the full reasoning) - revisit if this
     example ever needs to catch a malformed-but-PEM-shaped upload before it
     reaches disk, rather than only before it reaches a TLS handshake.
+13. **An arbitrary, unrecognised WebSocket subprotocol still drops the raw
+    TCP connection with no HTTP response and no WS close frame** - the part
+    of [#8](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/8)
+    that the fix landed alongside this item did NOT close. `"dc.bsc.bacnet.org"`
+    (a real, finite, known BACnet/SC name) is fixed - it now reaches a clean
+    1002 close with an honest reason. A genuinely arbitrary name (a typo,
+    garbage) cannot be, from this transport's side: verified by reading the
+    pinned libwebsockets 4.5.8 source (`lib/roles/ws/server-ws.c`'s
+    `lws_process_ws_upgrade`, `lib/core-net/wsi.c`'s
+    `lws_vhost_name_to_protocol`) that protocol selection is a fixed-list
+    exact-`strcmp` match with no wildcard, and an unmatched name is rejected
+    at the raw TCP level before ANY application callback runs - not merely
+    unhandled by this example's own code. Closing this fully would mean not
+    relying on lws's built-in WS-role upgrade handling at all (parsing the
+    HTTP upgrade request and running the WebSocket handshake by hand instead)
+    - a much larger architectural change than this example's transport
+    currently makes, and out of proportion to the actual practical cost (a
+    confusing but harmless disconnect for a client that mistypes the
+    subprotocol name).

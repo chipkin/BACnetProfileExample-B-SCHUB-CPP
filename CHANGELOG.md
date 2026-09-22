@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.6] - unreleased
+
+### Fixed
+
+- **Unrecognised WebSocket subprotocol no longer drops the raw TCP
+  connection for the one case this example can actually fix**
+  ([#8](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/8)).
+  `sc_transport/ScTransport.cpp`'s listener now registers
+  `"dc.bsc.bacnet.org"` (135-2020 AB.7.1's direct-connect subprotocol) as its
+  own protocol entry alongside `"hub.bsc.bacnet.org"`, so a client that
+  requests it reaches the existing `LWS_CALLBACK_ESTABLISHED` check and gets
+  a clean WS close (1002) with an honest reason - "direct-connect
+  (dc.bsc.bacnet.org) not supported by this hub" - instead of a bare TCP
+  reset indistinguishable from a firewall drop or a crashed hub. Verified
+  with the same 4-request probe the issue used: `101` + echoed
+  `Sec-WebSocket-Protocol: dc.bsc.bacnet.org` + the close reason above, now
+  observed on the wire.
+  An initial attempt at this fix tried registering an empty-name (`""`)
+  catch-all protocol entry, hoping libwebsockets would treat it as "bind any
+  subprotocol lws doesn't otherwise recognise here." Rebuilding and
+  re-running the same probe disproved that - reading the pinned lws 4.5.8
+  source (`lib/core-net/wsi.c`'s `lws_vhost_name_to_protocol`) confirmed
+  protocol selection is a straight `strcmp` loop with no wildcard, so an
+  empty registered name only matches a client that sends a literally empty
+  subprotocol token. A genuinely **arbitrary** unrecognised subprotocol name
+  (a typo, garbage) is still dropped at the raw TCP level - `lws_process_ws_
+  upgrade` rejects it before any application callback runs at all, and there
+  is no fix for that from this transport's side without bypassing lws's own
+  WS-role upgrade handling entirely. See `TODO.md` for this documented,
+  verified-real, deliberately-not-fixed-here limitation.
+
 ## [1.1.5] - unreleased
 
 ### Added

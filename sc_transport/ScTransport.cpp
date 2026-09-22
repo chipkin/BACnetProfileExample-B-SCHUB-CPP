@@ -247,15 +247,64 @@ bool ScTransport::StartListening(const std::string& uri) {
     // object (m_protocolNameStorage), not as a temporary. m_protocols itself
     // is heap-allocated (not a fixed array) so ScTransport.h does not need the
     // full `struct lws_protocols` definition - see the header's comment.
+    //
+    // 3 entries, not 2 (github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP#8):
+    // a client that sends NO Sec-WebSocket-Protocol header gets protocols[0]
+    // by lws's own default-protocol-index rule (lib/roles/ws/server-ws.c's
+    // lws_process_ws_upgrade: an absent header binds
+    // vhost->protocols[vhost->default_protocol_index], which defaults to 0,
+    // regardless of that entry's name) and reaches LWS_CALLBACK_ESTABLISHED,
+    // where SubprotocolListContains's re-check below sends a clean WS close
+    // (1002) - correct, and unchanged by this fix.
+    //
+    // A client that NAMES a subprotocol, though, is matched by lws via a
+    // straight loop of exact strcmp() against every registered protocol name
+    // (lib/core-net/wsi.c's lws_vhost_name_to_protocol - verified by reading
+    // the pinned lws 4.5.8 source directly, not assumed): no match anywhere
+    // in that list means lws_process_ws_upgrade itself logs "No supported
+    // protocol" and drops the raw TCP connection - no HTTP response, no WS
+    // close frame, nothing - before this application's ESTABLISHED callback
+    // ever runs. An EARLIER attempt at this fix added a protocols[1] entry
+    // with an empty name ("") hoping lws would treat that as a wildcard/
+    // catch-all; re-reading lws_vhost_name_to_protocol's actual `strcmp(name,
+    // vh->protocols[n].name)` disproved that (an empty registered name only
+    // matches a client that literally sends an empty subprotocol TOKEN, not
+    // "any name lws doesn't otherwise recognise") - confirmed empirically too,
+    // rebuilding with that change and re-running this exact 3-request probe
+    // still showed "No supported protocol" for both bad cases in the running
+    // binary's own log. There is no general fix for an ARBITRARY unrecognised
+    // subprotocol name without bypassing lws's own WS-role upgrade handling
+    // entirely (a much larger change than this issue calls for) - see
+    // TODO.md's own entry for this, added alongside this fix rather than
+    // silently leaving the gap undocumented.
+    //
+    // What IS fixable, and what this fix actually does: "dc.bsc.bacnet.org"
+    // (135-2020 AB.7.1's direct-connect subprotocol) is not an arbitrary
+    // string, it is a SPECIFIC, KNOWN, legitimate BACnet/SC name this example
+    // simply does not implement (hub-function only) - so it can be
+    // registered explicitly as its own protocol entry, giving it a real
+    // strcmp match and routing it into ESTABLISHED like protocols[0] does,
+    // where the isDirectConnect branch below gives it its own honest close
+    // reason instead of a bare TCP drop. This directly answers the issue's
+    // own request ("dc.bsc.bacnet.org specifically deserves a reason string
+    // saying so, since it is a valid BACnet/SC subprotocol rather than a
+    // client error").
     m_protocolNameStorage = m_acceptSubprotocol;
     delete[] m_protocols;
-    m_protocols = new lws_protocols[2];
-    std::memset(m_protocols, 0, sizeof(lws_protocols) * 2);
+    m_protocols = new lws_protocols[3];
+    std::memset(m_protocols, 0, sizeof(lws_protocols) * 3);
     m_protocols[0].name = m_protocolNameStorage.c_str();
     m_protocols[0].callback = &LwsServerCallbackTrampoline;
     m_protocols[0].per_session_data_size = 0;  // per-connection state lives in m_peers, keyed by wsi*
     m_protocols[0].rx_buffer_size = 4096;
-    // m_protocols[1] stays all-zero - the required NULL-callback terminator.
+    // A string literal, not m_protocolNameStorage-style heap storage - static
+    // duration is sufficient since this exact spelling never changes at
+    // runtime (unlike m_acceptSubprotocol, which SetConfig can vary).
+    m_protocols[1].name = "dc.bsc.bacnet.org";
+    m_protocols[1].callback = &LwsServerCallbackTrampoline;
+    m_protocols[1].per_session_data_size = 0;
+    m_protocols[1].rx_buffer_size = 4096;
+    // m_protocols[2] stays all-zero - the required NULL-callback terminator.
 
     lws_context_creation_info info;
     std::memset(&info, 0, sizeof(info));
@@ -602,14 +651,32 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
         case LWS_CALLBACK_ESTABLISHED: {
             // Verify the client actually asked for our subprotocol ourselves -
             // see SubprotocolListContains's comment for why this is not left to
-            // lws's own negotiation.
+            // lws's own negotiation. This callback only fires for a request
+            // lws itself already bound to one of THIS transport's registered
+            // protocols (no subprotocol requested at all, "hub.bsc.bacnet.org"
+            // itself, or - as of github.com/chipkin/BACnetProfileExample-B-
+            // SCHUB-CPP#8's fix - the explicitly-registered "dc.bsc.bacnet.org"
+            // - see m_protocols[1]'s comment in StartListening()); an
+            // ARBITRARY unrecognised subprotocol name never reaches here at
+            // all (lws drops it earlier, at the raw TCP level - see the same
+            // comment for why that specific gap is not fixable from here).
             char requested[256] = {0};
             lws_hdr_copy(wsi, requested, static_cast<int>(sizeof(requested)), WSI_TOKEN_PROTOCOL);
             if (!SubprotocolListContains(requested, m_acceptSubprotocol)) {
+                // "dc.bsc.bacnet.org" (135-2020 AB.7.1, BACnet/SC direct
+                // connect) is a real BACnet/SC subprotocol this hub-function-
+                // only build does not implement - not a client typo. Naming
+                // that distinction in the close reason (#8's own suggestion)
+                // saves a partner from mistaking "not implemented" for "you
+                // asked for something malformed."
+                const bool isDirectConnect = SubprotocolListContains(requested, "dc.bsc.bacnet.org");
+                const char* const closeReason = isDirectConnect
+                    ? "direct-connect (dc.bsc.bacnet.org) not supported by this hub"
+                    : "unsupported subprotocol";
                 fprintf(stderr, "BACnet/SC: rejecting connection - client asked for subprotocol(s) "
                                 "\"%s\", not \"%s\"\n", requested, m_acceptSubprotocol.c_str());
                 lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,
-                                 (unsigned char*)"unsupported subprotocol", 24);
+                                 (unsigned char*)closeReason, static_cast<unsigned int>(strlen(closeReason)));
                 return -1;
             }
 
