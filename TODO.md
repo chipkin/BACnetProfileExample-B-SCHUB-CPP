@@ -299,46 +299,67 @@ mistake the behaviour for a bug in this example.
     currently makes, and out of proportion to the actual practical cost (a
     confusing but harmless disconnect for a client that mistypes the
     subprotocol name).
-15. ~~A mismatched private key crashes the process (segfault)~~ - **the
-    reachable symptom is fixed; the underlying root cause is still unknown.**
-    Originally found verifying item 3's certificate self-diagnosis: a
-    mismatched key/cert pair made `lws_create_context` fail as expected, but
-    the process then segfaulted - not on the first failed attempt, only on a
-    **retry** (the stack calls `StartListening()`/`Connect()` again every
-    Tick per its own contract). Reproduced directly (not assumed): running
-    with a deliberately mismatched key, the first `lws_create_context`
-    attempt fails cleanly and logs the real OpenSSL reason
-    (`ssl problem getting key ... key values mismatch`); the SECOND attempt
-    then crashes with `EXIT CODE 139` (SIGSEGV), inside libwebsockets' own
-    subsequent context-teardown/retry path - confirmed pre-existing on the
-    unmodified build via `git stash`, not introduced by the diagnostics work
-    that found it.
+15. ~~A mismatched private key crashes the process (segfault)~~ - **fixed
+    generally, for every `lws_create_context` failure mode, not just the one
+    originally diagnosed; the underlying root cause is still unknown, but
+    unusually well characterised for something unfixed.**
 
-    **Fixed at the application layer**: `LogCertificateDiagnostics()`
-    (already added for item 3) now returns whether it found a *confirmed*
-    mismatch (both files parsed as valid PEM, `X509_check_private_key()`
-    definitively says they don't match); `StartListening()`/`Connect()` both
-    now refuse to call `lws_create_context` at all in that case, logging a
-    clear `"refusing to start ... certificate/private key mismatch"` error
-    (via the existing `LogListenFailureOnce` de-dupe) instead of retrying
-    forever. Verified: the same reproduction now runs 40+ seconds under the
-    same mismatched key with zero crashes (previously crashed within ~15-20
-    seconds, reliably); the valid-cert happy path is unaffected (`MATCHES`
-    still logs correctly, all 3 regression suites still pass). Also fixed in
-    the same pass: the per-tick retry loop was calling the full multi-line
-    cert diagnostics on every single retry (~30/second once the crash no
-    longer cut it short) - now rate-limited to once per 30 seconds per
-    process, not per call, while still re-checking the actual match
-    condition every tick (so a live fix - replacing the bad key while the
-    process is still running - is still detected promptly, just not
-    re-logged in full every tick).
+    **History, because the fix went through two wrong theories before landing
+    on the right one - worth keeping so nobody re-derives this from scratch:**
+    - *Original finding*: a mismatched key/cert pair made `lws_create_context`
+      fail cleanly on the first attempt, but the stack's own per-Tick retry
+      contract calling `StartListening()`/`Connect()` again crashed on the
+      SECOND attempt (`EXIT CODE 139`, inside libwebsockets' own subsequent
+      context-teardown/retry path). Confirmed pre-existing via `git stash` on
+      the unmodified build.
+    - *First fix (wrong scope)*: refused to retry only for the one specific,
+      provable cause - a *confirmed* cert/key mismatch (`X509_check_private_key()`
+      definitively disagreeing). A code review correctly pointed out this left
+      every OTHER `lws_create_context` failure mode (an unparseable cert file,
+      a port already in use) retrying unthrottled - the same dangerous
+      pattern, just not the one cause this class could diagnose in advance.
+    - *Second fix (wrong theory)*: assumed the trigger was RETRY RATE (the
+      stack retries every ~30-40ms when failing) and added a 2-second cooldown
+      between `lws_create_context` attempts, for any failure reason. This
+      theory was tested and **disproved** by direct reproduction: a
+      deliberately corrupted (unparseable) `hub.crt`, with the 2-second
+      cooldown in place, still crashed on the second attempt - at a ~2-second
+      gap, not ~30ms. The crash is not a rate/timing issue.
+    - **Actual fix**: a PERMANENT, process-lifetime latch (not a cooldown) -
+      once `lws_create_context()` has failed once for a role (listener or
+      connector, tracked separately), this class never calls it again for
+      that role, for the rest of the process's life; a clear, one-shot
+      `"refusing to retry lws_create_context ... Restart the process to try
+      again"` message explains why. Covers every failure mode uniformly, not
+      just confirmed mismatch - the specific mismatch check (item 3's
+      `LogCertificateDiagnostics`) is kept as a *faster, more specific*
+      diagnosis layered on top, not the only protection anymore.
 
-    **What is NOT fixed, and may still be worth escalating**: the actual
-    root cause - why a SECOND `lws_create_context` call after a failed first
-    one crashes, specifically on this Windows/lws-4.5.8 build, and whether
-    it is a real libwebsockets defect - remains uninvestigated. This
-    application-layer fix makes the crash unreachable from this transport's
-    own retry path (the only way `StartListening()`/`Connect()` are ever
-    called repeatedly in this codebase), but does not mean the underlying
-    lws/OpenSSL bug is gone - a debugger session with a real stack trace
-    would be needed to root-cause it precisely enough to report upstream.
+    **Verified directly** (not assumed): reproduced the ORIGINAL crash with
+    both an unparseable cert file and a mismatched key/cert pair against the
+    pre-fix code (both crashed, `EXIT CODE 139`); rebuilt with the permanent
+    latch and re-ran both reproductions for 40+ seconds each with zero
+    crashes; confirmed exactly one refusal message prints (not spammed every
+    tick); confirmed the valid-cert happy path is unaffected
+    (`MATCHES` still logs correctly) via all 3 regression suites plus a real
+    connector-role handshake against `tests/sc/fake_hub_server.py`.
+
+    **Real, honestly-stated cost of this fix**: a transient failure (e.g. the
+    SC port briefly held by another process at startup) no longer
+    self-recovers - the process must be restarted once `lws_create_context`
+    has failed once, for either role. This is a real regression in retry
+    robustness, accepted deliberately in exchange for not crashing, since
+    direct reproduction disproved that a shorter, less disruptive fix (a
+    cooldown) was sufficient.
+
+    **What is still NOT fixed, and may still be worth escalating**: the
+    actual root cause inside libwebsockets/OpenSSL remains unconfirmed with a
+    debugger. The leading hypothesis (not verified): `LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT`
+    is set on every `lws_create_context()` call in both `StartListening()`
+    and `Connect()`, and re-running OpenSSL global library initialisation a
+    second time after a partial/failed prior initialisation is a known
+    footgun in libraries that expect global init to run exactly once per
+    process - consistent with what was reproduced (crash on any second call,
+    regardless of delay or failure cause), but not confirmed. A debugger
+    session with a real stack trace would be needed to root-cause this
+    precisely enough to report upstream to libwebsockets.

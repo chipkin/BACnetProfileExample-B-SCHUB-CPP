@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.11] - unreleased
+
+### Fixed
+
+- **The segfault fix from 1.1.10 was too narrow - now generalized to every
+  `lws_create_context` failure mode.** A subagent-driven code review of the
+  branch (8 finder angles + verification) correctly flagged that the 1.1.10
+  fix only refused to retry for one specific, provable cause (a confirmed
+  cert/key mismatch), leaving every OTHER `lws_create_context` failure mode
+  (an unparseable cert file, a port already in use) retrying unthrottled -
+  the same dangerous pattern. A first attempt at the general fix (a 2-second
+  retry cooldown) was tried and DISPROVED by direct reproduction: a
+  deliberately corrupted cert file still crashed on the second
+  `lws_create_context` attempt even with the cooldown in place, at a
+  ~2-second gap rather than the original ~30-40ms - proving the crash is not
+  a rate/timing issue. The actual fix is a permanent, process-lifetime latch:
+  once `lws_create_context()` fails once for a role (listener or connector,
+  tracked separately), it is never called again for that role this run - a
+  one-shot log line explains why and that a restart is needed. Verified:
+  reproduced the original crash with both an unparseable cert and a
+  mismatched key/cert pair against pre-fix code (both crashed), then
+  confirmed zero crashes over 40+ seconds each with the fix in place; the
+  valid-cert happy path and all 3 regression suites (plus a real
+  connector-role handshake against `tests/sc/fake_hub_server.py`) are
+  unaffected. See `TODO.md` item 15 for the full history (including the
+  wrong theories tried first) and the honestly-stated cost (a transient
+  failure like a temporarily-busy port no longer self-recovers - the process
+  needs a restart once `lws_create_context` has failed once).
+- **Deduplicated `LWS_CALLBACK_SERVER_WRITEABLE`/`LWS_CALLBACK_CLIENT_WRITEABLE`**
+  (same code review, a `simplification` finding): both cases were
+  near-identical copy-pasted write-flush logic ~200 lines apart. Extracted
+  into `ScTransport::FlushOneQueuedFrame()`. Verified via both halves of a
+  real connector-role handshake (server write path via
+  `tests/sc/hub_listener_test.py`'s V2 check, client write path via a real
+  `fake_hub_server.py` exchange) and the existing regression suites - no
+  behavior change, same log wording preserved on each side.
+- Also removed a dead, self-contradictory placeholder comment in
+  `sc_transport/ScTransport.cpp` (same review, a `simplification` finding)
+  describing a mechanism that was never built.
+
+Not addressed in this pass (lowest-severity finding from the same review,
+left for a future pass rather than touching more of `main.cpp` unattended):
+4 near-identical hand-rolled numeric `--flag` CLI parsers in `main.cpp`
+duplicate a pattern `common/CASExampleHelper.cpp` already generalized.
+
 ## [1.1.10] - unreleased
 
 ### Fixed

@@ -49,10 +49,49 @@ namespace {
 // docs/bacnet-sc-transport-plan.md.
 const std::size_t kMaxIngressBytes = 1600;
 
-// A connection is dropped for sending a non-final-fragment frame that alone
-// already exceeds this many header-parse attempts of nonsense... (not used -
-// placeholder removed). See ScTransport::HandleServerCallback for the actual
-// overflow handling.
+// ScTransport::m_haveAttempted*CreateContext (listener and connector each
+// track their own - see ScTransport.h) is a PERMANENT, process-lifetime
+// latch: once a call to lws_create_context() has failed once, this class
+// never calls it again for that role, ever, for the rest of the process's
+// life. This is more conservative than it looks, and the conservatism is
+// deliberate - it was arrived at empirically, not assumed:
+//
+// A first fix (this same commit's history) only refused to retry for ONE
+// specific, provable failure cause - a confirmed cert/key mismatch, detected
+// via LogCertificateDiagnostics()'s own X509_check_private_key() check -
+// on the theory that the reproduced segfault (TODO.md item 15) was caused by
+// calling lws_create_context() a second time too QUICKLY (the stack's own
+// per-Tick retry contract calls StartListening()/Connect() again roughly
+// every 30-40ms when failing). A follow-up code review correctly pointed out
+// that fix was narrower than the actual risk (any OTHER lws_create_context
+// failure mode - an unparseable cert file, a port already in use - was still
+// retried unthrottled). The natural next attempt was a time-based cooldown
+// (e.g. "no more than once every 2 seconds") on the theory that RATE was the
+// trigger.
+//
+// That theory was tested and DISPROVED by direct reproduction: deliberately
+// corrupting certs/hub.crt to an unparseable PEM file, with a 2-second
+// cooldown in place, still crashed on the SECOND lws_create_context() call -
+// at a ~2-second gap, not ~30ms. The crash is NOT a rate/timing issue; it is
+// triggered by calling lws_create_context() again at all after a prior
+// failure, regardless of delay - almost certainly because
+// LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT (set on every call in both
+// StartListening() and Connect()) performs OpenSSL global library
+// initialisation on every lws_create_context() call, and re-running that
+// after a partial/failed prior initialisation is a well-known source of
+// corruption in libraries that expect global init to run exactly once per
+// process - consistent with what was observed, though not confirmed with a
+// debugger (see TODO.md item 15's own honest caveat about the true root
+// cause remaining unconfirmed).
+//
+// Given that, a permanent latch is the only fix actually supported by what
+// was reproduced. The real cost: a transient failure (e.g. the SC port
+// briefly held by another process at startup) no longer self-recovers -
+// this process must be restarted once lws_create_context has failed once,
+// for either role. That is a real regression in retry robustness, accepted
+// deliberately in exchange for not crashing - see TODO.md item 15 and
+// CHANGELOG.md for this tradeoff stated plainly, not buried in a comment
+// only a maintainer reading this file would find.
 
 bool FileReadable(const std::string& path) {
     if (path.empty()) {
@@ -736,6 +775,24 @@ bool ScTransport::StartListening(const std::string& uri) {
     info.gid = static_cast<gid_t>(-1);
     info.uid = static_cast<uid_t>(-1);
 
+    // General crash-prevention latch (see the file-scope comment on
+    // m_haveAttemptedListenCreateContext's own declaration in ScTransport.h
+    // for why this is permanent, not a cooldown) - covers every
+    // lws_create_context failure mode, not just the one confirmed-mismatch
+    // case guarded above.
+    if (m_haveAttemptedListenCreateContext) {
+        if (!m_loggedListenCreateContextRefusal) {
+            m_loggedListenCreateContextRefusal = true;
+            fprintf(stderr,
+                    "BACnet/SC: refusing to retry lws_create_context for %s - it already failed once "
+                    "this run, and retrying it was found to eventually crash this process (TODO.md "
+                    "item 15). Restart the process to try again.\n",
+                    uri.c_str());
+        }
+        return false;
+    }
+    m_haveAttemptedListenCreateContext = true;
+
     lws_context* ctx = lws_create_context(&info);
     if (ctx == nullptr) {
         LogListenFailureOnce("lws_create_context failed for " + uri + " (port " + std::to_string(port) +
@@ -747,6 +804,8 @@ bool ScTransport::StartListening(const std::string& uri) {
     m_listenUri = uri;
     m_nextClientId = 1;
     m_loggedListenFailure = false;
+    m_haveAttemptedListenCreateContext = false;
+    m_loggedListenCreateContextRefusal = false;
     printf("BACnet/SC: listening for WebSocket/TLS connections on %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
            uri.c_str(), m_acceptSubprotocol.c_str());
     return true;
@@ -863,6 +922,27 @@ bool ScTransport::Connect(const std::string& uri) {
         return false;
     }
 
+    // General crash-prevention latch (see the file-scope comment on
+    // m_haveAttemptedListenCreateContext's declaration in ScTransport.h) -
+    // covers every lws_create_context failure mode on the connector side
+    // too, not just the confirmed-mismatch case the cert diagnostics above
+    // already guard. Placed BEFORE any of the stale-entry teardown/
+    // re-insertion below, so a refused attempt leaves m_clients completely
+    // untouched rather than tearing down a still-relevant existing entry for
+    // nothing.
+    if (m_haveAttemptedConnectCreateContext) {
+        if (!m_loggedConnectCreateContextRefusal) {
+            m_loggedConnectCreateContextRefusal = true;
+            fprintf(stderr,
+                    "BACnet/SC: refusing to retry lws_create_context for Connect(\"%s\") - it already "
+                    "failed once this run, and retrying it was found to eventually crash this process "
+                    "(TODO.md item 15). Restart the process to try again.\n",
+                    uri.c_str());
+        }
+        return false;
+    }
+    m_haveAttemptedConnectCreateContext = true;
+
     // A fresh dial every time Connect() is called for this URI - tear down
     // any stale context first (a previous attempt that already closed/errored;
     // per plan fact 7 this class itself never re-dials, so reaching this line
@@ -904,6 +984,8 @@ bool ScTransport::Connect(const std::string& uri) {
         return false;
     }
     conn.context = ctx;
+    m_haveAttemptedConnectCreateContext = false;
+    m_loggedConnectCreateContextRefusal = false;
 
     lws_client_connect_info ccinfo;
     std::memset(&ccinfo, 0, sizeof(ccinfo));
@@ -1054,6 +1136,31 @@ bool ScTransport::PopStatusEvent(ScStatusEvent* outEvent) {
     return true;
 }
 
+bool ScTransport::FlushOneQueuedFrame(lws* wsi, std::deque<std::vector<uint8_t>>* txQueue, const std::string& label) {
+    if (txQueue->empty()) {
+        return false;
+    }
+    std::vector<uint8_t>& framed = txQueue->front();
+    const std::size_t payloadLen = framed.size() - static_cast<std::size_t>(LWS_PRE);
+    const int written = lws_write(wsi, framed.data() + LWS_PRE, payloadLen, LWS_WRITE_BINARY);
+    txQueue->pop_front();
+    if (written < 0 || static_cast<std::size_t>(written) < payloadLen) {
+        // `label` is the fully-formatted "who" clause (e.g. "\"<connStr>\""
+        // for the server half, "hub \"<uri>\"" for the client half) - kept
+        // as each caller's own literal wording, not rebuilt here, so this
+        // shared helper doesn't have to know which half it's serving.
+        fprintf(stderr, "BACnet/SC: short/failed write to %s (%d of %zu bytes) - closing\n",
+                label.c_str(), written, payloadLen);
+        return true;
+    }
+    ++m_txMessages;
+    m_txBytes += static_cast<uint64_t>(payloadLen);
+    if (!txQueue->empty()) {
+        lws_callback_on_writable(wsi);  // more frames queued - ask for another turn
+    }
+    return false;
+}
+
 int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void* in, std::size_t len) {
     (void)user;
     const lws_callback_reasons reason = static_cast<lws_callback_reasons>(reasonInt);
@@ -1170,23 +1277,11 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
 
         case LWS_CALLBACK_SERVER_WRITEABLE: {
             PeerConnection* peer = FindPeerByWsi(wsi);
-            if (peer == nullptr || peer->txQueue.empty()) {
+            if (peer == nullptr) {
                 break;
             }
-            std::vector<uint8_t>& framed = peer->txQueue.front();
-            const std::size_t payloadLen = framed.size() - static_cast<std::size_t>(LWS_PRE);
-            const int written = lws_write(wsi, framed.data() + LWS_PRE,
-                                          payloadLen, LWS_WRITE_BINARY);
-            peer->txQueue.pop_front();
-            if (written < 0 || static_cast<std::size_t>(written) < payloadLen) {
-                fprintf(stderr, "BACnet/SC: short/failed write to \"%s\" (%d of %zu bytes) - closing\n",
-                        peer->connectionString.c_str(), written, payloadLen);
+            if (FlushOneQueuedFrame(wsi, &peer->txQueue, "\"" + peer->connectionString + "\"")) {
                 return -1;
-            }
-            ++m_txMessages;
-            m_txBytes += static_cast<uint64_t>(payloadLen);
-            if (!peer->txQueue.empty()) {
-                lws_callback_on_writable(wsi);  // more frames queued - ask for another turn
             }
             break;
         }
@@ -1365,22 +1460,11 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
         }
 
         case LWS_CALLBACK_CLIENT_WRITEABLE: {
-            if (conn == nullptr || conn->txQueue.empty()) {
+            if (conn == nullptr) {
                 break;
             }
-            std::vector<uint8_t>& framed = conn->txQueue.front();
-            const std::size_t payloadLen = framed.size() - static_cast<std::size_t>(LWS_PRE);
-            const int written = lws_write(wsi, framed.data() + LWS_PRE, payloadLen, LWS_WRITE_BINARY);
-            conn->txQueue.pop_front();
-            if (written < 0 || static_cast<std::size_t>(written) < payloadLen) {
-                fprintf(stderr, "BACnet/SC: short/failed write to hub \"%s\" (%d of %zu bytes) - closing\n",
-                        conn->uri.c_str(), written, payloadLen);
+            if (FlushOneQueuedFrame(wsi, &conn->txQueue, "hub \"" + conn->uri + "\"")) {
                 return -1;
-            }
-            ++m_txMessages;
-            m_txBytes += static_cast<uint64_t>(payloadLen);
-            if (!conn->txQueue.empty()) {
-                lws_callback_on_writable(wsi);  // more frames queued - ask for another turn
             }
             break;
         }

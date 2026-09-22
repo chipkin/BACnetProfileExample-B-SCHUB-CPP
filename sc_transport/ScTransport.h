@@ -341,6 +341,20 @@ private:
                                 const std::string& sourceConnStr, const std::string& destConnStr,
                                 std::vector<uint8_t>* rxAssembly, bool* rxOverflow);
 
+    // Shared by LWS_CALLBACK_SERVER_WRITEABLE (server) and
+    // LWS_CALLBACK_CLIENT_WRITEABLE (client) - pops and writes exactly one
+    // queued frame, updates the tx counters, and re-arms for another turn if
+    // more frames remain (code-review finding: these two cases were
+    // near-identical copy-paste, ~200 lines apart, nothing keeping them in
+    // sync). `label` is the fully-formatted "who" clause for the short/
+    // failed-write error message (e.g. "\"<connStr>\"" for the server half,
+    // "hub \"<uri>\"" for the client half - the two callers' only real
+    // wording difference, preserved verbatim rather than reconstructed
+    // here). Returns true if the write failed and the caller must `return
+    // -1` to close the socket;
+    // false otherwise (including the "queue was already empty" no-op case).
+    bool FlushOneQueuedFrame(lws* wsi, std::deque<std::vector<uint8_t>>* txQueue, const std::string& label);
+
     ScTlsFiles m_tls;
     std::string m_acceptSubprotocol;
     bool m_configured = false;
@@ -369,6 +383,26 @@ private:
     std::deque<ScStatusEvent> m_statusQueue;
 
     bool m_loggedListenFailure = false;  // avoid spamming retry logs every Tick
+
+    // Permanent, process-lifetime latches (listener and connector sides
+    // separately): once lws_create_context() has failed once for a role, it
+    // is never called again for that role. See the comment at the top of
+    // ScTransport.cpp (just above FileReadable()) for the full story of why
+    // this is a permanent latch rather than a retry cooldown - a cooldown
+    // was tried first and empirically disproved (the crash reproduces even
+    // with a multi-second gap between attempts, so this isn't a rate issue).
+    bool m_haveAttemptedListenCreateContext = false;
+    bool m_haveAttemptedConnectCreateContext = false;
+    // Both separate from m_loggedListenFailure/the connector's own bare
+    // fprintf calls: once m_haveAttempted*CreateContext latches true, the
+    // "refusing to retry" branch is reached on EVERY subsequent call (the
+    // stack retries every Tick) - without a dedicated one-shot flag here,
+    // that message would spam forever instead of printing once. Deliberately
+    // NOT reusing m_loggedListenFailure for the listener's message: that flag
+    // already latches true from the ORIGINAL failure's own log line, which
+    // would silently suppress this distinct, later message if reused.
+    bool m_loggedListenCreateContextRefusal = false;
+    bool m_loggedConnectCreateContextRefusal = false;
 
     // Rate-limit token bucket state (listener half only) - see
     // SetMaxConnectionAttemptsPerSecond()/AllowNewConnectionAttempt() above.
