@@ -158,7 +158,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.8";
+static const char* APP_VERSION = "1.1.9";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -1732,14 +1732,31 @@ int main(int argc, char** argv) {
     // stack rejects an empty primary URI, and this hub-only example does not
     // need a connector to answer a node's own requests (plan open risk #8).
     if (!g_scHubUri.empty()) {
-        // Same VMAC-derivation rule BACnetStack_SetBACnetSCUuid's own doc
-        // comment describes for the hub-FUNCTION role ("the last 6 octets of
-        // the UUID, XORing the final octet with 0x01 if those 6 octets would
-        // otherwise be all-zero or all-FF") - reused here because this is the
-        // SAME device/UUID dialing out under the SAME identity, not a
-        // separate one. BACnetStack_SetBACnetSCHubConnectorForNetworkPort
-        // takes the VMAC explicitly (unlike the hub function, which derives
-        // its own internally), so this example must compute it itself.
+        // CORRECTION (found reviewing why Network Port 2's MAC_Address (423)
+        // reads all-zero in the default hub-function-only run): an earlier
+        // version of this comment claimed the hub-function role "derives its
+        // own [VMAC] internally." That is wrong - verified by reading
+        // submodules/cas-bacnet-stack/source/BACnetDataLinkSC_NetworkPort.cpp's
+        // SyncTrackedBACnetSCNetworkPort(): Network Port MAC_Address is set
+        // from BACnetSCHubConnector::GetVmac() ONLY when a hub connector
+        // exists (hubConnector != NULL) - i.e. only when THIS function's own
+        // BACnetStack_SetBACnetSCHubConnectorForNetworkPort call has actually
+        // run at least once. When it hasn't (the default: hub-function-only,
+        // no --sc-hub-uri), the same sync function explicitly resets
+        // MAC_Address to empty every cycle (SetSCMACAddress(NULL, 0)) - there
+        // is no separate "hub function's own VMAC" anywhere in the adapter's
+        // public API (grepped CASBACnetStackAdapterTypes.h for every
+        // SetNetworkPortSC*/SetBACnetSC* entry point). So an all-zero
+        // MAC_Address on Network Port 2 in this example's default
+        // configuration is the stack's own intended behaviour, not a bug -
+        // it only ever gets populated by THIS branch running, which computes
+        // its own vmac below the same way BACnetStack_SetBACnetSCUuid's own
+        // doc comment describes ("the last 6 octets of the UUID, XORing the
+        // final octet with 0x01 if those 6 octets would otherwise be
+        // all-zero or all-FF") because this is the SAME device/UUID dialing
+        // out under the SAME identity, not a separate one -
+        // BACnetStack_SetBACnetSCHubConnectorForNetworkPort takes the VMAC
+        // explicitly, so this example must compute it itself.
         uint8_t vmac[6];
         memcpy(vmac, SC_DEVICE_UUID + (sizeof(SC_DEVICE_UUID) - 6), 6);
         bool allZero = true, allFF = true;

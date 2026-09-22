@@ -18,11 +18,13 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.0**, built and verified
-> against **CAS BACnet Stack 6.0.21** (`6.x` @ `abd4cee1`), at
-> **Protocol_Revision 24**, with the vendored `common/` helper at **v2.6.0**.
+> **Versions:** this document describes **example v1.1.8**, built and verified
+> against **CAS BACnet Stack 6.0.21** (`issues/runbook` @ `53739153`), at
+> **Protocol_Revision 24**, with the vendored `common/` helper at **v2.7.0**.
 > Running the example prints all three - if what it prints disagrees with this
-> line, trust the program and check `CHANGELOG.md`.
+> line, trust the program and check `CHANGELOG.md`. (This line is manually
+> maintained and has drifted from the real version before - see `CHANGELOG.md`
+> for the authoritative, per-release record if in doubt.)
 
 ## BACnet/SC support: read this first
 

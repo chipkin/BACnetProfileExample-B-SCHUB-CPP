@@ -127,6 +127,22 @@ mistake the behaviour for a bug in this example.
    they disagree with the manual. Filing a correction with Chipkin's stack
    documentation team is an internal follow-up, not a customer-facing stack
    issue.
+10. **Network Port 2's `MAC_Address` (423) reads all-zero in this example's
+    default configuration (hub-function only, no `--sc-hub-uri`) - this is
+    the stack's own intended behaviour, not a bug.** Verified by reading
+    `submodules/cas-bacnet-stack/source/BACnetDataLinkSC_NetworkPort.cpp`'s
+    `SyncTrackedBACnetSCNetworkPort()`: `MAC_Address` is populated from
+    `BACnetSCHubConnector::GetVmac()` only when a hub connector exists (i.e.
+    only when `BACnetStack_SetBACnetSCHubConnectorForNetworkPort` has run at
+    least once); otherwise the same function explicitly resets it to empty
+    every sync cycle. There is no separate "hub function's own VMAC" setter
+    anywhere in the adapter's public API. `main.cpp` previously had a
+    comment here claiming the opposite ("the hub function... derives its own
+    [VMAC] internally") - that was wrong and has been corrected (see the
+    comment above the `--sc-hub-uri` branch in `main.cpp`'s `main()`).
+    Enable `--sc-hub-uri` (which this example already computes a real VMAC
+    for, from the last 6 octets of `SC_DEVICE_UUID`) to see `MAC_Address`
+    populated.
 
 ## Genuinely open items for the user to decide
 
@@ -283,3 +299,25 @@ mistake the behaviour for a bug in this example.
     currently makes, and out of proportion to the actual practical cost (a
     confusing but harmless disconnect for a client that mistypes the
     subprotocol name).
+15. **A mismatched private key crashes the process (segfault), not a clean
+    error return, on this Windows/lws-4.5.8 build.** Found while verifying
+    item 3's certificate self-diagnosis (temporarily swapping in a
+    non-matching key to confirm the new `X509_check_private_key` mismatch
+    warning fires): `LogCertificateDiagnostics()` correctly logs the
+    mismatch, `lws_create_context` then fails as expected, but the process
+    segfaults somewhere in libwebsockets' own subsequent retry/cleanup path
+    rather than returning cleanly to `StartListening()`'s caller. **Confirmed
+    pre-existing, not introduced by that diagnostics work**: reproduced
+    identically on the unmodified pre-diagnostics build (`git stash`, same
+    test, same crash). Not investigated further or fixed - real root-cause
+    work here means debugging inside the vendored libwebsockets binary
+    itself (a vcpkg-built dependency, not source this repository owns),
+    which is a meaningfully bigger undertaking than the diagnostics-only
+    scope that found it. Worth a dedicated follow-up: reproduce under a
+    debugger, get a real stack trace, and decide whether this is a
+    libwebsockets bug worth reporting upstream or something this transport
+    can guard against on its own side (e.g. validating the key/cert pair
+    itself, via the same `X509_check_private_key` check item 3 already
+    added, BEFORE ever calling `lws_create_context` with a known-bad pair -
+    a workaround, not a real fix, but one entirely within this repo's own
+    control).

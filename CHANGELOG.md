@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.9] - unreleased
+
+### Fixed
+
+- **`main.cpp`'s comment claiming the BACnet/SC hub-function role "derives
+  its own [VMAC] internally" was wrong.** Found while reviewing Network Port
+  2's properties (user report: `MAC_Address` (423) reads all-zero) - traced
+  through `submodules/cas-bacnet-stack/source/BACnetDataLinkSC_NetworkPort.cpp`'s
+  `SyncTrackedBACnetSCNetworkPort()`: `MAC_Address` is populated from the hub
+  **connector**'s VMAC only, and is explicitly reset to empty whenever no
+  hub connector is configured - there is no separate "hub function's own
+  VMAC" anywhere in the adapter's public API. All-zero `MAC_Address` in this
+  example's default (hub-function-only) configuration is therefore the
+  stack's own intended behaviour, not a bug in this example or something
+  fixable by calling another API. Comment corrected; documented as `TODO.md`
+  item 10 (known, documented, not-a-bug-here) for future readers who hit the
+  same question.
+- **README.md's top "Versions:" banner had been stale since `v1.1.1`** - it
+  was bumped once (`v1.0.0` -> `v1.1.0`) and never touched again through 8
+  subsequent patch releases, still claiming `v1.1.0`/`common/` `2.6.0` while
+  the actual state had moved to `v1.1.8`/`2.7.0`. Corrected to the current
+  versions, with a note pointing at `CHANGELOG.md` as the authoritative
+  per-release record if this drifts again.
+
+Also documented (not fixed, out of scope for a doc-only patch): `TODO.md`
+item 15 - a mismatched private key segfaults the process on this
+Windows/lws-4.5.8 build instead of returning a clean error, found and
+confirmed pre-existing while verifying the previous batch's certificate
+self-diagnosis work.
+
 ## [1.1.8] - unreleased
 
 ### Added
