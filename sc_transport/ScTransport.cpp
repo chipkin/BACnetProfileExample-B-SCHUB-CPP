@@ -360,23 +360,67 @@ void LogOneCertificate(const std::string& label, X509* cert) {
 // guess. Runs even when FileReadable() already passed (a file that EXISTS but
 // is wrong - expired, mismatched key, wrong CA - is exactly what this
 // diagnoses; the per-file missing/unreadable check, Item 4, is a separate,
-// earlier gate). Best-effort throughout: a file that fails to PARSE as PEM
-// (as opposed to merely being unreadable, already caught earlier) is logged
-// as a Warning and skipped, never treated as fatal here - lws_create_context
-// itself is still the authority on whether the listener/connect actually
-// starts.
-void LogCertificateDiagnostics(const ScTlsFiles& tls) {
+// earlier gate).
+//
+// Returns false ONLY for the one case this function can prove with certainty
+// is broken - both files parsed fine as PEM, and X509_check_private_key()
+// definitively says they don't match - which the caller (StartListening()/
+// Connect()) now treats as fatal, refusing to call lws_create_context() at
+// all (TODO.md item 15): repeatedly calling lws_create_context with a
+// mismatched cert/key across this class's own retry loop (the stack retries
+// StartListening()/Connect() every Tick per its own contract - see the
+// header comment on each) was found, via direct reproduction, to eventually
+// segfault inside the vendored libwebsockets/OpenSSL teardown-and-retry path
+// (2nd or later attempt, not the 1st) - not something a fix on this side can
+// root-cause without debugging inside a vcpkg-built binary this repo does
+// not own the source of. Refusing to ever reach that code path with a known-
+// bad pair is a real fix for the reachable symptom, not a workaround for a
+// still-open root cause. Every OTHER outcome here (a file that fails to
+// PARSE as PEM, as opposed to merely being unreadable/already caught
+// earlier) is still just logged as a Warning and treated as non-fatal -
+// lws_create_context remains the authority for every case this function
+// cannot prove is broken with certainty.
+bool LogCertificateDiagnostics(const ScTlsFiles& tls) {
+    // Rate-limited to once per kMinLogInterval, not once per call: the stack
+    // retries StartListening()/Connect() every Tick per its own contract, and
+    // this function used to log its full multi-line diagnosis on EVERY one of
+    // those retries - harmless when a bad pair made lws_create_context fail
+    // fast and the process would crash within a couple of retries anyway (see
+    // this function's own header comment on that), but once the fatal-on-
+    // confirmed-mismatch check below stops the crash, an unfixed mismatch now
+    // retries forever - measured at ~30 attempts/second on this build, which
+    // would otherwise mean 30 multi-line log blocks/second, forever, for a
+    // condition that does not change tick-to-tick. The X.509 parse and
+    // X509_check_private_key() below still run every call (cheap, and the
+    // caller needs an accurate up-to-date answer every time to notice a live
+    // fix) - only the CASExampleHelper::Log calls are gated.
+    static std::chrono::steady_clock::time_point lastLogTime;
+    static bool haveLoggedOnce = false;
+    const auto now = std::chrono::steady_clock::now();
+    const auto kMinLogInterval = std::chrono::seconds(30);
+    const bool shouldLog = !haveLoggedOnce || (now - lastLogTime) >= kMinLogInterval;
+    if (shouldLog) {
+        lastLogTime = now;
+        haveLoggedOnce = true;
+    }
+
+    bool confirmedMismatch = false;
+
     FILE* certFile = fopen(tls.certPath.c_str(), "rb");
     X509* cert = (certFile != nullptr) ? PEM_read_X509(certFile, nullptr, nullptr, nullptr) : nullptr;
     if (certFile != nullptr) {
         fclose(certFile);
     }
     if (cert == nullptr) {
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "cert diagnostics: could not parse \"%s\" as a PEM X.509 certificate - skipping self-diagnosis "
-            "(lws_create_context will report whether this actually blocks startup)", tls.certPath.c_str());
+        if (shouldLog) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                "cert diagnostics: could not parse \"%s\" as a PEM X.509 certificate - skipping self-diagnosis "
+                "(lws_create_context will report whether this actually blocks startup)", tls.certPath.c_str());
+        }
     } else {
-        LogOneCertificate("operational certificate (\"" + tls.certPath + "\")", cert);
+        if (shouldLog) {
+            LogOneCertificate("operational certificate (\"" + tls.certPath + "\")", cert);
+        }
 
         FILE* keyFile = fopen(tls.keyPath.c_str(), "rb");
         EVP_PKEY* pkey = (keyFile != nullptr) ? PEM_read_PrivateKey(keyFile, nullptr, nullptr, nullptr) : nullptr;
@@ -384,18 +428,23 @@ void LogCertificateDiagnostics(const ScTlsFiles& tls) {
             fclose(keyFile);
         }
         if (pkey == nullptr) {
-            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                "cert diagnostics: could not parse \"%s\" as a PEM private key - cannot check it against "
-                "\"%s\"", tls.keyPath.c_str(), tls.certPath.c_str());
+            if (shouldLog) {
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                    "cert diagnostics: could not parse \"%s\" as a PEM private key - cannot check it against "
+                    "\"%s\"", tls.keyPath.c_str(), tls.certPath.c_str());
+            }
         } else {
             // The single most common real misconfiguration this diagnoses
             // (per this task's own instructions) - a cert/key pair that does
             // not actually match, previously indistinguishable from every
             // other "cert files malformed?" failure.
             const bool matches = X509_check_private_key(cert, pkey) == 1;
-            CASExampleHelper::Log(matches ? CASExampleHelper::LogLevel::Info : CASExampleHelper::LogLevel::Warning,
-                "cert diagnostics: private key \"%s\" %s the public key in \"%s\"", tls.keyPath.c_str(),
-                matches ? "MATCHES" : "DOES NOT MATCH", tls.certPath.c_str());
+            if (shouldLog) {
+                CASExampleHelper::Log(matches ? CASExampleHelper::LogLevel::Info : CASExampleHelper::LogLevel::Error,
+                    "cert diagnostics: private key \"%s\" %s the public key in \"%s\"", tls.keyPath.c_str(),
+                    matches ? "MATCHES" : "DOES NOT MATCH", tls.certPath.c_str());
+            }
+            confirmedMismatch = !matches;
             EVP_PKEY_free(pkey);
         }
         X509_free(cert);
@@ -407,13 +456,19 @@ void LogCertificateDiagnostics(const ScTlsFiles& tls) {
         fclose(caFile);
     }
     if (caCert == nullptr) {
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "cert diagnostics: could not parse \"%s\" as a PEM X.509 certificate - skipping self-diagnosis",
-            tls.caCertPath.c_str());
+        if (shouldLog) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                "cert diagnostics: could not parse \"%s\" as a PEM X.509 certificate - skipping self-diagnosis",
+                tls.caCertPath.c_str());
+        }
     } else {
-        LogOneCertificate("CA certificate (\"" + tls.caCertPath + "\")", caCert);
+        if (shouldLog) {
+            LogOneCertificate("CA certificate (\"" + tls.caCertPath + "\")", caCert);
+        }
         X509_free(caCert);
     }
+
+    return !confirmedMismatch;
 }
 
 // Diagnostic Item 4: names specifically which of cert/key/ca is missing or
@@ -587,8 +642,19 @@ bool ScTransport::StartListening(const std::string& uri) {
     // Item 3: startup certificate self-diagnosis - runs even though the files
     // above ARE readable (this diagnoses a file that exists but is WRONG -
     // expired, mismatched key, unparseable - not a replacement for the
-    // missing-file check above). See LogCertificateDiagnostics's own comment.
-    LogCertificateDiagnostics(m_tls);
+    // missing-file check above). A confirmed cert/key mismatch is fatal here
+    // (TODO.md item 15) - see LogCertificateDiagnostics's own comment for why
+    // this refuses to reach lws_create_context at all in that one case,
+    // rather than letting the stack's own per-Tick retry call this again
+    // with the same known-bad pair.
+    if (!LogCertificateDiagnostics(m_tls)) {
+        LogListenFailureOnce(
+            "refusing to start listening on " + uri + ": certificate/private key mismatch (see the "
+            "\"DOES NOT MATCH\" line above) - repeatedly retrying lws_create_context with a known-bad "
+            "cert/key pair was found to eventually crash this process (TODO.md item 15). Fix the cert/key "
+            "pair under --sc-cert-dir and restart.");
+        return false;
+    }
 
     // The protocol name string must outlive the context, so it lives on this
     // object (m_protocolNameStorage), not as a temporary. m_protocols itself
@@ -770,8 +836,20 @@ bool ScTransport::Connect(const std::string& uri) {
     // Item 3 - same startup self-diagnosis as StartListening() above; the
     // connector presents the SAME identity cert (this device has one identity
     // regardless of role - see the class header comment), so it is worth
-    // diagnosing here too, not only for the listener.
-    LogCertificateDiagnostics(m_tls);
+    // diagnosing here too, not only for the listener. Same fatal-on-confirmed-
+    // mismatch handling as StartListening() (TODO.md item 15) - the stack's
+    // own retry timer calls Connect() again on failure, so this guards the
+    // same repeated-lws_create_context-with-a-known-bad-pair crash on the
+    // connector side too.
+    if (!LogCertificateDiagnostics(m_tls)) {
+        fprintf(stderr,
+                "BACnet/SC: refusing to Connect(\"%s\"): certificate/private key mismatch (see the "
+                "\"DOES NOT MATCH\" line above) - repeatedly retrying lws_create_context with a known-bad "
+                "cert/key pair was found to eventually crash this process (TODO.md item 15). Fix the "
+                "cert/key pair under --sc-cert-dir.\n",
+                uri.c_str());
+        return false;
+    }
 
     std::string host;
     std::string path;

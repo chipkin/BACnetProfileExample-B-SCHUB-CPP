@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.10] - unreleased
+
+### Fixed
+
+- **A mismatched private key no longer crashes the process** (`TODO.md`
+  item 15). Reproduced directly: with a deliberately mismatched key, the
+  first `lws_create_context` attempt failed cleanly (logging the real
+  OpenSSL reason), but the stack's own per-Tick retry then called
+  `StartListening()`/`Connect()` again with the same known-bad pair, and
+  that SECOND `lws_create_context` call segfaulted (`EXIT CODE 139`) inside
+  libwebsockets' own subsequent teardown/retry path - confirmed
+  pre-existing (not introduced by the previous diagnostics pass that found
+  it, via `git stash` on the same test).
+  `sc_transport/ScTransport.cpp`'s `LogCertificateDiagnostics()` now returns
+  whether it found a *confirmed* mismatch (both files parse as valid PEM,
+  `X509_check_private_key()` definitively disagrees); `StartListening()`/
+  `Connect()` both now refuse to ever call `lws_create_context` in that case,
+  logging a clear, de-duplicated `"refusing to start ... certificate/private
+  key mismatch"` error instead. Verified: the same reproduction now runs
+  40+ seconds with zero crashes (previously crashed within ~15-20 seconds,
+  reliably); the valid-cert happy path and all 3 regression suites are
+  unaffected.
+  Also fixed in the same pass: the per-tick retry loop was re-running the
+  full multi-line cert diagnostics on every retry (~30/second once the crash
+  no longer cut it short) - now rate-limited to once per 30 seconds, while
+  still re-evaluating the actual match condition every tick so a live fix is
+  still detected promptly.
+  The true root cause (why libwebsockets/OpenSSL crashes on a *second*
+  `lws_create_context` call after a failed first one, on this Windows/
+  lws-4.5.8 build) remains uninvestigated - this fix makes the crash
+  unreachable from this transport's own retry path, not a fix to the
+  underlying library behaviour. See `TODO.md` item 15 for the honest
+  remaining gap.
+
 ## [1.1.9] - unreleased
 
 ### Fixed
