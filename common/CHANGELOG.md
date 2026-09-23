@@ -12,7 +12,30 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.7.0] - 2026-09-21
+## [3.0.0] - 2026-09-22
+
+### Added
+
+- **Reconciled two `common/` lines that had independently diverged from
+  2.5.0 and both reused version numbers for different content**:
+  `BACnetProfileExample-B-BC-CPP` had carried its own 2.6.0-2.9.0 (RX/TX
+  service decode, object/property-naming `SummarizeBacnetFrame()`, the
+  `--xml` frame dump, `GetLocalLinkSpeedBitsPerSecond()`, and the Device
+  `Local_Date`/`Local_Time` property IDs) without those changes being
+  re-copied series-wide, while `BACnetProfileExample-B-SCHUB-CPP` separately
+  carried its own, differently-numbered 2.6.0-2.7.0 (the `CASExampleLog`
+  structured-logging facility, `ParseDccPasswordArg()`, the
+  `HandleHelpAndVersionArgs()` `showDccPasswordCliOption` parameter, and
+  `KeyCommand::Metrics`). The two lines touch disjoint code (confirmed by
+  diffing each against the shared 2.5.0 ancestor) and merge cleanly with no
+  functional conflicts. This version combines both: every symbol and file
+  from both lines is present, `COMMON_VERSION` moves to `3.0.0` (a new major
+  number precisely because this single version now carries two
+  independently-versioned change sets, not because anything is
+  backward-incompatible), and this is the version every example in the
+  series is re-synced to.
+
+## [2.7.0] - 2026-09-21 (from the BACnetProfileExample-B-SCHUB-CPP line, merged in 3.0.0)
 
 ### Added
 
@@ -56,7 +79,7 @@ and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   `BACnetProfileExample-B-SCHUB-CPP`'s own `CHANGELOG.md` for the full
   reasoning.
 
-## [2.6.0] - 2026-09-21
+## [2.6.0] - 2026-09-21 (from the BACnetProfileExample-B-SCHUB-CPP line, merged in 3.0.0)
 
 ### Added
 
@@ -121,6 +144,100 @@ and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
   (no longer `static const`, since it is now assigned at start-up) feeding the
   existing `DeviceCommunicationControl` callback's password check - unchanged
   otherwise.
+
+## [2.9.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- `CASExampleHelper::GetLocalLinkSpeedBitsPerSecond()` - reads the primary
+  network interface's actual negotiated link speed (Windows: `GetIfEntry()`;
+  POSIX: `/sys/class/net/<iface>/speed`), for a Network Port object's
+  `Link_Speed` property. First consumer: `BACnetProfileExample-B-BC-CPP`,
+  whose `Link_Speed` previously read back a hardcoded `0.0` because nothing
+  served it - the stack's "no callback answered" REAL-property fallback,
+  not a real "indeterminable" answer. `PROPERTY_IDENTIFIER_LINK_SPEED = 420`
+  added to `CASBACnetStackExampleConstants.h` alongside it.
+
+## [2.8.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- `PROPERTY_IDENTIFIER_LOCAL_DATE = 56` and `PROPERTY_IDENTIFIER_LOCAL_TIME = 57`
+  in `CASBACnetStackExampleConstants.h`. First consumer:
+  `BACnetProfileExample-B-BC-CPP` (chipkin/BACnetProfileExample-B-BC-CPP#7) -
+  a device claiming DM-TS-B/DM-UTC-B needs to actually serve the Device's
+  `Local_Date`/`Local_Time` (the properties a client reads back to confirm a
+  time sync took), not leave the stack's "callback declined, no default"
+  `read-access-denied` fallback in place.
+
+## [2.7.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- **RX/TX log lines now name the object/property being requested, and any
+  NPDU routing destination**, e.g.:
+  `RX 17 bytes from ... (Network Port 1) - ConfirmedRequest: ReadProperty Device 389001.Device_Address_Binding`
+  `RX 18 bytes from ... (Network Port 1) - ConfirmedRequest: ReadProperty Analog_Input 1.Present_Value DNET=1234 DADR=0A0B0C`
+  `SummarizeBacnetFrame()` decodes the shared ObjectIdentifier(tag0) +
+  PropertyIdentifier(tag1) + optional PropertyArrayIndex(tag2) layout common
+  to ReadProperty-Request, ReadProperty-ACK and WriteProperty-Request, using
+  two new lookup tables (`ObjectTypeName()`, `PropertyName()` - 65 object
+  types, 522 properties, generated from the pinned stack's own
+  `BACnetObjectType.h`/`BACnetPropertyIdentifier.h`, so the names are exactly
+  what this stack build uses, not hand-transcribed from the spec). Falls back
+  to `object-type=<N> <instance>.property=<N>` for anything outside the
+  tables. A trailing ` DNET=<n>[ DADR=<hex>]` is appended whenever the NPDU
+  carries a destination specifier, regardless of PDU type.
+  Other confirmed services (ReadPropertyMultiple, WritePropertyMultiple, ...)
+  are intentionally NOT decoded this deeply - their nested
+  read-access-specification/property-reference structure reuses the same
+  tag numbers at a different nesting level, which this generic tag-walker
+  doesn't disambiguate. Those still print with just the service name, same
+  as before.
+- **New `--xml` / `--xmlLog` command-line option (off by default).** When
+  set, every RX/TX frame prints as a full indented XML block (BVLC function,
+  NPDU version/control/routing, APDU type/invoke-id/service/object/property,
+  and always the complete raw hex of the frame as a fallback) instead of the
+  one-line summary - for deep protocol debugging sessions where the one-line
+  summary isn't enough. `CASExampleHelper::ParseXmlLogArg(argc, argv)` is the
+  only thing an example's `main()` needs to call (same pattern as
+  `ParsePortArg`/`ParseDeviceIdArg`); everything else - the flag itself, the
+  decode, the XML rendering - lives entirely in `common/`, invisible to
+  `main.cpp`.
+- New shared internals backing both of the above: a generic BACnet tag-header
+  decoder (`DecodeTagHeader`, handles extended tag numbers and all four
+  length/value/type encodings including the 1/2/4-byte extended-length
+  escapes) and one `DecodeBacnetFrame()` parse pass that both
+  `SummarizeBacnetFrame()` and the new XML dump build their output from - the
+  two views can never disagree about what a frame contains, because they're
+  reading the same `DecodedFrame` struct.
+- Both the object/property table generation and the on-disk lookup tables are
+  regenerable if the stack pin changes: `python3 -c "..."` extracts every
+  `name = value,` line from `BACnetObjectType.h`/`BACnetPropertyIdentifier.h`,
+  converts camelCase to `Title_Case`, sorts by value, and emits `{ id, "name" },`
+  rows - see this entry's originating commit for the exact script.
+
+## [2.6.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- **RX/TX log lines now decode and print the BACnet service**, e.g.
+  `RX 21 bytes from ... (Network Port 1) - Unconfirmed: I-Am` or
+  `RX 17 bytes from ... (Network Port 1) - ConfirmedRequest: ReadProperty`,
+  instead of stopping at the byte count and Network Port. New
+  `CASExampleHelper::SummarizeBacnetFrame()` walks the raw BVLC + NPDU + APDU
+  bytes handed to the transport callbacks (the exact wire bytes - the stack
+  decodes them again itself; this is a read-only, best-effort peek purely for
+  the console log) far enough to name the PDU type (ConfirmedRequest /
+  Unconfirmed / SimpleACK / ComplexACK / SegmentACK / Error / Reject / Abort /
+  a network-layer message) and, where applicable, the Clause 21
+  confirmed/unconfirmed service choice or reject/abort reason - falling back
+  to `service=<N>` / `reason=<N>` (matching the stack's own log wording) for
+  anything outside the lookup tables, and to `?` for a truncated/malformed
+  frame rather than misreading it. Handles the DNET/SNET/hop-count routing
+  fields in the NPDU so this doesn't mis-decode a routed frame.
+  First landed in `BACnetProfileExample-B-SS-CPP`; every sibling example
+  re-syncs to this `common/` version to pick it up.
 
 ## [2.5.0] - 2026-09-15
 
