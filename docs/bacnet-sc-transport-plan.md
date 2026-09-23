@@ -200,7 +200,7 @@ exemption), `../docs/colour-table.md` (phase 4: File-object colour names — ser
 - **V3 real peer (the task-card criterion):** `C:\dev\chipkin\BACnetSCCli\app\build\Release\BACnetSCCli.exe` as
   `Role=node` (copy `app/config/BACnetSC.localhost.node.config`, point `primaryHubURI` at `wss://127.0.0.1:47819/`
   and cert fields at `certs/node.*` + `ca.crt`): expect Who-Is → I-Am from 389022 and ReadProperty(Device, Object_Name)
-  = "Rainbow", `Discovery summary status=PASS`. Then two nodes (node + device role) to prove hub relay between peers.
+  = "Chipkin Example B-SCHUB", `Discovery summary status=PASS`. Then two nodes (node + device role) to prove hub relay between peers.
 - **V4 connector dial-out (fast):** `tests/sc/fake_hub_server.py` (mutual-TLS `websockets` server, hub subprotocol):
   run the example with `--sc-hub-uri wss://127.0.0.1:<p>/`; assert it receives a binary Connect-Request; answer with a
   canned Connect-Accept and assert a later Heartbeat-Request or state `ConnectedPrimary` in the example's state-change

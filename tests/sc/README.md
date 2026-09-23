@@ -107,6 +107,6 @@ python tests/sc/rpm_test.py --target 127.0.0.1 --target-port 47870
 Checks: a single `ReadPropertyMultiple` request for the Device object's
 `Object_Name` + `Vendor_Identifier` gets back one `ReadPropertyMultipleACK`
 (not an Error/Reject/Abort) with both properties decoded and correct
-(`Object_Name == "Rainbow"`, `Vendor_Identifier == 389`).
+(`Object_Name == "Chipkin Example B-SCHUB"`, `Vendor_Identifier == 389`).
 
 Exit code 0 = every check passed.

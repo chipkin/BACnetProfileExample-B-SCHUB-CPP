@@ -64,7 +64,7 @@ unless noted.
   protocol-real/transport-stub split. Will need substantial rewriting once the transport is real.
 - **`docs/objects.json`** and **`docs/PICS.md`** — the authoritative per-property ownership
   records for this device. Current object model (do not disturb without good reason): Device
-  389022 "Rainbow" (read-only Analog/Binary/Multi-State Input, Network Port 1 "Vermilion" on
+  389022 "Chipkin Example B-SCHUB" (read-only Analog/Binary/Multi-State Input, Network Port 1 "Vermilion" on
   BACnet/IP, Network Port 2 "Vermilion 2" configured for the BACnet/SC hub function). BIBBs:
   DS-RP-B, DM-DDB-B, DM-DOB-B, DM-DCC-B, NM-SCH-B. No WriteProperty.
 - **`CMakeLists.txt`** — current build has zero TLS/crypto/WebSocket dependencies. Links only the

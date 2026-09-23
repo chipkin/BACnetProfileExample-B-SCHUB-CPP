@@ -158,7 +158,7 @@ one via the `--config` file's `dcc-password` key (see
 ## The device this example creates
 
 ```
-Device 389022  "Rainbow"   (Vendor 389 - Chipkin Automation Systems)
+Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Systems)
     │
     ├── Analog Input  1       "Bronze"        Present_Value  21.5    (REAL, degrees Celsius; read-only)
     ├── Binary Input  1       "Emerald"       Present_Value  inactive  (0 = inactive / 1 = active; read-only)
@@ -207,7 +207,7 @@ still claims exactly one profile.
 
 | Object type | Instance | Name | Access |
 |-------------|:--------:|------|--------|
-| Device | 389022 | Rainbow | - |
+| Device | 389022 | Chipkin Example B-SCHUB | - |
 | Analog Input | 1 | Bronze | read-only |
 | Binary Input | 1 | Emerald | read-only |
 | Multi-State Input | 1 | Hot Pink | read-only |
@@ -358,7 +358,7 @@ CAS BACnet Stack version: 6.0.21.0
 Common helper (common/) version: 2.6.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
 TX 21 bytes to 192.168.3.255:47808 (broadcast) (Network Port 1)
-FYI: Device 389022 ("Rainbow") ready. Vendor ID 389. Press 'h' for help.
+FYI: Device 389022 ("Chipkin Example B-SCHUB") ready. Vendor ID 389. Press 'h' for help.
 FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (BACnet SC), accept URI wss://0.0.0.0:47819/. Certificates: ./certs. See README.md "BACnet/SC support" for how to generate lab test certs.
 RX 21 bytes from 192.168.3.64:47808 (Network Port 1)
 BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
@@ -733,7 +733,7 @@ against a running instance of this example:
 
 1. **Discover** - `who_is()` returns an **I-Am** from instance **389022**
    (vendor **389**).
-2. **Read the Device** - ReadProperty `389022` `Object_Name` = `"Rainbow"`;
+2. **Read the Device** - ReadProperty `389022` `Object_Name` = `"Chipkin Example B-SCHUB"`;
    `Vendor_Identifier` = `389`; `Model_Name` = `"CAS BACnet Stack Example -
    B-SCHUB"`.
 3. **Read Analog Input 1** - `Present_Value` = `21.5`.
@@ -768,7 +768,7 @@ repository's own test scripts:
    ```
    Then, independently, a **real** BACnet/SC node
    (`BACnetSCCli.exe`, `Role=node`) completed Who-Is -> I-Am -> ReadProperty
-   discovery of this device (`Object_Name` = `"Rainbow"`) over the SC
+   discovery of this device (`Object_Name` = `"Chipkin Example B-SCHUB"`) over the SC
    connection.
 3. **Connector (hub/node initiate role, `--sc-hub-uri`)** -
    `tests/sc/fake_hub_server.py` (a hand-built mutual-TLS fake hub) answers
