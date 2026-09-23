@@ -3,7 +3,7 @@
     {
       "type": "Device",
       "instance": 389022,
-      "name": "Rainbow",
+      "name": "Chipkin Example B-SCHUB",
       "app": ["Object_Name", "Vendor_Name", "Vendor_Identifier", "Model_Name",
               "Firmware_Revision", "Application_Software_Version", "Description"],
       "enabled": ["Description"],
