@@ -73,9 +73,9 @@ async def main():
             else:
                 values[prop] = f"ERROR: {item.readResult.propertyAccessError}"
         print(f"PASS: ReadPropertyMultiple ACK received for Device {args.device_instance}: {values}")
-        assert values.get("object-name") == "Rainbow", "unexpected Object_Name"
+        assert values.get("object-name") == "Chipkin Example B-SCHUB", "unexpected Object_Name"
         assert values.get("vendor-identifier") == 389, "unexpected Vendor_Identifier"
-        print("PASS: decoded values match expected Object_Name=Rainbow, Vendor_Identifier=389")
+        print("PASS: decoded values match expected Object_Name=Chipkin Example B-SCHUB, Vendor_Identifier=389")
         return 0
     finally:
         app.close()
