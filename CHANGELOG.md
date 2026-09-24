@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.16] - unreleased
+
+### Changed
+
+- File 2's Object_Name is now "Certificate Signing Request" instead of the
+  acronym "CSR", matching the other certificate File objects ("Operational
+  Certificate", "Issuer Certificate Slot 1/2"). README, `docs/objects.json`
+  and `docs/PICS.md` (regenerated) are updated to match.
+- APP_VERSION bumped 1.1.15 -> 1.1.16.
+
 ## [1.1.15] - unreleased
 
 ### Added

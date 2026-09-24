@@ -78,7 +78,7 @@
     {
       "type": "File",
       "instance": 2,
-      "name": "CSR",
+      "name": "Certificate Signing Request",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
       "writable": [],

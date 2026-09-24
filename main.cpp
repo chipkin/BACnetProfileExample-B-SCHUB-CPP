@@ -33,7 +33,7 @@
 //     Network Port 2                "BACnet SC"                 (the BACnet/SC port - hub function)
 //     File 1                        "Operational Certificate"   (read-only; serves the hub's operational
 //                                                                 certificate, certs/hub.crt)
-//     File 2                        "CSR"                       (read-only; serves the hub's CSR, certs/hub.csr)
+//     File 2                        "Certificate Signing Request" (read-only; serves the hub's CSR, certs/hub.csr)
 //     File 3                        "Issuer Certificate Slot 1" (read-only; issuer certificate slot 1,
 //                                                                 certs/ca.crt)
 //     File 4                        "Issuer Certificate Slot 2" (read-only; issuer certificate slot 2, also
@@ -158,7 +158,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.15";
+static const char* APP_VERSION = "1.1.16";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -312,11 +312,11 @@ static uint16_t g_scRateLimit = SC_RATE_LIMIT_DEFAULT;
 // in section 2d. Same "local constant, not common/" rationale as
 // NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT above: File is a series-wide object type, but no
 // other example in the series has needed one yet, so there is nothing to share in common/.
-// Named for what each one is (Operational Certificate / CSR / Issuer Certificate Slot 1-2)
+// Named for what each one is (Operational Certificate / Certificate Signing Request / Issuer Certificate Slot 1-2)
 // rather than a colour, deliberately breaking from this series' usual naming convention - see
 // the file header note above for why.
 static const uint32_t FILE_OPERATIONAL_CERT_INSTANCE = 1;  // "Operational Certificate"   - certs/hub.crt
-static const uint32_t FILE_CSR_INSTANCE = 2;                // "CSR" - certs/hub.csr
+static const uint32_t FILE_CSR_INSTANCE = 2;                // "Certificate Signing Request" - certs/hub.csr
 static const uint32_t FILE_ISSUER_CERT_1_INSTANCE = 3;      // "Issuer Certificate Slot 1" - certs/ca.crt
 static const uint32_t FILE_ISSUER_CERT_2_INSTANCE = 4;      // "Issuer Certificate Slot 2" - certs/ca.crt (same file;
                                                               // BACnetStack_SetBACnetSCCertificateFileObjects
@@ -852,7 +852,7 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
         if (objectType == OBJECT_TYPE_FILE) {
             switch (objectInstance) {
                 case FILE_OPERATIONAL_CERT_INSTANCE: return ReturnCharacterString("Operational Certificate", value, valueElementCount, maxElementCount, encodingType);
-                case FILE_CSR_INSTANCE:               return ReturnCharacterString("CSR", value, valueElementCount, maxElementCount, encodingType);
+                case FILE_CSR_INSTANCE:               return ReturnCharacterString("Certificate Signing Request", value, valueElementCount, maxElementCount, encodingType);
                 case FILE_ISSUER_CERT_1_INSTANCE:     return ReturnCharacterString("Issuer Certificate Slot 1", value, valueElementCount, maxElementCount, encodingType);
                 case FILE_ISSUER_CERT_2_INSTANCE:     return ReturnCharacterString("Issuer Certificate Slot 2", value, valueElementCount, maxElementCount, encodingType);
                 default: break;

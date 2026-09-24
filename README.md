@@ -18,7 +18,7 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.15**, built and verified
+> **Versions:** this document describes **example v1.1.16**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
 > **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -92,7 +92,7 @@ objects (see the device tree below) for the certificate/CSR content.
   node certificate set under `certs/` (gitignored; **lab testing only** - see
   [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real) for
   what a production certificate story needs).
-- 4 read-only File objects (`Operational Certificate`/`CSR`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
+- 4 read-only File objects (`Operational Certificate`/`Certificate Signing Request`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
   hub's operational certificate, CSR, and issuer certificate (×2 slots) over
   AtomicReadFile - **never the private key**, which has no File object at
   all. Verified byte-for-byte over BACnet/IP against `certs/hub.crt`, with the
@@ -168,7 +168,7 @@ Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Syst
     ├── Network Port 1        "BACnet IP"     BACnet/IP - active, discoverable (required on every device)
     ├── Network Port 2        "BACnet SC"   BACnet/SC hub function - CONFIGURED, transport is real (both roles)
     ├── File 1                "Operational Certificate"         operational certificate (certs/hub.crt), read-only
-    ├── File 2                "CSR"       certificate signing request (certs/hub.csr), read-only
+    ├── File 2                "Certificate Signing Request"     certificate signing request (certs/hub.csr), read-only
     ├── File 3                "Issuer Certificate Slot 1"       issuer certificate slot 1 (certs/ca.crt), read-only
     └── File 4                "Issuer Certificate Slot 2"       issuer certificate slot 2 (certs/ca.crt), read-only
 ```
@@ -216,7 +216,7 @@ still claims exactly one profile.
 | Network Port | 1 | BACnet IP | - (BACnet/IP) |
 | Network Port | 2 | BACnet SC | - (BACnet/SC) |
 | File | 1 | Operational Certificate | read-only (operational certificate) |
-| File | 2 | CSR | read-only (certificate signing request) |
+| File | 2 | Certificate Signing Request | read-only (certificate signing request) |
 | File | 3 | Issuer Certificate Slot 1 | read-only (issuer certificate slot 1) |
 | File | 4 | Issuer Certificate Slot 2 | read-only (issuer certificate slot 2) |
 
@@ -391,7 +391,7 @@ Expected output (with `certs/` already generated - see [Generate lab test
 certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.15
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.16
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).

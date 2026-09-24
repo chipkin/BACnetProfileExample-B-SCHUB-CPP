@@ -257,7 +257,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 2 "CSR" - read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1
+### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
