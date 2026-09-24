@@ -81,6 +81,8 @@ import struct
 import sys
 from pathlib import Path
 
+import cert_paths  # BACnet-named or older certificate file names
+
 try:
     import websockets
 except ImportError:
@@ -153,8 +155,9 @@ def parse_message_id(frame: bytes) -> int:
 def make_server_ssl_context(cert_dir: Path) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3  # match the listener half's TLS-1.3-only policy
-    ctx.load_cert_chain(certfile=str(cert_dir / "hub.crt"), keyfile=str(cert_dir / "hub.key"))
-    ctx.load_verify_locations(cafile=str(cert_dir / "ca.crt"))
+    ctx.load_cert_chain(certfile=str(cert_paths.hub_certificate(cert_dir)),
+                        keyfile=str(cert_paths.hub_private_key(cert_dir)))
+    ctx.load_verify_locations(cafile=str(cert_paths.issuer_certificate(cert_dir)))
     ctx.verify_mode = ssl.CERT_REQUIRED  # mutual TLS - reject the example if it presents no client cert
     return ctx
 
@@ -196,9 +199,11 @@ async def handle_connection(websocket, once: asyncio.Event):
 
 
 async def run(host: str, port: int, cert_dir: Path, once: bool, max_seconds: float):
-    for needed in ("hub.crt", "hub.key", "ca.crt"):
-        if not (cert_dir / needed).is_file():
-            print(f"ERROR: {cert_dir / needed} not found - run: cmake -P scripts/generate-test-certs.cmake")
+    for needed in (cert_paths.hub_certificate(cert_dir), cert_paths.hub_private_key(cert_dir),
+                   cert_paths.issuer_certificate(cert_dir)):
+        if not needed.is_file():
+            print(f"ERROR: {needed} not found - run: BACnetExampleBSCHUB --generate-certs "
+                  "(or cmake -P scripts/generate-test-certs.cmake)")
             return 2
 
     ssl_ctx = make_server_ssl_context(cert_dir)

@@ -9,31 +9,50 @@
 // executable itself (OpenSSL is already linked for the SC transport), so a
 // user needs no separate `openssl` binary:
 //
-//   --generate-certs [n]      A fresh set in --sc-cert-dir: a lab CA
-//                             (ca.crt/ca.key), this hub's own operational
-//                             certificate (hub.crt/hub.key, plus hub.csr for
-//                             Network Port 2's CSR File object) and n labeled
-//                             client certificates (default 3) for the peers
-//                             that connect to the hub.
-//   --add-client-certs [n]    n MORE client certificates (default 1), signed
-//                             by the ca.crt/ca.key ALREADY in --sc-cert-dir, so
-//                             every existing peer and the running hub keep
-//                             trusting them. Numbering continues after the
-//                             highest existing label.
-//   --cert-label <prefix>     Label prefix for client certificates. Default
-//                             "client", giving client-01, client-02, ...
+//   --generate-certs [n]      A fresh set in --sc-cert-dir: a lab issuer (CA),
+//                             this hub's own operational certificate, private
+//                             key and certificate signing request, and n
+//                             labeled client certificate sets (default 3) for
+//                             the devices that connect to the hub.
+//   --add-client-certs [n]    n MORE client sets (default 1), signed by the
+//                             issuer ALREADY in --sc-cert-dir, so every
+//                             existing peer and the running hub keep trusting
+//                             them. Numbering continues after the highest
+//                             existing label.
+//   --cert-label <prefix>     Label prefix for client sets. Default "client",
+//                             giving client-01, client-02, ...
 //
-// Every certificate is LABELED twice: in its file names (client-01.crt /
-// client-01.key) and in its subject Common Name
-// ("Chipkin Example B-SCHUB client-01"), so a peer's certificate can be traced
-// back to its files from the hub's logs or a TLS capture. Every run also
-// appends to certificates.txt in the same directory: one line per certificate
-// with its label, files, serial number, expiry and SHA-256 fingerprint.
+// FILE NAMES follow the BACnet Network Port properties that carry them
+// (ANSI/ASHRAE 135 cl. 12.56: Operational_Certificate_File,
+// Issuer_Certificate_Files, Certificate_Signing_Request_File). Everything is
+// PEM:
+//
+//   <sc-cert-dir>/                        this hub
+//       operational-certificate.pem       Operational_Certificate_File (File 1)
+//       private-key.pem                   the operational certificate's key
+//                                         (never served by any File object)
+//       certificate-signing-request.pem   Certificate_Signing_Request_File (File 2)
+//       issuer-certificate.pem            Issuer_Certificate_Files (Files 3, 4)
+//       issuer-private-key.pem            the issuer's key - only used to sign
+//                                         more clients; keep it private
+//       certificates.txt                  label, files, serial, expiry and
+//                                         SHA-256 fingerprint of each certificate
+//   <sc-cert-dir>/clients/<label>/        one folder per connecting device -
+//       operational-certificate.pem       hand the whole folder to that device
+//       private-key.pem
+//       issuer-certificate.pem            (a copy of the hub's issuer)
+//
+// Every certificate is LABELED twice: by its folder (clients/client-01/) and
+// in its subject Common Name ("Chipkin Example B-SCHUB client-01"), so a
+// peer's certificate can be traced back to its files from the hub's logs or a
+// TLS capture.
 //
 // Same key and certificate profile as scripts/generate-test-certs.cmake:
-// ECDSA P-256, SHA-256, CA valid 10 years, leaves 825 days; the hub gets EKU
-// serverAuth+clientAuth with SAN localhost/127.0.0.1/<hostname>, clients get
-// EKU clientAuth.
+// ECDSA P-256, SHA-256, issuer valid 10 years, leaves 825 days; the hub gets
+// EKU serverAuth+clientAuth with SAN localhost/127.0.0.1/<hostname>, clients
+// get EKU clientAuth. That script still writes the older names (hub.crt,
+// hub.key, hub.csr, ca.crt, ca.key); the hub reads either - see
+// ResolveCertFile().
 //
 // LAB TESTING ONLY. A real deployment uses its own PKI - see README.md
 // "BACnet/SC support".
@@ -47,18 +66,40 @@ static const unsigned DEFAULT_GENERATE_CLIENT_COUNT = 3;
 static const unsigned DEFAULT_ADD_CLIENT_COUNT = 1;
 static const char* const DEFAULT_CLIENT_LABEL = "client";
 
-// Creates ca.*, hub.* and `clientCount` labeled client certificates in
-// certDir (created if missing). Refuses to touch an existing ca.crt, ca.key,
-// hub.crt or hub.key unless `force` is true, because replacing the CA
-// invalidates every certificate already handed out. Prints what it wrote.
-// Returns true on success.
+// File names, relative to --sc-cert-dir (or to a client's folder).
+static const char* const OPERATIONAL_CERTIFICATE_FILE = "operational-certificate.pem";
+static const char* const PRIVATE_KEY_FILE = "private-key.pem";
+static const char* const CERTIFICATE_SIGNING_REQUEST_FILE = "certificate-signing-request.pem";
+static const char* const ISSUER_CERTIFICATE_FILE = "issuer-certificate.pem";
+static const char* const ISSUER_PRIVATE_KEY_FILE = "issuer-private-key.pem";
+static const char* const CLIENTS_DIR = "clients";
+
+// The older names scripts/generate-test-certs.cmake writes.
+static const char* const LEGACY_OPERATIONAL_CERTIFICATE_FILE = "hub.crt";
+static const char* const LEGACY_PRIVATE_KEY_FILE = "hub.key";
+static const char* const LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE = "hub.csr";
+static const char* const LEGACY_ISSUER_CERTIFICATE_FILE = "ca.crt";
+static const char* const LEGACY_ISSUER_PRIVATE_KEY_FILE = "ca.key";
+
+// Picks which name to use in certDir: `name` if that file exists or `legacyName`
+// doesn't, otherwise `legacyName`. So a directory from --generate-certs uses
+// the BACnet names, and one from scripts/generate-test-certs.cmake keeps
+// working unchanged. Returns a name relative to certDir.
+std::string ResolveCertFile(const std::string& certDir, const char* name, const char* legacyName);
+
+// Creates the hub's files and `clientCount` labeled client folders in certDir
+// (created if missing). Refuses to touch an existing issuer or hub
+// certificate/key (either naming) unless `force` is true, because replacing
+// the issuer invalidates every certificate already handed out; with `force`
+// the old set, the clients/ folder and certificates.txt are deleted first.
+// Prints what it wrote. Returns true on success.
 bool GenerateCertificateSet(const std::string& certDir, unsigned clientCount,
                             const std::string& clientLabel, bool force);
 
-// Signs `clientCount` more labeled client certificates with the existing
-// certDir/ca.crt + ca.key. Numbering continues after the highest
-// "<clientLabel>-NN.crt" already present. Never overwrites a file. Returns
-// true on success.
+// Signs `clientCount` more labeled client sets with the issuer already in
+// certDir (either naming). Numbering continues after the highest
+// clients/<clientLabel>-NN folder already present. Never overwrites a file.
+// Returns true on success.
 bool AddClientCertificates(const std::string& certDir, unsigned clientCount,
                            const std::string& clientLabel);
 

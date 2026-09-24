@@ -18,7 +18,7 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.16**, built and verified
+> **Versions:** this document describes **example v1.1.17**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
 > **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -95,7 +95,7 @@ objects (see the device tree below) for the certificate/CSR content.
 - 4 read-only File objects (`Operational Certificate`/`Certificate Signing Request`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
   hub's operational certificate, CSR, and issuer certificate (×2 slots) over
   AtomicReadFile - **never the private key**, which has no File object at
-  all. Verified byte-for-byte over BACnet/IP against `certs/hub.crt`, with the
+  all. Verified byte-for-byte over BACnet/IP against `certs/operational-certificate.pem`, with the
   private key confirmed unreachable through any File object instance.
 
 **Known, documented limitations (not bugs in this example) - see
@@ -167,10 +167,10 @@ Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Syst
     ├── Multi-State Input 1   "Hot Pink"      Present_Value  1       (state, 1..3; read-only)
     ├── Network Port 1        "BACnet IP"     BACnet/IP - active, discoverable (required on every device)
     ├── Network Port 2        "BACnet SC"   BACnet/SC hub function - CONFIGURED, transport is real (both roles)
-    ├── File 1                "Operational Certificate"         operational certificate (certs/hub.crt), read-only
-    ├── File 2                "Certificate Signing Request"     certificate signing request (certs/hub.csr), read-only
-    ├── File 3                "Issuer Certificate Slot 1"       issuer certificate slot 1 (certs/ca.crt), read-only
-    └── File 4                "Issuer Certificate Slot 2"       issuer certificate slot 2 (certs/ca.crt), read-only
+    ├── File 1                "Operational Certificate"         operational certificate (certs/operational-certificate.pem), read-only
+    ├── File 2                "Certificate Signing Request"     certificate signing request (certs/certificate-signing-request.pem), read-only
+    ├── File 3                "Issuer Certificate Slot 1"       issuer certificate slot 1 (certs/issuer-certificate.pem), read-only
+    └── File 4                "Issuer Certificate Slot 2"       issuer certificate slot 2 (certs/issuer-certificate.pem), read-only
 ```
 
 ## What this example supports
@@ -338,38 +338,46 @@ for what a production certificate story needs):
 The example can generate them itself (no separate `openssl` needed):
 
 ```bash
-./build/BACnetExampleBSCHUB --generate-certs        # CA + hub + 3 client certificates
+./build/BACnetExampleBSCHUB --generate-certs        # issuer + hub + 3 client certificate sets
 ./build/BACnetExampleBSCHUB --generate-certs 10     # ... or any number of clients
 ```
 
-This writes to `--sc-cert-dir` (default `./certs`) and exits:
+This writes PEM files to `--sc-cert-dir` (default `./certs`) and exits. The
+file names follow the BACnet Network Port properties that carry them
+(ANSI/ASHRAE 135 cl. 12.56):
 
 | File | What it is |
 |---|---|
-| `ca.crt` / `ca.key` | The lab CA. Every connecting device needs `ca.crt`. Keep `ca.key` private: it is only used to sign more clients. |
-| `hub.crt` / `hub.key` / `hub.csr` | This hub's own certificate (EKU serverAuth+clientAuth, SAN `localhost`, `127.0.0.1` and this machine's hostname), plus the CSR served by Network Port 2's Certificate_Signing_Request_File object. |
-| `client-01.crt` / `client-01.key`, ... | One labeled certificate (EKU clientAuth) per device that connects to the hub. |
-| `certificates.txt` | One line per certificate: label, files, serial, expiry and SHA-256 fingerprint. |
+| `operational-certificate.pem` | This hub's certificate, served as **Operational_Certificate_File** (File 1). EKU serverAuth+clientAuth, SAN `localhost`, `127.0.0.1` and this machine's hostname. |
+| `private-key.pem` | The hub certificate's private key. No File object ever serves it. |
+| `certificate-signing-request.pem` | Served as **Certificate_Signing_Request_File** (File 2). |
+| `issuer-certificate.pem` | The lab CA, served as both **Issuer_Certificate_Files** entries (Files 3 and 4). Every connecting device needs it. |
+| `issuer-private-key.pem` | The CA's private key. Only used to sign more clients; keep it private. |
+| `clients/<label>/` | One folder per connecting device, holding its own `operational-certificate.pem`, `private-key.pem` and a copy of `issuer-certificate.pem`. Hand the whole folder to that device. |
+| `certificates.txt` | One line per certificate: label, location, serial, expiry and SHA-256 fingerprint. |
+| `readme.txt` | A walkthrough of the folder: what each file is for (described from ANSI/ASHRAE 135 cl. 12.56 and Annex AB), which files are private, and how to install the client folders on devices. Each `clients/<label>/` folder gets a short `readme.txt` of its own. |
 
-Every certificate is labeled in its file name and in its subject Common Name
-(`Chipkin Example B-SCHUB client-01`), so you can tell which device is which
-in a TLS capture or the hub's log. To add devices later, sign more clients
-with the **existing** CA. Numbering continues where it left off, and a hub
-that's already running trusts them straight away (same `ca.crt`, no
-restart):
+Every client is labeled by its folder (`clients/client-01/`) and in its
+certificate's subject Common Name (`Chipkin Example B-SCHUB client-01`), so
+you can tell which device is which in a TLS capture or the hub's log. To add
+devices later, sign more clients with the **existing** issuer. Numbering
+continues where it left off, and a hub that's already running trusts them
+straight away (same issuer, no restart):
 
 ```bash
-./build/BACnetExampleBSCHUB --add-client-certs 2                    # client-04, client-05
-./build/BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # ahu-01 .. ahu-03
+./build/BACnetExampleBSCHUB --add-client-certs 2                    # clients/client-04/, clients/client-05/
+./build/BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # clients/ahu-01/ .. clients/ahu-03/
 ```
 
-`--generate-certs` refuses to replace an existing CA, because that would
+`--generate-certs` refuses to replace an existing issuer, because that would
 invalidate every certificate already handed out. Add `--force` to start over
-(it deletes the old set first). All of this is **lab testing only**: ECDSA
-P-256, CA valid 10 years, device certificates 825 days.
+(it deletes the old set and the `clients/` folder first). All of this is
+**lab testing only**: ECDSA P-256, issuer valid 10 years, device certificates
+825 days.
 
-The older script still works and produces the `node.crt` client that
-`tests/sc/hub_listener_test.py` used before `--client-cert` existed:
+The older CMake script still works. It writes the older names (`hub.crt`,
+`hub.key`, `hub.csr`, `ca.crt`, `ca.key`, and a `node.crt` client), and the
+hub reads either naming, preferring the BACnet names when both exist:
 
 ```bash
 cmake --build build --target test-certs
@@ -391,7 +399,7 @@ Expected output (with `certs/` already generated - see [Generate lab test
 certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.16
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.17
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -407,7 +415,7 @@ exactly the same either way) - naming specifically which file(s) are
 missing/unreadable, not all three regardless of which one actually failed:
 
 ```
-BACnet/SC: cannot start listening on wss://0.0.0.0:47819/: certificate file(s) missing/unreadable: key="./certs/hub.key". Run: cmake -P scripts/generate-test-certs.cmake
+BACnet/SC: cannot start listening on wss://0.0.0.0:47819/: certificate file(s) missing/unreadable: key="./certs/private-key.pem". Run: BACnetExampleBSCHUB --generate-certs
 ```
 
 When the cert files ARE present and readable, startup also logs a
@@ -436,7 +444,7 @@ device you'll see `RX ... bytes from ...` and `TX ... bytes to ...` lines
 showing the traffic - both over BACnet/IP and, once a node connects, over
 BACnet/SC (tagged `SC peer "..."` instead of an IP:port). If `certs/` is
 missing, the listener line instead explains what to run
-(`cmake -P scripts/generate-test-certs.cmake`) and BACnet/IP keeps working.
+(`BACnetExampleBSCHUB --generate-certs`) and BACnet/IP keeps working.
 
 The device listens on UDP **47808** (BACnet/IP). Allow that port through your
 firewall. To use a different port, pass `--port` (see below).
@@ -453,7 +461,7 @@ firewall. To use a different port, pass `--port` (see below).
 | `--port <n>` | `47808` | UDP port to listen on (BACnet/IP). |
 | `--deviceID <n>` | `389022` | The device's BACnet instance number (BACnet requires this to be configurable). |
 | `--sc-port <n>` | `47819` | WebSocket/TLS port for the BACnet/SC hub accept URI. |
-| `--sc-cert-dir <dir>` | `./certs` | Directory holding `hub.crt`/`hub.key`/`ca.crt` (see [Generate lab test certificates](#generate-lab-test-certificates) above). |
+| `--sc-cert-dir <dir>` | `./certs` | Directory holding `operational-certificate.pem`, `private-key.pem` and `issuer-certificate.pem` (or the older `hub.crt`/`hub.key`/`ca.crt`) - see [Generate lab test certificates](#generate-lab-test-certificates) above. |
 | `--sc-hub-uri <wss://host:port/path>` | *(none)* | Also run the hub **connector** role: dial out to another hub at this URI. Off by default - this hub-only example needs only the listener role above for NM-SCH-B. |
 | `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
 | `--sc-max-hub-connections <n>` | `4` | Max simultaneous inbound BACnet/SC peer connections the hub function accepts - enforced by the stack (see [Configuration file](#configuration-file) and `TODO.md`/this option's own doc comment in `main.cpp` for how). |
@@ -461,9 +469,9 @@ firewall. To use a different port, pass `--port` (see below).
 | `--http-port <n>` | `8080` | TCP port for `GET /health`, `GET /metrics` and `POST /certs/<slot>` - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) and [Certificate upload endpoint](#certificate-upload-endpoint) below. |
 | `--http-bind <addr>` | `127.0.0.1` | Interface the HTTP endpoints above bind to. Loopback-only by default; see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) before setting this to anything else - this listener has no TLS and `GET /health`/`GET /metrics` have no authentication at all. |
 | `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `http-port`, `http-bind`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file - **except `dcc-password`, which has no CLI flag at all** (see [Secrets handling](#secrets-handling)). |
-| `--generate-certs [n]` | `3` | Write a fresh lab CA, hub certificate and `n` labeled client certificates to `--sc-cert-dir`, then exit. See [Generate lab test certificates](#generate-lab-test-certificates). |
-| `--add-client-certs [n]` | `1` | Sign `n` more client certificates with the CA already in `--sc-cert-dir`, then exit. |
-| `--cert-label <prefix>` | `client` | Label for client certificates (`<prefix>-01`, `<prefix>-02`, ...). |
+| `--generate-certs [n]` | `3` | Write a fresh set of BACnet-named PEM files (issuer, hub, and `n` labeled `clients/<label>/` folders) to `--sc-cert-dir`, then exit. See [Generate lab test certificates](#generate-lab-test-certificates). |
+| `--add-client-certs [n]` | `1` | Sign `n` more client certificate sets with the issuer already in `--sc-cert-dir`, then exit. |
+| `--cert-label <prefix>` | `client` | Label for client folders (`clients/<prefix>-01/`, `clients/<prefix>-02/`, ...). |
 | `--force` | - | With `--generate-certs`: replace an existing certificate set. |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
@@ -701,7 +709,8 @@ see `HttpServer.h`'s file header for the full reasoning.
 
 `POST http://<http-bind>:<http-port>/certs/<slot>` (`<slot>` one of
 `operational`, `csr`, `issuer1`, `issuer2`, mapping to the same
-`hub.crt`/`hub.csr`/`ca.crt`/`ca.crt` files under `--sc-cert-dir` the 4 read-only
+`operational-certificate.pem`/`certificate-signing-request.pem`/`issuer-certificate.pem`/`issuer-certificate.pem`
+files (or their older `hub.crt`/`hub.csr`/`ca.crt` equivalents) under `--sc-cert-dir` the 4 read-only
 File objects already serve - see [The device this example
 creates](#the-device-this-example-creates)) uploads a replacement
 certificate/CSR without manual file copying - e.g. after an operator gets a
@@ -823,9 +832,9 @@ repository's own test scripts:
    `ConnectedPrimary`.
 4. **Certificate File objects** - `tests/sc/file_object_test.py` (a real
    `bacpypes3` BACnet/IP client) confirms `AtomicReadFile(File 1, "Operational Certificate")`
-   returns `certs/hub.crt` byte-for-byte, Network Port 2's
+   returns the hub's operational certificate byte-for-byte, Network Port 2's
    `Issuer_Certificate_Files` has exactly 2 entries, and none of the 4 File
-   objects ever serve `certs/hub.key`.
+   objects ever serve the private key.
 5. **Mux fairness** - with an SC peer connection held open, BACnet/IP
    Who-Is/I-Am keeps answering normally on port 47808 (or whatever `--port`
    is), confirming `ScTransportRouter`'s IP-first/SC-first alternating poll

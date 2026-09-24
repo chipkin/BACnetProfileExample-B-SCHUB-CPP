@@ -158,7 +158,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.16";
+static const char* APP_VERSION = "1.1.17";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -471,23 +471,39 @@ static float g_analogInput1Value = 21.5f;
 // private key has no File object and is never reachable through any of these.
 // -----------------------------------------------------------------------------
 
+// True if fileInstance is one of the 4 certificate/CSR File objects above.
+static bool IsScCertFileInstance(const uint32_t fileInstance) {
+    return fileInstance == FILE_OPERATIONAL_CERT_INSTANCE || fileInstance == FILE_CSR_INSTANCE ||
+           fileInstance == FILE_ISSUER_CERT_1_INSTANCE || fileInstance == FILE_ISSUER_CERT_2_INSTANCE;
+}
+
 // Returns the filename (relative to g_scCertDir) for one of the 4 File object
-// instances above, or NULL if fileInstance isn't one of them.
-static const char* ScCertFileRelativePath(const uint32_t fileInstance) {
+// instances above, or "" if fileInstance isn't one of them. The names follow
+// the Network Port properties each file backs (see cert_tool.h), e.g.
+// operational-certificate.pem for Operational_Certificate_File. A directory
+// made by scripts/generate-test-certs.cmake still uses the older names
+// (hub.crt, hub.csr, ca.crt); CertTool::ResolveCertFile picks whichever exists.
+static std::string ScCertFileRelativePath(const uint32_t fileInstance) {
     switch (fileInstance) {
-        case FILE_OPERATIONAL_CERT_INSTANCE: return "hub.crt";
-        case FILE_CSR_INSTANCE:               return "hub.csr";
-        case FILE_ISSUER_CERT_1_INSTANCE:     return "ca.crt";
-        case FILE_ISSUER_CERT_2_INSTANCE:     return "ca.crt"; // same CA both slots - see the
-                                                                // instance's own comment above
-        default: return NULL;
+        case FILE_OPERATIONAL_CERT_INSTANCE:
+            return CertTool::ResolveCertFile(g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE,
+                                             CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
+        case FILE_CSR_INSTANCE:
+            return CertTool::ResolveCertFile(g_scCertDir, CertTool::CERTIFICATE_SIGNING_REQUEST_FILE,
+                                             CertTool::LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE);
+        case FILE_ISSUER_CERT_1_INSTANCE:
+        case FILE_ISSUER_CERT_2_INSTANCE: // same issuer both slots - see the instance's own comment above
+            return CertTool::ResolveCertFile(g_scCertDir, CertTool::ISSUER_CERTIFICATE_FILE,
+                                             CertTool::LEGACY_ISSUER_CERTIFICATE_FILE);
+        default:
+            return std::string();
     }
 }
 
 // Full on-disk path for a File object instance, or "" if it isn't one of the 4.
 static std::string ScCertFilePath(const uint32_t fileInstance) {
-    const char* relative = ScCertFileRelativePath(fileInstance);
-    if (relative == NULL) {
+    const std::string relative = ScCertFileRelativePath(fileInstance);
+    if (relative.empty()) {
         return std::string();
     }
     return g_scCertDir + "/" + relative;
@@ -675,7 +691,7 @@ bool GetPropertyBool(const uint32_t deviceInstance, const uint16_t objectType,
     // the isWritable=false given to BACnetStack_AddFileObject; Archive is served
     // here because it has no stack default either, even though nothing ever writes
     // it (this device does not implement WriteProperty - see the file header).
-    if (objectType == OBJECT_TYPE_FILE && ScCertFileRelativePath(objectInstance) != NULL) {
+    if (objectType == OBJECT_TYPE_FILE && IsScCertFileInstance(objectInstance)) {
         if (propertyIdentifier == PROPERTY_IDENTIFIER_ARCHIVE) {
             *value = false;
             return true;
@@ -863,7 +879,7 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
     // File_Type (required; no stack default - property-profile-reference.md's File
     // section) - all 4 File objects hold PEM text (certificates/CSR), never the key.
     if (propertyIdentifier == PROPERTY_IDENTIFIER_FILE_TYPE && objectType == OBJECT_TYPE_FILE &&
-        ScCertFileRelativePath(objectInstance) != NULL) {
+        IsScCertFileInstance(objectInstance)) {
         return ReturnCharacterString("application/x-pem-file", value, valueElementCount, maxElementCount, encodingType);
     }
 
@@ -1091,12 +1107,8 @@ static bool ResolveCertUploadSlot(const std::string& slot, std::string* outRelat
     } else {
         return false;
     }
-    const char* relative = ScCertFileRelativePath(fileInstance);
-    if (relative == NULL) {
-        return false;
-    }
-    *outRelativeFilename = relative;
-    return true;
+    *outRelativeFilename = ScCertFileRelativePath(fileInstance);
+    return !outRelativeFilename->empty();
 }
 
 // Formats a byte count of elapsed steady-clock time as "NdNNhNNmNNs" (only
@@ -1404,7 +1416,9 @@ int main(int argc, char** argv) {
             if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "/?") == 0) {
                 printf("\nBACnet/SC options (NM-SCH-B hub function):\n");
                 printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 47819.\n");
-                printf("  --sc-cert-dir <dir> Directory holding hub.crt/hub.key/ca.crt (see\n");
+                printf("  --sc-cert-dir <dir> Directory holding operational-certificate.pem,\n");
+                printf("                      private-key.pem and issuer-certificate.pem (or the older\n");
+                printf("                      hub.crt/hub.key/ca.crt; see --generate-certs or\n");
                 printf("                      scripts/generate-test-certs.cmake). Default \"./certs\".\n");
                 printf("  --sc-hub-uri <wss://host:port/path>\n");
                 printf("                      Also run the hub CONNECTOR role: dial out to another hub at\n");
@@ -1425,13 +1439,16 @@ int main(int argc, char** argv) {
                 printf("                      limit. Default 10.\n");
                 printf("\nLab certificates (LAB TESTING ONLY - written to --sc-cert-dir, then exits):\n");
                 printf("  --generate-certs [n]\n");
-                printf("                      Create a fresh set: a lab CA (ca.crt/ca.key), this hub's\n");
-                printf("                      certificate (hub.crt/hub.key/hub.csr) and n labeled client\n");
-                printf("                      certificates for the devices that connect to the hub\n");
-                printf("                      (client-01.crt/.key, ...). Default n = 3. Refuses to replace\n");
-                printf("                      an existing CA unless --force is also given.\n");
+                printf("                      Create a fresh set of PEM files named after the Network\n");
+                printf("                      Port properties: issuer-certificate.pem (+ its key), this\n");
+                printf("                      hub's operational-certificate.pem, private-key.pem and\n");
+                printf("                      certificate-signing-request.pem, and n labeled client\n");
+                printf("                      folders, clients/client-01/ ... (each holding its own\n");
+                printf("                      operational-certificate.pem, private-key.pem and\n");
+                printf("                      issuer-certificate.pem). Default n = 3. Refuses to replace\n");
+                printf("                      an existing issuer unless --force is also given.\n");
                 printf("  --add-client-certs [n]\n");
-                printf("                      Sign n more client certificates (default 1) with the CA\n");
+                printf("                      Sign n more client certificates (default 1) with the issuer\n");
                 printf("                      already in --sc-cert-dir. Numbering continues after the\n");
                 printf("                      highest existing label, and the running hub trusts them\n");
                 printf("                      without a restart.\n");
@@ -1588,9 +1605,14 @@ int main(int argc, char** argv) {
     g_scHubAcceptUri = "wss://0.0.0.0:" + std::to_string(g_scPort) + "/";
     {
         CASSc::ScTlsFiles tls;
-        tls.caCertPath = g_scCertDir + "/ca.crt";
-        tls.certPath = g_scCertDir + "/hub.crt";
-        tls.keyPath = g_scCertDir + "/hub.key";
+        // BACnet-named PEM files from --generate-certs, or the older names
+        // from scripts/generate-test-certs.cmake - see cert_tool.h.
+        tls.caCertPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
+            g_scCertDir, CertTool::ISSUER_CERTIFICATE_FILE, CertTool::LEGACY_ISSUER_CERTIFICATE_FILE);
+        tls.certPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
+            g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE, CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
+        tls.keyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
+            g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
         g_scTransport.Configure(tls, "hub.bsc.bacnet.org"); // plan fact 1 - NOT "hub.bacnet.org"
         // Task 2: bound how fast the listener accepts new connection
         // ATTEMPTS - see g_scRateLimit's comment and

@@ -29,13 +29,14 @@ Checks:
 
 Exit code 0 = every automated check passed.
 
-`--client-cert <label>` picks which client certificate to connect with (the
-file stem in `--cert-dir`). The default is `node` if `node.crt` exists
-(`scripts/generate-test-certs.cmake`), otherwise `client-01`
-(`BACnetExampleBSCHUB --generate-certs`). For example, after
+`--client-cert <label>` picks which client certificate to connect with:
+`clients/<label>/` from `BACnetExampleBSCHUB --generate-certs`, or
+`<label>.crt`/`.key` from `scripts/generate-test-certs.cmake`. The default
+is `node` if `node.crt` exists, otherwise `client-01`. For example, after
 `BACnetExampleBSCHUB --add-client-certs 1 --cert-label late` while the hub is
 running, `--client-cert late-01` confirms the hub trusts the new certificate
-without a restart.
+without a restart. All the scripts here find the hub's and issuer's files
+under either naming through `cert_paths.py`.
 
 ## V3 (a real peer - `BACnetSCCli.exe`)
 

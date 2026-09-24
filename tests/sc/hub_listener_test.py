@@ -64,6 +64,8 @@ import struct
 import sys
 from pathlib import Path
 
+import cert_paths  # BACnet-named or older certificate file names
+
 try:
     import websockets
     from websockets.exceptions import InvalidHandshake, ConnectionClosed
@@ -156,7 +158,8 @@ def make_ssl_context(cert_dir: Path, use_client_cert: bool, min_version=None, ma
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # lab test CA is not in the system trust store
     if use_client_cert:
-        ctx.load_cert_chain(certfile=str(cert_dir / f"{CLIENT_CERT}.crt"), keyfile=str(cert_dir / f"{CLIENT_CERT}.key"))
+        certfile, keyfile = cert_paths.client_files(cert_dir, CLIENT_CERT)
+        ctx.load_cert_chain(certfile=str(certfile), keyfile=str(keyfile))
     if min_version is not None:
         ctx.minimum_version = min_version
     if max_version is not None:
@@ -276,23 +279,21 @@ async def main():
     parser.add_argument("--port", type=int, default=47819)
     parser.add_argument("--cert-dir", default="certs")
     parser.add_argument("--client-cert", default=None,
-                        help="client certificate label (file stem) to connect with, e.g. client-02. "
-                             "Default: node (scripts/generate-test-certs.cmake) if present, else client-01 "
-                             "(BACnetExampleBSCHUB --generate-certs).")
+                        help="client certificate label to connect with, e.g. client-02 "
+                             "(clients/client-02/ from BACnetExampleBSCHUB --generate-certs). "
+                             "Default: node (scripts/generate-test-certs.cmake) if present, else client-01.")
     args = parser.parse_args()
 
     global CLIENT_CERT
     cert_dir = Path(args.cert_dir)
-    if args.client_cert:
-        CLIENT_CERT = args.client_cert
-    elif not (cert_dir / "node.crt").is_file():
-        CLIENT_CERT = "client-01"
-    for needed in (f"{CLIENT_CERT}.crt", f"{CLIENT_CERT}.key", "ca.crt"):
-        if not (cert_dir / needed).is_file():
-            print(f"ERROR: {cert_dir / needed} not found - run: BACnetExampleBSCHUB --generate-certs "
+    CLIENT_CERT = args.client_cert or cert_paths.default_client_label(cert_dir)
+    certfile, keyfile = cert_paths.client_files(cert_dir, CLIENT_CERT)
+    for needed in (certfile, keyfile, cert_paths.issuer_certificate(cert_dir)):
+        if not needed.is_file():
+            print(f"ERROR: {needed} not found - run: BACnetExampleBSCHUB --generate-certs "
                   "(or cmake -P scripts/generate-test-certs.cmake)")
             return 2
-    print(f"Using client certificate {CLIENT_CERT}.crt")
+    print(f"Using client certificate {certfile}")
 
     uri = f"wss://{args.host}:{args.port}/"
     print(f"Testing BACnet/SC hub listener at {uri} (certs in {cert_dir})\n")

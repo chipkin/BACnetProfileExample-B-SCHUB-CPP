@@ -18,6 +18,8 @@ import asyncio
 import pathlib
 import sys
 
+import cert_paths  # BACnet-named or older certificate file names
+
 from bacpypes3.apdu import (
     AtomicReadFileACK,
     AtomicReadFileRequest,
@@ -81,8 +83,8 @@ async def main():
     args = parser.parse_args()
 
     cert_dir = pathlib.Path(args.cert_dir) if args.cert_dir else (pathlib.Path(__file__).resolve().parents[2] / "certs")
-    hub_crt_path = cert_dir / "hub.crt"
-    hub_key_path = cert_dir / "hub.key"
+    hub_crt_path = cert_paths.hub_certificate(cert_dir)
+    hub_key_path = cert_paths.hub_private_key(cert_dir)
 
     device_address = Address(f"{args.target}:{args.target_port}")
     app = Application.from_args(args)
@@ -97,10 +99,10 @@ async def main():
         elif read_back != on_disk:
             failures.append(
                 f"AtomicReadFile(File 1) returned {len(read_back)} bytes, "
-                f"certs/hub.crt on disk is {len(on_disk)} bytes - MISMATCH"
+                f"{hub_crt_path.name} on disk is {len(on_disk)} bytes - MISMATCH"
             )
         else:
-            print(f"PASS: AtomicReadFile(File 1, \"Operational Certificate\") == certs/hub.crt byte-for-byte ({len(on_disk)} bytes)")
+            print(f"PASS: AtomicReadFile(File 1, \"Operational Certificate\") == {hub_crt_path.name} byte-for-byte ({len(on_disk)} bytes)")
 
         # --- 2. Network Port 2's Issuer_Certificate_Files has exactly 2 entries --------
         response = await app.request(
@@ -132,9 +134,9 @@ async def main():
                 continue
             checked.append(file_instance)
             if data == hub_key_bytes:
-                failures.append(f"File {file_instance} returned bytes IDENTICAL to certs/hub.key - KEY LEAK")
+                failures.append(f"File {file_instance} returned bytes IDENTICAL to {hub_key_path.name} - KEY LEAK")
         if checked:
-            print(f"PASS: File objects {checked} enumerated and read; none served certs/hub.key ({len(hub_key_bytes)} bytes)")
+            print(f"PASS: File objects {checked} enumerated and read; none served {hub_key_path.name} ({len(hub_key_bytes)} bytes)")
     finally:
         app.close()
 

@@ -674,7 +674,7 @@ bool ScTransport::StartListening(const std::string& uri) {
         if (!missing.empty()) {
             LogListenFailureOnce(
                 "cannot start listening on " + uri + ": certificate file(s) missing/unreadable: " +
-                missing + ". Run: cmake -P scripts/generate-test-certs.cmake");
+                missing + ". Run: BACnetExampleBSCHUB --generate-certs");
             return false;
         }
     }
@@ -887,7 +887,7 @@ bool ScTransport::Connect(const std::string& uri) {
         if (!missing.empty()) {
             fprintf(stderr,
                     "BACnet/SC: cannot Connect(\"%s\"): certificate file(s) missing/unreadable: %s. "
-                    "Run: cmake -P scripts/generate-test-certs.cmake\n",
+                    "Run: BACnetExampleBSCHUB --generate-certs\n",
                     uri.c_str(), missing.c_str());
             return false;
         }

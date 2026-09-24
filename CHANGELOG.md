@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.17] - unreleased
+
+### Changed
+
+- **`--generate-certs` / `--add-client-certs` now write PEM files named after
+  the BACnet Network Port properties** (ANSI/ASHRAE 135 cl. 12.56), instead
+  of `hub.crt`-style names:
+  - `operational-certificate.pem` (Operational_Certificate_File)
+  - `private-key.pem`
+  - `certificate-signing-request.pem` (Certificate_Signing_Request_File)
+  - `issuer-certificate.pem` (Issuer_Certificate_Files)
+  - `issuer-private-key.pem`
+
+  Each client gets its own `clients/<label>/` folder holding its
+  `operational-certificate.pem`, `private-key.pem` and a copy of
+  `issuer-certificate.pem`, ready to hand to that device. `certificates.txt`
+  now lists each certificate's location.
+- The hub reads the BACnet names, falling back to the older
+  `hub.crt`/`hub.key`/`hub.csr`/`ca.crt` names when only those exist, so a
+  `scripts/generate-test-certs.cmake` directory keeps working. One function,
+  `CertTool::ResolveCertFile`, makes that choice for the TLS setup, the four
+  certificate File objects and the certificate-upload endpoint.
+  `--add-client-certs` accepts an issuer under either naming.
+- **`readme.txt` in the certificate folder** (rewritten on every run) walks
+  users through the set. It covers what each file is and what it's used
+  for, described from ANSI/ASHRAE 135-2024 cl. 12.56 (Network Port) and
+  Annex AB, and marks each file PUBLIC or PRIVATE. It also has step-by-step
+  instructions: start the hub, install a client folder on a device, add
+  more clients, verify with openssl, and start over. Each `clients/<label>/`
+  folder gets a short `readme.txt` for whoever receives it.
+- The hub's "certificates missing" message now says to run
+  `BACnetExampleBSCHUB --generate-certs`.
+- `tests/sc/cert_paths.py` gives the test scripts the same fallback rule.
+  `hub_listener_test.py --client-cert <label>` finds `clients/<label>/`.
+- APP_VERSION bumped 1.1.16 -> 1.1.17.
+
+Verified live on a generated set:
+- `openssl verify` passes for the hub and client certificates, the CSR's
+  signature verifies, and each client key matches its certificate.
+- `hub_listener_test.py` passes 7/7 with `client-02`, and with `ahu-02`
+  added by `--add-client-certs` while the hub was running.
+- A client from a different issuer is refused.
+- `file_object_test.py` (V6) and `rpm_test.py` pass.
+- The hub connector connects to `fake_hub_server.py` (Connect-Request /
+  Connect-Accept).
+- The old-name `certs/` directory still passes V6 and V1/V2 (`node`).
+
 ## [1.1.16] - unreleased
 
 ### Changed

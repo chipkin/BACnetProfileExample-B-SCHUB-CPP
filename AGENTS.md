@@ -39,11 +39,17 @@ This repository is self-contained:
   several of its rules come from reading the stack's source, not its manual,
   and are easy to get subtly wrong again.
 - `cert_tool.{h,cpp}` - `--generate-certs [n]` / `--add-client-certs [n]` /
-  `--cert-label`: the built-in lab certificate generator (a CA, the hub, and
-  labeled client certificates, plus `certificates.txt`). It runs before the
-  stack starts and exits. `--add-client-certs` must keep signing with the
-  existing `ca.crt`/`ca.key`, never a new CA, or running hubs stop trusting
-  the new clients.
+  `--cert-label`: the built-in lab certificate generator. It writes PEM files
+  named after the Network Port properties (`operational-certificate.pem`,
+  `private-key.pem`, `certificate-signing-request.pem`,
+  `issuer-certificate.pem`, `issuer-private-key.pem`) plus one
+  `clients/<label>/` folder per connecting device, runs before the stack
+  starts, and exits. The file-name constants live in `cert_tool.h`, and
+  `CertTool::ResolveCertFile` is the ONE place the hub picks between them
+  and the older `hub.crt`/`hub.key`/`hub.csr`/`ca.crt` names - use it rather
+  than hard-coding a name. `--add-client-certs` must keep signing with the
+  existing issuer, never a new one, or running hubs stop trusting the new
+  clients.
 - `scripts/generate-test-certs.cmake` - generates the lab-only self-signed
   certificate set under `certs/` (gitignored) `sc_transport/` and the File
   objects (`main.cpp` section 2d) both read.
