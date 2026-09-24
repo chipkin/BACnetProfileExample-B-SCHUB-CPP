@@ -5,6 +5,18 @@
 #
 # The CAS BACnet Stack is a PRIVATE git submodule: the repository secret CAS_STACK_PAT must
 # hold a PAT with read access to chipkin/cas-bacnet-stack.
+# SC-TRANSPORT:BEGIN
+#
+# This workflow legitimately differs from the series template
+# (../BACnetProfileExample-B-SS-CPP/.github/workflows/release.yml) beyond example names:
+# this repository is the only one in the series with a BACnet/SC WebSocket+TLS transport
+# and its vcpkg dependency (libwebsockets, OpenSSL). The vcpkg-caching steps below (adapted
+# from ../plugfest-example/.github/workflows/build.yml) and the BACnet/SC test step have no
+# equivalent in the template and are NOT a drift to reconcile - each such block below is
+# marked between its own "SC-TRANSPORT:BEGIN"/"SC-TRANSPORT:END" comment lines; see
+# ../tools/check-series.sh check 11's B-SCHUB exemption (it diffs only outside those marked
+# blocks) and docs/bacnet-sc-transport-plan.md's "CI" section for why.
+# SC-TRANSPORT:END
 name: build-and-release
 
 on:
@@ -50,6 +62,43 @@ jobs:
         shell: bash
         run: echo "sha=$(git -C submodules/cas-bacnet-stack rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # SC-TRANSPORT:BEGIN - vcpkg binary cache for libwebsockets/OpenSSL, adapted from
+      # ../plugfest-example/.github/workflows/build.yml (same manifest-mode pattern: point
+      # at the runner's own vcpkg via VCPKG_ROOT, cache what it builds under a
+      # workspace-local directory, and pre-fetch the manifest's builtin-baseline commit if
+      # the runner's bundled vcpkg clone predates it).
+      - name: vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.os }}-
+
+      - name: Point at the runner's vcpkg
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+          mkdir -p vcpkg-binary-cache
+          echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+          # x64-windows-static matches this repo's own CMakeLists.txt Windows default (kept in
+          # sync with the CAS BACnet Stack adapter's static-runtime default); x64-linux is
+          # vcpkg's own default triplet there, so nothing needs to be forced on Linux.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "VCPKG_TARGET_TRIPLET=x64-windows-static" >> "$GITHUB_ENV"
+          fi
+
+      # The runner image's vcpkg clone is usually older than the manifest's builtin-baseline,
+      # and vcpkg then fails with "failed to git show versions/baseline.json". Fetch exactly
+      # that commit (read from vcpkg.json so the two cannot drift) when it is missing.
+      - name: Make sure the runner vcpkg has the manifest baseline
+        shell: bash
+        run: |
+          baseline=$(python -c "import json;print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          echo "builtin-baseline: $baseline"
+          if ! git -C "$VCPKG_ROOT" cat-file -e "${baseline}^{commit}" 2>/dev/null; then
+            git -C "$VCPKG_ROOT" fetch --depth=1 origin "$baseline"
+          fi
+      # SC-TRANSPORT:END
       - name: Configure
         run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 
@@ -110,6 +159,46 @@ jobs:
           EOF
           cat "${{ matrix.metrics }}"
           { echo '### metrics (${{ matrix.os }})'; echo '```json'; cat "${{ matrix.metrics }}"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      # SC-TRANSPORT:BEGIN - the BACnet/SC transport regression suite. Generates a lab
+      # certificate set, starts the example with BACnet/SC enabled, and runs the
+      # tests/sc/ verification scripts against it (docs/bacnet-sc-transport-plan.md's
+      # V1/V2/V6, the CI-runnable subset - V3/V5, real-peer verification against
+      # BACnetSCCli, are manual/local only, no such tool is available on a hosted runner).
+      - name: Generate BACnet/SC lab test certificates
+        run: cmake --build build --target test-certs
+
+      - name: Set up Python (for the BACnet/SC test scripts)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install BACnet/SC test dependencies
+        run: python -m pip install -r tests/sc/requirements.txt
+
+      - name: Start the example with BACnet/SC enabled
+        shell: bash
+        run: |
+          "${{ matrix.exe }}" --port 47822 --sc-port 47823 --sc-cert-dir certs > sc-smoke.log 2>&1 &
+          echo $! > sc-smoke.pid
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" sc-smoke.log && break
+            sleep 0.2
+          done
+          grep -q "listening for WebSocket/TLS connections" sc-smoke.log || { echo "FAIL: SC listener never came up"; cat sc-smoke.log; exit 1; }
+
+      - name: BACnet/SC listener test (V1/V2)
+        run: python tests/sc/hub_listener_test.py --port 47823 --cert-dir certs
+
+      - name: BACnet/SC File objects test (V6)
+        run: python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47822 --cert-dir certs
+
+      - name: Stop the example
+        shell: bash
+        if: always()
+        run: |
+          [ -f sc-smoke.pid ] && kill "$(cat sc-smoke.pid)" 2>/dev/null || true
+          cat sc-smoke.log || true
+      # SC-TRANSPORT:END
 
       - name: Package
         shell: bash
@@ -118,6 +207,12 @@ jobs:
           cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
           cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
           cp docs/PICS.md dist/ 2>/dev/null || true
+          # SC-TRANSPORT:BEGIN - this example's package also ships the BACnet/SC cert-generation
+          # script and its third-party-dependency notices (docs/bacnet-sc-transport-plan.md's
+          # "Files" section) - no other example in the series has either.
+          cp THIRD-PARTY-NOTICES.md dist/ 2>/dev/null || true
+          cp -r scripts dist/scripts 2>/dev/null || true
+          # SC-TRANSPORT:END
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

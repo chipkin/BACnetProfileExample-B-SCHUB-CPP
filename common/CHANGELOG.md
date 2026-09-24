@@ -12,6 +12,233 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-09-22
+
+### Added
+
+- **Reconciled two `common/` lines that had independently diverged from
+  2.5.0 and both reused version numbers for different content**:
+  `BACnetProfileExample-B-BC-CPP` had carried its own 2.6.0-2.9.0 (RX/TX
+  service decode, object/property-naming `SummarizeBacnetFrame()`, the
+  `--xml` frame dump, `GetLocalLinkSpeedBitsPerSecond()`, and the Device
+  `Local_Date`/`Local_Time` property IDs) without those changes being
+  re-copied series-wide, while `BACnetProfileExample-B-SCHUB-CPP` separately
+  carried its own, differently-numbered 2.6.0-2.7.0 (the `CASExampleLog`
+  structured-logging facility, `ParseDccPasswordArg()`, the
+  `HandleHelpAndVersionArgs()` `showDccPasswordCliOption` parameter, and
+  `KeyCommand::Metrics`). The two lines touch disjoint code (confirmed by
+  diffing each against the shared 2.5.0 ancestor) and merge cleanly with no
+  functional conflicts. This version combines both: every symbol and file
+  from both lines is present, `COMMON_VERSION` moves to `3.0.0` (a new major
+  number precisely because this single version now carries two
+  independently-versioned change sets, not because anything is
+  backward-incompatible), and this is the version every example in the
+  series is re-synced to.
+
+## [2.7.0] - 2026-09-21 (from the BACnetProfileExample-B-SCHUB-CPP line, merged in 3.0.0)
+
+### Added
+
+- **`KeyCommand::Metrics` ('m'/'M')** - a generic "print a health/metrics
+  snapshot" interactive key command, added for
+  `BACnetProfileExample-B-SCHUB-CPP`'s health/metrics keypress (this batch's
+  Task 2: uptime, connection counts, rate-limit rejections, RX/TX counters).
+  `'h'`/`'q'`/arrows/`'s'`/`'w'`/`'d'`/`'r'` were already taken (see
+  `KeyCommand`'s own comment), so this is a new enum value, not a repurposed
+  one. `PollKey()` (both the Windows `_kbhit`/`_getch` branch and the POSIX
+  raw-input branch) now recognises `'m'`/`'M'` and returns it. This is a
+  purely additive, backward-compatible enum/switch change - existing
+  `switch (PollKey())` call sites elsewhere in the series that do not handle
+  `Metrics` are unaffected (an unhandled `default:`/no `case` simply does
+  nothing, same as any other key this repo's own `main.cpp` chooses not to
+  act on). Kept generic (not BACnet/SC-specific) so any other example that
+  later tracks its own connection/throughput counters can reuse the same key
+  rather than main.cpp inventing a parallel one.
+
+### Changed
+
+- **`HandleHelpAndVersionArgs()` gains an optional 5th parameter,
+  `showDccPasswordCliOption` (default `true`).** Added so
+  `BACnetProfileExample-B-SCHUB-CPP` can stop advertising `--dcc-password` in
+  its own `--help` output (this batch's Task 1: the CLI form of
+  `--dcc-password` was removed from that repo - config-file only now, since a
+  CLI argument is visible in process listings/shell history) without
+  affecting any other example's `--help` output. This is a **non-breaking**
+  change: every existing 4-argument call site (`HandleHelpAndVersionArgs(argc,
+  argv, APP_NAME, APP_VERSION)`) keeps compiling and keeps printing the
+  `--dcc-password` line exactly as before, because the new parameter defaults
+  to `true`. `ParseDccPasswordArg()` itself is UNCHANGED and NOT removed -
+  see that function's own entry in the 2.6.0 section below; any example
+  (including this one, previously) can still call it directly for a CLI
+  `--dcc-password` flag if it wants one. Evaluated and rejected: removing
+  `ParseDccPasswordArg()` outright, since (a) it was only added in 2.6.0 (this
+  same day) with no evidence any other example in the series has adopted it
+  yet, but (b) removing a just-published shared function the moment after
+  publishing it, rather than simply not using it in this one repo, is more
+  invasive than the problem calls for - see
+  `BACnetProfileExample-B-SCHUB-CPP`'s own `CHANGELOG.md` for the full
+  reasoning.
+
+## [2.6.0] - 2026-09-21 (from the BACnetProfileExample-B-SCHUB-CPP line, merged in 3.0.0)
+
+### Added
+
+- **`CASExampleLog.h` / `CASExampleLog.cpp` - a minimal, dependency-free
+  structured logging facility.** Every example in the series (this repo
+  included) has always logged via bare `printf()`/`fprintf(stderr, ...)`
+  calls scattered through `main.cpp` and its own transport code - no levels,
+  no timestamps, no way to turn the noise up or down. `CASExampleHelper::Log()`
+  is a drop-in replacement for that pattern, not a new subsystem: no external
+  logging library (just `<cstdio>`/`<cstdarg>`/`<ctime>`, already pulled in
+  elsewhere in `common/`), no file output or rotation (explicitly out of
+  scope for this pass), still stdout/stderr underneath. `LogLevel` -
+  `Debug`/`Info`/`Warning`/`Error` - matches the naming already used for
+  `CASExampleHelper::RestartKind`/`KeyCommand` in this same namespace.
+  `SetLogLevel()`/`GetLogLevel()` give a runtime-configurable minimum
+  (default `Info`, so `Debug` stays silent unless an example opts in) - this
+  is what the rate-limiting/audit-trail work planned for
+  `BACnetProfileExample-B-SCHUB-CPP` will use for verbose diagnostics without
+  spamming normal operation. `Log(level, fmt, ...)` is printf-style
+  (`const char* fmt, ...`) specifically to keep call-site conversions small:
+  an existing `printf("Warning: ...", x)` becomes
+  `CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, "...", x)` and
+  nothing else changes. Each line is `<UTC timestamp> [<LEVEL>] <message>`;
+  the timestamp uses the same `gmtime_s`/`gmtime_r` pattern
+  `BACnetProfileExample-B-SCHUB-CPP`'s own `main.cpp` already uses for its
+  File objects' `Modification_Date` (UTC, not `localtime()`, so a line means
+  the same instant regardless of the host's configured timezone). `Debug`/
+  `Info` go to stdout, `Warning`/`Error` go to stderr, matching the split
+  `sc_transport/ScTransport.cpp`/`ScTransportRouter.cpp` already use for their
+  own `printf` (FYI/status) vs `fprintf(stderr, ...)` (problem) calls.
+  First consumer: `BACnetProfileExample-B-SCHUB-CPP`, which converts 3
+  `main.cpp` call sites (the DeviceCommunicationControl password-failure
+  rejection, the "could not read a local IPv4 address" fallback, and the
+  BACnet/SC hub accept-URI failure) as a proof it compiles and works. This is
+  deliberately NOT a sweep of every `printf`/`fprintf` call in that repo -
+  that is a large, separate, mechanical change with real regression risk
+  (its RX/TX log line format, startup banner, etc. are read, though not
+  matched verbatim, by `tests/sc/*.py`) - left for a later, dedicated pass.
+  Any other example in the series can adopt the facility the same way, at its
+  own pace: a `#include "CASExampleLog.h"` and converting call sites as it
+  goes.
+- **`ParseDccPasswordArg()` - `--dcc-password <string>` as a shared CLI
+  argument.** Every example that implements DM-DCC-B has, until now, hardcoded
+  its DeviceCommunicationControl password at compile time (e.g.
+  `BACnetProfileExample-B-SCHUB-CPP`'s `main.cpp` had
+  `static const char* DCC_PASSWORD = "";`) - there was no way to set or test a
+  non-empty password without rebuilding. `ParseDccPasswordArg(argc, argv,
+  defaultPassword)` follows the exact same shape as `ParsePortArg`/
+  `ParseDeviceIdArg`: scan `argv` for the flag, return the following token if
+  present, else `defaultPassword`. It differs from those two only in return
+  type - `const char*` into `argv`'s own storage, not a parsed numeric value -
+  because a password is carried through verbatim, not converted; `argv`
+  outlives `main()`, so returning a pointer into it is safe, and the contract
+  matches an example's own (now non-`static const`) `DCC_PASSWORD`-equivalent
+  global. Default `""` (no password required) preserves today's behaviour for
+  every example that does not opt in - nothing that does not call this
+  function changes. Added to `HandleHelpAndVersionArgs()`'s `--help` output,
+  in the same option-list style as `--port`/`--deviceID`, so it is
+  discoverable series-wide once adopted. First consumer:
+  `BACnetProfileExample-B-SCHUB-CPP`, which parses it alongside `--port`/
+  `--deviceID` in `main()` and renamed its own constant to `g_dccPassword`
+  (no longer `static const`, since it is now assigned at start-up) feeding the
+  existing `DeviceCommunicationControl` callback's password check - unchanged
+  otherwise.
+
+## [2.9.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- `CASExampleHelper::GetLocalLinkSpeedBitsPerSecond()` - reads the primary
+  network interface's actual negotiated link speed (Windows: `GetIfEntry()`;
+  POSIX: `/sys/class/net/<iface>/speed`), for a Network Port object's
+  `Link_Speed` property. First consumer: `BACnetProfileExample-B-BC-CPP`,
+  whose `Link_Speed` previously read back a hardcoded `0.0` because nothing
+  served it - the stack's "no callback answered" REAL-property fallback,
+  not a real "indeterminable" answer. `PROPERTY_IDENTIFIER_LINK_SPEED = 420`
+  added to `CASBACnetStackExampleConstants.h` alongside it.
+
+## [2.8.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- `PROPERTY_IDENTIFIER_LOCAL_DATE = 56` and `PROPERTY_IDENTIFIER_LOCAL_TIME = 57`
+  in `CASBACnetStackExampleConstants.h`. First consumer:
+  `BACnetProfileExample-B-BC-CPP` (chipkin/BACnetProfileExample-B-BC-CPP#7) -
+  a device claiming DM-TS-B/DM-UTC-B needs to actually serve the Device's
+  `Local_Date`/`Local_Time` (the properties a client reads back to confirm a
+  time sync took), not leave the stack's "callback declined, no default"
+  `read-access-denied` fallback in place.
+
+## [2.7.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- **RX/TX log lines now name the object/property being requested, and any
+  NPDU routing destination**, e.g.:
+  `RX 17 bytes from ... (Network Port 1) - ConfirmedRequest: ReadProperty Device 389001.Device_Address_Binding`
+  `RX 18 bytes from ... (Network Port 1) - ConfirmedRequest: ReadProperty Analog_Input 1.Present_Value DNET=1234 DADR=0A0B0C`
+  `SummarizeBacnetFrame()` decodes the shared ObjectIdentifier(tag0) +
+  PropertyIdentifier(tag1) + optional PropertyArrayIndex(tag2) layout common
+  to ReadProperty-Request, ReadProperty-ACK and WriteProperty-Request, using
+  two new lookup tables (`ObjectTypeName()`, `PropertyName()` - 65 object
+  types, 522 properties, generated from the pinned stack's own
+  `BACnetObjectType.h`/`BACnetPropertyIdentifier.h`, so the names are exactly
+  what this stack build uses, not hand-transcribed from the spec). Falls back
+  to `object-type=<N> <instance>.property=<N>` for anything outside the
+  tables. A trailing ` DNET=<n>[ DADR=<hex>]` is appended whenever the NPDU
+  carries a destination specifier, regardless of PDU type.
+  Other confirmed services (ReadPropertyMultiple, WritePropertyMultiple, ...)
+  are intentionally NOT decoded this deeply - their nested
+  read-access-specification/property-reference structure reuses the same
+  tag numbers at a different nesting level, which this generic tag-walker
+  doesn't disambiguate. Those still print with just the service name, same
+  as before.
+- **New `--xml` / `--xmlLog` command-line option (off by default).** When
+  set, every RX/TX frame prints as a full indented XML block (BVLC function,
+  NPDU version/control/routing, APDU type/invoke-id/service/object/property,
+  and always the complete raw hex of the frame as a fallback) instead of the
+  one-line summary - for deep protocol debugging sessions where the one-line
+  summary isn't enough. `CASExampleHelper::ParseXmlLogArg(argc, argv)` is the
+  only thing an example's `main()` needs to call (same pattern as
+  `ParsePortArg`/`ParseDeviceIdArg`); everything else - the flag itself, the
+  decode, the XML rendering - lives entirely in `common/`, invisible to
+  `main.cpp`.
+- New shared internals backing both of the above: a generic BACnet tag-header
+  decoder (`DecodeTagHeader`, handles extended tag numbers and all four
+  length/value/type encodings including the 1/2/4-byte extended-length
+  escapes) and one `DecodeBacnetFrame()` parse pass that both
+  `SummarizeBacnetFrame()` and the new XML dump build their output from - the
+  two views can never disagree about what a frame contains, because they're
+  reading the same `DecodedFrame` struct.
+- Both the object/property table generation and the on-disk lookup tables are
+  regenerable if the stack pin changes: `python3 -c "..."` extracts every
+  `name = value,` line from `BACnetObjectType.h`/`BACnetPropertyIdentifier.h`,
+  converts camelCase to `Title_Case`, sorts by value, and emits `{ id, "name" },`
+  rows - see this entry's originating commit for the exact script.
+
+## [2.6.0] - 2026-09-17 (from the BACnetProfileExample-B-BC-CPP line, merged in 3.0.0)
+
+### Added
+
+- **RX/TX log lines now decode and print the BACnet service**, e.g.
+  `RX 21 bytes from ... (Network Port 1) - Unconfirmed: I-Am` or
+  `RX 17 bytes from ... (Network Port 1) - ConfirmedRequest: ReadProperty`,
+  instead of stopping at the byte count and Network Port. New
+  `CASExampleHelper::SummarizeBacnetFrame()` walks the raw BVLC + NPDU + APDU
+  bytes handed to the transport callbacks (the exact wire bytes - the stack
+  decodes them again itself; this is a read-only, best-effort peek purely for
+  the console log) far enough to name the PDU type (ConfirmedRequest /
+  Unconfirmed / SimpleACK / ComplexACK / SegmentACK / Error / Reject / Abort /
+  a network-layer message) and, where applicable, the Clause 21
+  confirmed/unconfirmed service choice or reject/abort reason - falling back
+  to `service=<N>` / `reason=<N>` (matching the stack's own log wording) for
+  anything outside the lookup tables, and to `?` for a truncated/malformed
+  frame rather than misreading it. Handles the DNET/SNET/hop-count routing
+  fields in the NPDU so this doesn't mis-decode a routed frame.
+  First landed in `BACnetProfileExample-B-SS-CPP`; every sibling example
+  re-syncs to this `common/` version to pick it up.
+
 ## [2.5.0] - 2026-09-15
 
 ### Added

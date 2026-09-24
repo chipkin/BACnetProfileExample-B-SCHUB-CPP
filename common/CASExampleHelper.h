@@ -32,6 +32,7 @@
 // =============================================================================
 
 #include <stdint.h>
+#include <stddef.h>
 
 namespace CASExampleHelper {
 
@@ -40,7 +41,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "2.5.0";
+static const char* COMMON_VERSION = "3.0.0";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.
@@ -61,7 +62,20 @@ void PrintHelp(const char* appName, const char* appVersion);
 // Returns true if it printed something and the caller should exit(0); false to
 // carry on starting up. Every example in the series supports --help/--version,
 // so this lives here rather than in each main.cpp.
-bool HandleHelpAndVersionArgs(int argc, char** argv, const char* appName, const char* appVersion);
+//
+// showDccPasswordCliOption (added common/ 2.7.0, default true so every
+// EXISTING call site - one positional argument short - keeps printing the
+// "--dcc-password <string>" line exactly as before): pass false when an
+// example does NOT accept --dcc-password on the command line (e.g.
+// BACnetProfileExample-B-SCHUB-CPP as of its 2026-09 secrets-handling pass,
+// which accepts the DCC password only via its --config file - see that
+// repo's README.md "Configuration file" section for why: a CLI argument is
+// visible in process listings/shell history). This is a non-breaking,
+// default-valued addition - it does not remove ParseDccPasswordArg() (still
+// here, still usable by any example that still wants --dcc-password) or
+// change any existing 4-argument call site's behaviour.
+bool HandleHelpAndVersionArgs(int argc, char** argv, const char* appName, const char* appVersion,
+                              bool showDccPasswordCliOption = true);
 
 // Return the UDP port to use: the value after "--port" if present, else
 // defaultPort. Common to every example.
@@ -71,6 +85,17 @@ uint16_t ParsePortArg(int argc, char** argv, uint16_t defaultPort);
 // else defaultDeviceId. BACnet requires a device's instance to be configurable.
 // Common to every example.
 uint32_t ParseDeviceIdArg(int argc, char** argv, uint32_t defaultDeviceId);
+
+// Return the DeviceCommunicationControl (and ReinitializeDevice) password to
+// require: the value after "--dcc-password" if present, else defaultPassword.
+// Returns a pointer into argv (the "--dcc-password" case) or defaultPassword
+// itself (the not-given case) - same "caller does not own the returned
+// storage" contract an example already relies on for its own DCC_PASSWORD
+// constant; NOT a callback-owned buffer, so do not free() or modify it.
+// defaultPassword is conventionally "" (no password required, today's
+// behaviour for every example that does not opt in) - see main.cpp's
+// DeviceCommunicationControl callback for how the result is used.
+const char* ParseDccPasswordArg(int argc, char** argv, const char* defaultPassword);
 
 // --- Networking ------------------------------------------------------------
 // Bind the UDP socket used by the CURRENT Network Port instance (the one last
@@ -141,6 +166,14 @@ void SendIAm(uint32_t deviceInstance, uint32_t networkPortInstance);
 // true on success; on failure the buffers are left untouched.
 bool GetLocalIPv4(uint8_t ipAddress[4], uint8_t subnetMask[4]);
 
+// Get the primary network interface's negotiated link speed in bits per
+// second - the value a Network Port object's Link_Speed property reports
+// (REAL; 0.0 means "indeterminable" per Clause 12.56.15, so a caller that
+// gets false back should report 0.0, not fabricate a number). Windows reads
+// it via GetIfEntry(); POSIX reads /sys/class/net/<iface>/speed. Returns
+// true on success; on failure *bitsPerSecond is left untouched.
+bool GetLocalLinkSpeedBitsPerSecond(double* bitsPerSecond);
+
 // --- Deferred device restart (DM-RD-B) -------------------------------------
 // Only for examples whose profile includes DM-RD-B (i.e. that register a
 // ReinitializeDevice callback). Most profiles in this series do not.
@@ -197,6 +230,46 @@ void RequestRestart(RestartKind kind, uint32_t delayMilliseconds);
 // a second one on the next tick.
 bool RestartDue(RestartKind* outKind);
 
+// --- Diagnostics -------------------------------------------------------------
+// Everything here is wired up automatically by the transport callbacks in
+// CASExampleHelper.cpp - no example's main.cpp ever needs to call any of
+// these directly. They exist in the header only so ParseXmlLogArg can be
+// called once from main() at startup (the same pattern as ParsePortArg /
+// ParseDeviceIdArg), and so SummarizeBacnetFrame is available if an example
+// ever wants the one-line summary for something other than the RX/TX log.
+
+// Detects "--xml" / "--xmlLog" on the command line and turns on XML frame
+// logging (see LogBacnetFrame) for the life of the process. Off by default -
+// call this once in main(), alongside ParsePortArg/ParseDeviceIdArg:
+//
+//     CASExampleHelper::ParseXmlLogArg(argc, argv);
+void ParseXmlLogArg(int argc, char** argv);
+bool IsXmlFrameLoggingEnabled();
+
+// Decode just enough of a raw BACnet/IP datagram (the exact bytes handed to the
+// transport callbacks - BVLC header + NPDU + APDU, as sent on the wire) to
+// produce a short human-readable summary, e.g. "Unconfirmed: Who-Is",
+// "ConfirmedRequest: ReadProperty Device 389001.Object_Name", "Reject:
+// unrecognized-service". Falls back to "service=<N>" / "property=<N>"
+// (matching the stack's own log wording) for anything not in the lookup
+// tables, and to a short structural label ("Network-Layer-Message: ...",
+// "BVLC function=0x..") for non-APDU frames. A trailing " DNET=<n>
+// [DADR=<hex>]" is appended whenever the NPDU carries a destination
+// specifier (i.e. this is a routed frame). Never reads past frameLength or
+// writes past outSummaryLength - a truncated or malformed frame degrades to
+// "?" rather than being mis-parsed.
+void SummarizeBacnetFrame(const uint8_t* frame, uint16_t frameLength,
+                           char* outSummary, size_t outSummaryLength);
+
+// Prints the trailing part of an RX/TX log line for 'frame' (frameLength
+// bytes), ending in a newline: either " - <SummarizeBacnetFrame() text>", or,
+// when XML frame logging is enabled, a full indented XML block instead (see
+// ParseXmlLogArg). Called automatically by the transport callbacks after
+// they print the leading "RX/TX <n> bytes ... (Network Port N)" text (no
+// trailing newline on that part) - this is what makes the XML option "off by
+// default, and invisible to every example's main.cpp" at the same time.
+void LogBacnetFrame(const uint8_t* frame, uint16_t frameLength);
+
 // --- Keyboard input (common to every example) ------------------------------
 enum class KeyCommand {
     None,        // nothing pressed
@@ -211,9 +284,16 @@ enum class KeyCommand {
                    //       triggers it normally
     DiscoverRemote, // 'd' - send a demo SendWhoIs to discover a remote device
                     //       this example writes to or reads from
-    RouterAnnounce  // 'r' - manually (re-)send I-Am-Router-To-Network now, instead
+    RouterAnnounce, // 'r' - manually (re-)send I-Am-Router-To-Network now, instead
                      //       of waiting for the one sent at start-up, so routing
                      //       can be demonstrated on demand
+    Metrics         // 'm' - print a health/metrics snapshot (uptime, connection
+                     //       counts, rate-limit rejections, RX/TX counters, etc.)
+                     //       to stdout. Added in common/ 2.7.0 for
+                     //       BACnetProfileExample-B-SCHUB-CPP's health/metrics
+                     //       keypress (Task 2); generic (not BACnet/SC-specific)
+                     //       so any example that later tracks its own
+                     //       connections/throughput can reuse it the same way.
 };
 
 // Non-blocking: returns a pending key command, or None if nothing was pressed.

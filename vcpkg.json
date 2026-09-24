@@ -1,0 +1,10 @@
+{
+  "name": "bacnet-profile-example-b-schub-cpp",
+  "version-string": "0.1.0",
+  "description": "BACnet/SC Hub (B-SCHUB) C++ example on the CAS BACnet Stack - WebSocket+TLS transport",
+  "dependencies": [
+    "libwebsockets",
+    "openssl"
+  ],
+  "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4"
+}

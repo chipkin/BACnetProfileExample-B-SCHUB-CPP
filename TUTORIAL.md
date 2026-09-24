@@ -32,39 +32,162 @@ per-field note on each saying what to change it to. That block is the
 authoritative checklist; it is in the source rather than here so it cannot be
 skipped by someone who only reads the code.
 
-**Require a password for DeviceCommunicationControl** - set `DCC_PASSWORD` in
-`main.cpp` to a non-empty string; the `DeviceCommunicationControl` callback then
-rejects a mismatch with `password-failure` instead of accepting any request.
+**Require a password for DeviceCommunicationControl** - set the `--config`
+file's `dcc-password` key (into `main.cpp`'s `g_dccPassword`), or change that
+variable's compile-time default in `main.cpp`; the `DeviceCommunicationControl`
+callback then rejects a mismatch with `password-failure` instead of accepting
+any request. There is **no** `--dcc-password` command-line flag (removed in
+the 2026-09 secrets-handling pass - a CLI argument is visible in process
+listings/shell history; see README.md "Secrets handling"). If you set a
+non-empty `dcc-password`, restrict the config file's own permissions
+(`icacls`/`chmod 600` - see README.md) - the example warns, but does not
+refuse to start, if it looks group/world-readable. The same value also gates
+the `POST /certs/<slot>` certificate-upload HTTP endpoint - see README.md
+"Certificate upload endpoint".
+
+**Use a config file instead of repeating CLI flags** - `--config <path>` (see
+`config.h`/`config.cpp` and README.md's "Configuration file") reads
+`device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`,
+`sc-failover-uri`, `dcc-password`, `http-port`, and `sc-max-hub-connections`
+from a small `key = value` text file. It only ever supplies a DEFAULT: any of
+those flags given directly on the command line still wins (except
+`dcc-password`, which has no CLI form at all). Useful for a lab rig that
+always runs with the same non-default settings (a fixed `--sc-port`, a
+non-default `--deviceID`, ...) without retyping them every run -
+`example.conf` is a ready-to-copy template.
+
+**Check device health without a BACnet client** - press `m` for a
+uptime/connection/RX-TX snapshot on stdout, or `curl
+http://127.0.0.1:8080/health` (no auth needed; `--http-port` to change the
+port) for the same data as JSON. `POST http://127.0.0.1:<http-port>/certs/<slot>`
+uploads a replacement certificate/CSR (bearer-token auth using
+`dcc-password`, disabled entirely if that is unset) - see README.md
+"Health/metrics HTTP endpoint" and "Certificate upload endpoint" for the full
+contract, including what is deliberately NOT hardened about the upload path.
+
+**Limit how many BACnet/SC nodes the hub accepts** - `--sc-max-hub-connections
+<n>` (or the config file's `sc-max-hub-connections` key), default 4. This is
+enforced by the CAS BACnet Stack itself at the BACnet/SC protocol layer (a
+Connect-Request past the limit gets `HubFunctionPeerUpsertResult_TableFull`
+from `BACnetSCHubFunctionManager.cpp`), not merely advisory - but note the
+underlying WebSocket/TLS connection in `sc_transport/ScTransport` still
+completes; it is the BVLC-SC Connect-Request handshake immediately afterward
+that the stack rejects.
+
+**Read multiple properties in one request** - this example enables
+ReadPropertyMultiple (DS-RPM-B) alongside ReadProperty; a client can read
+several properties of the same or different objects in a single
+`ReadPropertyMultiple` PDU instead of one `ReadProperty` per property. No
+extra callback is needed on the application side: the stack resolves each
+requested property through the same `BACnetBusinessLogic::GetProperty` path
+ReadProperty already uses.
 
 ### Implement the BACnet/SC transport for real
 
-This is the biggest gap in this example, and it is documented, not hidden - see
-[README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first) for
-the full finding. `main.cpp` section **2c** registers four transport callbacks
-(`CallbackInitiateWebsocket`, `CallbackDisconnectWebsocket`,
-`CallbackSCStartListening`, `CallbackSCStopListening`) that are honest stubs:
-they log exactly what the stack asked for and decline, rather than claiming a
-connection that does not exist. To turn this into a working BACnet/SC hub, see
-[`TODO.md`](TODO.md) for the exact list, which comes down to:
+Both transport roles are real, compiled, and verified against real peers -
+see [README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first)
+for what's implemented and `sc_transport/README.md` for the wire-level
+contract. This section is the "how it works, and how to take it further" a
+reader who wants to productionize the pattern needs - not a build-it-yourself
+checklist.
 
-1. A dependency-free WebSocket **listener** (RFC 6455 framing over a TCP
-   socket) for `CallbackSCStartListening` - the role this hub-only example
-   actually needs. `common/SimpleUDP.cpp` is the existing pattern for a
-   minimal platform socket wrapper to build it on.
-2. A TLS 1.2+ layer underneath it - BACnet/SC's accept URIs are required to use
-   the `wss://` scheme, so this is not optional for a conformant hub. Every
-   practical option vendors a crypto library (OpenSSL, mbedTLS, BoringSSL,
-   wolfSSL, or a platform TLS API), which is why it was not attempted in this
-   spike - see `TODO.md` for the full reasoning.
-3. Both directions must be **asynchronous** - never block inside a callback
-   (see [Calling BACnetStack_Tick() in a real product](#calling-bacnetstack_tick-in-a-real-product)
-   below).
-4. Every real connection/status transition reported back through
-   `BACnetStack_SetBACnetSCWebSocketStatus(uri, status, errorCode)`.
-5. A certificate story: `BACnetStack_SetBACnetSCCertificateFileObjects` plus
-   `RegisterCallbackValidateBACnetSCOperationalCertificate` and
-   `RegisterCallbackGenerateBACnetSCCertificateSigningRequest` - none of which
-   this example configures.
+#### How it works
+
+`main.cpp` section **2c**'s four transport callbacks
+(`CallbackInitiateWebsocket`, `CallbackDisconnectWebsocket`,
+`CallbackSCStartListening`, `CallbackSCStopListening`) are thin forwards into
+`sc_transport/ScTransport` - a libwebsockets + OpenSSL wrapper (fetched via
+vcpkg, never vendored) that implements both BACnet/SC transport roles:
+
+- **Listener** (hub-function accept role, `StartListening()`/
+  `StopListening()`) - the role this hub-only example actually needs, and the
+  one always on.
+- **Connector** (hub/node initiate role, `Connect()`/`Disconnect()`) - off
+  unless `--sc-hub-uri` is given (this hub-only example does not need one to
+  answer a node's own requests), included so this example can also
+  demonstrate NM-SCH-B's connector side.
+
+`sc_transport/ScTransportRouter` is the stack&lt;-&gt;transport glue: it
+registers the stack's `ReceiveMessageForPort`/`SendMessageForPort` callbacks
+(the stack holds only ONE pointer per callback slot, so this must happen
+*after* `CASExampleHelper::RegisterCommonCallbacks()`) and dispatches between
+BACnet/IP (its own UDP socket) and BACnet/SC (`ScTransport`) by
+`networkPortInstance`, alternating which one it polls first each tick so
+neither starves the other.
+
+Full wire-level detail - the subprotocol string, the accepted-peer
+connection-string convention, the WebSocket status enum, the exact
+`SendMessageForPort` return-value contract, the 1497-byte ingress ceiling -
+lives in **[`sc_transport/README.md`](sc_transport/README.md)**; this section
+does not repeat it.
+
+#### Certificates: what this example does, and what a real deployment needs instead
+
+`scripts/generate-test-certs.cmake` generates a throwaway **lab CA**, signs a
+hub certificate and a test node certificate with it, and writes them under
+`certs/` (gitignored). This is explicitly **lab testing only** - every doc
+comment and README section touching it says so. Turning this into a real
+deployment's certificate story needs, at minimum:
+
+1. **A real CA**, not a self-signed one this script mints on your machine.
+   BACnet/SC's trust model is: the hub and every node it accepts must chain to
+   a CA both sides trust. In a real deployment that is either your
+   organization's own internal CA (a private PKI most building-automation
+   integrators already run for other purposes) or, for a hub reachable from
+   the public Internet, a certificate from a CA your BACnet/SC nodes are
+   configured to trust specifically for this purpose - **not** a public web
+   CA a browser trusts by default, since that would let any certificate that
+   CA ever issues (for any website) pass this hub's `ssl_ca_filepath` check
+   unless you also scope the accepted CA bundle down to just your own
+   BACnet/SC issuing CA.
+2. **A certificate rotation strategy.** This example's `certs/hub.crt` is
+   generated once and read fresh off disk on every `AtomicReadFile` request
+   and by `ScTransport` at listen/connect time - so replacing the files
+   under `--sc-cert-dir` and restarting the process (or, for a production
+   implementation, re-reading them on a `BACnetStack_SetBACnetSCWebSocketStatus`-
+   driven reconnect rather than requiring a restart) is enough to rotate.
+   What this example does **not** implement: automatic renewal before
+   expiry, a CSR-based rotation flow (see point 4 below - the CSR-generation
+   callback has no call site in this stack build, so there is no hook to wire
+   one up through the stack today), or alerting when a certificate is close
+   to expiring. `scripts/generate-test-certs.cmake`'s lab CA is valid 10
+   years and the hub/node leaf certs a shorter, script-defined period - check
+   the script for the exact values before relying on them for anything but a
+   lab.
+3. **A hostname/identity policy decision.** `ScTransport::Connect()` passes
+   `LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK` when dialing out - deliberately,
+   not by oversight. BACnet/SC certificates identify *BACnet/SC devices*
+   (via the UUID this example sets with `BACnetStack_SetBACnetSCUuid`), not
+   DNS hostnames, so there is no meaningful hostname to check a peer's
+   certificate against the way a browser checks a website's. The CA chain is
+   still fully verified either way - what is skipped is *only* the
+   hostname-matches-SAN step, which does not apply to this transport's trust
+   model. If your deployment wants to bind a specific accepted peer identity
+   more tightly than "signed by a trusted CA" (e.g. pin a specific peer
+   UUID), that policy has to be layered on top of `ScTransport` today - the
+   stack does not expose a UUID-in-SAN binding check, and (point 4) has no
+   certificate-validation callback at all.
+4. **Certificate validation is yours, not the stack's.** The stack has no
+   TLS path and no certificate-validation or CSR-generation callback. The two
+   it used to declare were never called and were removed (stack IFC-039,
+   #988). All validation happens in `ScTransport`'s TLS contexts, via
+   OpenSSL. See `sc_transport/README.md`'s certificate-policy section for
+   what that gives you (CA-chain validation only).
+
+#### Extending the pattern
+
+- Both directions are already **asynchronous** - `ScTransport::Service()`
+  pumps libwebsockets non-blockingly and only queues results; the main loop
+  drains those queues into `BACnetStack_SetBACnetSCWebSocketStatus` afterward,
+  never from inside an lws callback (see [Calling BACnetStack_Tick() in a real
+  product](#calling-bacnetstack_tick-in-a-real-product) below for why that
+  matters).
+- Every real connection/status transition is already reported back through
+  `BACnetStack_SetBACnetSCWebSocketStatus(uri, status, errorCode)` -
+  `sc_transport/ScTransportRouter::DrainStatusEvents()` is where that happens.
+- `BACnetStack_SetBACnetSCCertificateFileObjects` plus the 4 File objects
+  (`main.cpp` section 2d) are already configured and read-verified over
+  AtomicReadFile.
 
 ### Add a second object instance
 
@@ -119,7 +242,7 @@ to miss and the one BTL will fail you for.
 // 1) a new instance number (in section 1).
 //    Naming: a second object of a type is "<Colour> 2" - so Analog Input 2 is
 //    "Bronze 2", NOT a new colour. Each object TYPE owns one colour series-wide
-//    (Network Port 2 in this example, "Vermilion 2", already follows this rule).
+//    (Network Port 2 in this example, "BACnet SC", already follows this rule).
 static const uint32_t ANALOG_INPUT_2_INSTANCE = 2;   // "Bronze 2"
 static float g_analogInput2Value = 23.1f;            // its live value
 
@@ -219,9 +342,13 @@ rather than against "it looked fine in the explorer":
    value (1) on DeviceCommunicationControl (`service-request-denied`).
 5. For BACnet/SC specifically: confirm the SC configuration calls all return
    success at start-up and that the console prints the
-   `CallbackSCStartListening` line once. An actual SC node connecting is
-   **not** verifiable without a real transport implementation - do not claim
-   it works without one.
+   `CallbackSCStartListening` line once, then confirm the transport itself
+   with `tests/sc/hub_listener_test.py` (listener) and, if you enabled it,
+   `tests/sc/fake_hub_server.py` (connector) - see [README.md "Over
+   BACnet/SC"](README.md#over-bacnetsc-verified-against-a-real-peer). Both
+   transport roles are real in this example; an actual SC node/hub connecting
+   is verifiable, and should be verified, not assumed from the configuration
+   calls succeeding alone.
 
 ### Keeping the PICS honest
 
@@ -250,7 +377,7 @@ not in `accepted`, comes out as a ⚠ row - that is a defect, not a feature.
 |---------|-------------|
 | On start-up the app prints a wall of red `Error:` lines but the device works | **Expected — this is not your bug.** Two benign sources, both from the stack's own debug logging: (1) the device receives its **own** broadcast I-Am and logs a decode cascade (*"Services is not supported service=[0]"* … *"Failed to process the incoming NPDU"*) — any BACnet/IP device that listens for broadcasts hears itself; (2) a one-time *"UUID has not been set..."* notice can appear from the stack's own BACnet/SC datalink bring-up before `BACnetStack_SetBACnetSCUuid` runs. On a healthy start-up roughly half the output is these lines. |
 | Console prints a line every time `BACnetStack_Tick()` runs about listening for WebSocket connections | Fixed by design: `CallbackSCStartListening` only logs **once** (a static `warned` flag), even though the stack retries it every `Tick()` while it keeps returning `false`. If you see it repeating, check you're running the version in this repo. |
-| No BACnet/SC node ever connects | Expected - the WebSocket/TLS transport is a documented stub in this build. See [README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first) and [`TODO.md`](TODO.md). |
+| No BACnet/SC node ever connects | The transport is real now, so this is worth debugging rather than assuming. Check: does `certs/` exist (`cmake --build build --target test-certs` if not - the console prints this exact command when certs are missing)? Does the peer trust the SAME CA (`certs/ca.crt`) this hub was generated with? Is the peer using the `hub.bsc.bacnet.org` subprotocol and TLS 1.3? `tests/sc/hub_listener_test.py` isolates each of these. See [README.md "Over BACnet/SC"](README.md#over-bacnetsc-verified-against-a-real-peer) and `sc_transport/README.md`. |
 | CMake error: *"CAS BACnet Stack adapter not found under: ..."* | Submodules not initialized. Run `git submodule update --init --recursive` (or pass `-D CAS_STACK_DIR=...`). |
 | `CASBACnetStackDLL.h: No such file or directory` | Same - submodules not checked out. |
 | Windows: *"No CMAKE_CXX_COMPILER could be found"* | Install Visual Studio with the "Desktop development with C++" workload, then re-run from a fresh terminal. |

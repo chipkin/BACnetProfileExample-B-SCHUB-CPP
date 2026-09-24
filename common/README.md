@@ -22,7 +22,8 @@ example repository.
 
 | File | Purpose |
 |------|---------|
-| `CASExampleHelper.h` / `.cpp` | UDP socket on the BACnet/IP port + the transport/time callbacks; version/help printing; `--port` / `--deviceID` parsing; keyboard commands (h/q/up/down); local-IPv4 / broadcast helpers; broadcast I-Am on start-up. |
+| `CASExampleHelper.h` / `.cpp` | UDP socket on the BACnet/IP port + the transport/time callbacks; version/help printing; `--port` / `--deviceID` / `--dcc-password` parsing; RX/TX frame summarizing and optional `--xml` frame dump; keyboard commands (h/q/up/down); local-IPv4 / broadcast / link-speed helpers; broadcast I-Am on start-up. |
+| `CASExampleLog.h` / `.cpp` | A minimal, dependency-free structured logging facility (`Debug`/`Info`/`Warning`/`Error`, timestamped, runtime-configurable minimum level) - a drop-in replacement for bare `printf`/`fprintf(stderr, ...)` calls. |
 | `SimpleUDP.h` / `.cpp` | A tiny cross-platform UDP socket wrapper (Winsock on Windows, BSD sockets on Linux/macOS). |
 | `CASBACnetStackExampleConstants.h` | A self-contained, series-wide copy of the BACnet enumeration values the examples use (each section names the CAS BACnet Stack header that defines the full enumeration). Identical in every example — the union of what the series needs. |
 | `CHANGELOG.md` | The changelog of this folder itself (see Versioning above). |
