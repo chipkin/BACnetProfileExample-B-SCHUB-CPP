@@ -165,17 +165,14 @@ deployment's certificate story needs, at minimum:
    model. If your deployment wants to bind a specific accepted peer identity
    more tightly than "signed by a trusted CA" (e.g. pin a specific peer
    UUID), that policy has to be layered on top of `ScTransport` today - the
-   stack does not expose a UUID-in-SAN binding check, and (point 4) its own
-   validate-certificate callback is never called.
-4. **A working validate-certificate hook, if you need one.** This example
-   registers `CallbackValidateBACnetSCOperationalCertificate` and
-   `CallbackGenerateBACnetSCCertificateSigningRequest` (`main.cpp` section
-   2d) for documentation/completeness, but **neither is ever called** by
-   this pinned stack build - confirmed by reading the stack's own source, not
-   assumed. See [`TODO.md`](TODO.md) for the stack-issue candidate and
-   `sc_transport/README.md`'s certificate-policy section for exactly what
-   security property this leaves you with (CA-chain validation only,
-   performed by OpenSSL at the TLS layer - not this callback).
+   stack does not expose a UUID-in-SAN binding check, and (point 4) has no
+   certificate-validation callback at all.
+4. **Certificate validation is yours, not the stack's.** The stack has no
+   TLS path and no certificate-validation or CSR-generation callback. The two
+   it used to declare were never called and were removed (stack IFC-039,
+   #988). All validation happens in `ScTransport`'s TLS contexts, via
+   OpenSSL. See `sc_transport/README.md`'s certificate-policy section for
+   what that gives you (CA-chain validation only).
 
 #### Extending the pattern
 

@@ -125,6 +125,7 @@ set(SC_TRANSPORT_SOURCES
 add_executable(BACnetExampleBSCHUB
     main.cpp
     config.cpp
+    cert_tool.cpp
     ${SC_TRANSPORT_SOURCES}
     ${COMMON_SOURCES})
 

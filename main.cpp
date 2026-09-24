@@ -103,12 +103,11 @@
 // private key (certs/hub.key has no File object at all). Verified over
 // BACnet/IP with AtomicReadFile: byte-for-byte against certs/hub.crt, and the
 // private key confirmed unreachable through any File object instance.
-// RegisterCallbackValidateBACnetSCOperationalCertificate and
-// RegisterCallbackGenerateBACnetSCCertificateSigningRequest are also
-// registered (section 2d) for documentation/completeness only - both have zero
-// call sites in this stack build (see that section's comment) - a known,
-// documented limitation of the pinned stack build, not a bug in this example;
-// see TODO.md.
+// Certificate validation is entirely this example's job: the stack has no TLS
+// path of its own and no certificate-validation callback (the two it once
+// declared were never called and were removed - stack IFC-039). The CA-chain
+// check in sc_transport/ScTransport's TLS contexts is the device's certificate
+// policy.
 //
 // This device's certificate policy is CA-chain validation only, performed by
 // the TLS library (OpenSSL, via libwebsockets) at handshake time: no CRL, no
@@ -130,6 +129,7 @@
 #include "sc_transport/ScTransportRouter.h"
 #include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
+#include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
 
 // Unlike sc_transport/ScTransport.h (which forward-declares lws types
 // specifically to avoid this), main.cpp already needs the real
@@ -158,7 +158,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.14";
+static const char* APP_VERSION = "1.1.15";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -1063,52 +1063,6 @@ bool CallbackReadFile(const uint32_t deviceInstance, const uint32_t fileInstance
     return true;
 }
 
-// Registered for documentation/completeness only (plan fact 10 / stack item S6) -
-// NOT WIRED UP in this stack build: BACnetStack_RegisterCallbackValidateBACnetSCOperationalCertificate's
-// own doc comment says the stack stores this pointer and never calls it (verified: no
-// call site anywhere in submodules/cas-bacnet-stack/source other than the
-// registration function itself). Registering it does NOT validate any certificate,
-// and does NOT provide any real security control - this device's actual (and only)
-// cert policy is the CA-chain check ScTransport's TLS contexts perform (see
-// ScTransport.h). This function's body is unreachable in this stack build.
-bool CallbackValidateBACnetSCOperationalCertificate(
-        const uint32_t deviceInstance, const uint32_t networkPortInstance,
-        const uint8_t* operationalCertificateFileData, const uint32_t operationalCertificateFileDataLength,
-        const uint8_t* issuerCertificateFile1Data, const uint32_t issuerCertificateFile1DataLength,
-        const uint8_t* issuerCertificateFile2Data, const uint32_t issuerCertificateFile2DataLength,
-        const CASBACnetTime timestamp, uint32_t* failingPropertyIdentifier,
-        char* details, uint32_t* detailsLength, const uint32_t maxDetailsLength) {
-    (void)deviceInstance; (void)networkPortInstance;
-    (void)operationalCertificateFileData; (void)operationalCertificateFileDataLength;
-    (void)issuerCertificateFile1Data; (void)issuerCertificateFile1DataLength;
-    (void)issuerCertificateFile2Data; (void)issuerCertificateFile2DataLength;
-    (void)timestamp; (void)failingPropertyIdentifier;
-    *detailsLength = 0; // unreachable - see this function's own comment above
-    (void)details; (void)maxDetailsLength;
-    return true;
-}
-
-// Registered for documentation/completeness only - same "NOT WIRED UP" situation
-// as CallbackValidateBACnetSCOperationalCertificate above (plan fact 10 / stack
-// item S6): BACnetStack_RegisterCallbackGenerateBACnetSCCertificateSigningRequest's
-// own doc comment says there is no call site, in particular no WriteProperty path
-// reaches it. This device does not implement WriteProperty at all (see the file
-// header), so even if the stack wired this callback up later, nothing in this
-// device would trigger it today. Unreachable in this stack build.
-bool CallbackGenerateBACnetSCCertificateSigningRequest(
-        const uint32_t deviceInstance, const uint32_t networkPortInstance,
-        const uint8_t* activeOperationalCertificateFileData, const uint32_t activeOperationalCertificateFileDataLength,
-        uint8_t* generatedCsrFileData, uint32_t* generatedCsrFileDataLength, const uint32_t maxGeneratedCsrFileDataLength,
-        char* details, uint32_t* detailsLength, const uint32_t maxDetailsLength) {
-    (void)deviceInstance; (void)networkPortInstance;
-    (void)activeOperationalCertificateFileData; (void)activeOperationalCertificateFileDataLength;
-    (void)generatedCsrFileData; (void)maxGeneratedCsrFileDataLength;
-    (void)details; (void)maxDetailsLength;
-    *generatedCsrFileDataLength = 0; // unreachable - see this function's own comment above
-    *detailsLength = 0;
-    return false;
-}
-
 // -----------------------------------------------------------------------------
 // 2e. Health/metrics (Task 2's 'm' keypress and Task 3's HTTP endpoint) and
 // the certificate-upload slot table (Task 4's HTTP endpoint). Both reuse
@@ -1376,6 +1330,42 @@ static std::string ParseStringArg(const int argc, char** argv, const char* flagN
     return std::string();
 }
 
+// Parse "<flagName> [n]": returns true if the flag is present. *outCount is
+// the number after it, or defaultCount when the next argument is missing or
+// is another flag (so "--generate-certs" alone means the default). A value
+// that is present but not a positive integer is an error (*outValid = false).
+static bool ParseOptionalCountArg(const int argc, char** argv, const char* flagName,
+                                  const unsigned defaultCount, unsigned* outCount, bool* outValid) {
+    *outValid = true;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], flagName) != 0) {
+            continue;
+        }
+        *outCount = defaultCount;
+        if (i + 1 < argc && argv[i + 1][0] != '-') {
+            char* end = NULL;
+            const unsigned long n = strtoul(argv[i + 1], &end, 10);
+            if (end == argv[i + 1] || *end != '\0' || n == 0 || n > 999) {
+                fprintf(stderr, "Error: %s expects a count from 1 to 999, got \"%s\".\n", flagName, argv[i + 1]);
+                *outValid = false;
+            } else {
+                *outCount = (unsigned)n;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool HasFlag(const int argc, char** argv, const char* flagName) {
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], flagName) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int main(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1433,6 +1423,24 @@ int main(int argc, char** argv) {
                 printf("                      stack). Distinct from --sc-max-hub-connections, which bounds\n");
                 printf("                      CONCURRENT connections, not the rate of new attempts. 0 = no\n");
                 printf("                      limit. Default 10.\n");
+                printf("\nLab certificates (LAB TESTING ONLY - written to --sc-cert-dir, then exits):\n");
+                printf("  --generate-certs [n]\n");
+                printf("                      Create a fresh set: a lab CA (ca.crt/ca.key), this hub's\n");
+                printf("                      certificate (hub.crt/hub.key/hub.csr) and n labeled client\n");
+                printf("                      certificates for the devices that connect to the hub\n");
+                printf("                      (client-01.crt/.key, ...). Default n = 3. Refuses to replace\n");
+                printf("                      an existing CA unless --force is also given.\n");
+                printf("  --add-client-certs [n]\n");
+                printf("                      Sign n more client certificates (default 1) with the CA\n");
+                printf("                      already in --sc-cert-dir. Numbering continues after the\n");
+                printf("                      highest existing label, and the running hub trusts them\n");
+                printf("                      without a restart.\n");
+                printf("  --cert-label <prefix>\n");
+                printf("                      Label for client certificates. Default \"client\", giving\n");
+                printf("                      client-01, client-02, ... Each certificate's Common Name is\n");
+                printf("                      \"Chipkin Example B-SCHUB <label>-NN\". Every certificate is\n");
+                printf("                      also listed in <sc-cert-dir>/certificates.txt.\n");
+                printf("  --force             With --generate-certs: delete the old set first.\n");
                 printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
                 printf("  --http-port <n>     TCP port for the read-only GET /health, GET /metrics and\n");
                 printf("                      POST /certs/<slot> HTTP endpoints. Default 8080.\n");
@@ -1493,6 +1501,37 @@ int main(int argc, char** argv) {
     }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
+
+    // --- Lab certificate generation (--generate-certs / --add-client-certs) --
+    // A one-shot tool mode: write the certificates, then exit without starting
+    // the device. See cert_tool.h.
+    {
+        unsigned generateCount = 0;
+        unsigned addCount = 0;
+        bool generateValid = true;
+        bool addValid = true;
+        const bool generate = ParseOptionalCountArg(argc, argv, "--generate-certs",
+            CertTool::DEFAULT_GENERATE_CLIENT_COUNT, &generateCount, &generateValid);
+        const bool add = ParseOptionalCountArg(argc, argv, "--add-client-certs",
+            CertTool::DEFAULT_ADD_CLIENT_COUNT, &addCount, &addValid);
+        if (generate || add) {
+            if (!generateValid || !addValid) {
+                return 1;
+            }
+            if (generate && add) {
+                fprintf(stderr, "Error: use --generate-certs or --add-client-certs, not both.\n");
+                return 1;
+            }
+            std::string label = ParseStringArg(argc, argv, "--cert-label");
+            if (label.empty()) {
+                label = CertTool::DEFAULT_CLIENT_LABEL;
+            }
+            const bool ok = generate
+                ? CertTool::GenerateCertificateSet(g_scCertDir, generateCount, label, HasFlag(argc, argv, "--force"))
+                : CertTool::AddClientCertificates(g_scCertDir, addCount, label);
+            return ok ? 0 : 1;
+        }
+    }
     g_scHubUri = ParseStringArg(argc, argv, "--sc-hub-uri");
     if (g_scHubUri.empty() && fileConfig.hasScHubUri) {
         g_scHubUri = fileConfig.scHubUri;
@@ -1587,11 +1626,6 @@ int main(int argc, char** argv) {
     // File objects (phase 4) - AtomicReadFile for the 4 certificate/CSR File
     // objects, see section 2d above.
     BACnetStack_RegisterCallbackReadFile(CallbackReadFile);
-    // Registered for documentation/completeness only - NOT WIRED UP in this stack
-    // build (no WriteFile registered either: this device stays read-only). See
-    // section 2d's comment on each function above.
-    BACnetStack_RegisterCallbackValidateBACnetSCOperationalCertificate(CallbackValidateBACnetSCOperationalCertificate);
-    BACnetStack_RegisterCallbackGenerateBACnetSCCertificateSigningRequest(CallbackGenerateBACnetSCCertificateSigningRequest);
 
     // --- Create the device --------------------------------------------------
     if (!BACnetStack_AddDevice(g_deviceInstance)) {

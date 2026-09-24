@@ -14,7 +14,19 @@ documented limitation of the pinned CAS BACnet Stack build (not a bug in this
 example - listed first) or a genuinely open item for the user to decide on
 (listed second).
 
-## Fixed since the last pin (2026-09-21, `abd4cee1` -> `53739153`)
+## Fixed since the last pin (2026-09-24, `53739153` -> `1fbf75d5`)
+
+Stack pin: `issues/runbook` @ `1fbf75d5` (reports 6.0.23).
+
+- **Certificate callbacks with zero call sites (old item 1, #2227 / #988)** -
+  **resolved by removal.** The stack deleted
+  `RegisterCallbackValidateBACnetSCOperationalCertificate` and
+  `RegisterCallbackGenerateBACnetSCCertificateSigningRequest` (IFC-039/040):
+  they were never called, and certificate validation is the host's job.
+  This example no longer registers them. Its certificate policy is unchanged:
+  the CA-chain check in `sc_transport/ScTransport`'s TLS contexts.
+
+## Fixed on the pin before (2026-09-21, `abd4cee1` -> `53739153`)
 
 Verified via `git fetch origin issues/runbook` + `git show 2021e29f` (the real
 fix commit; `53739153` is a ledger-only follow-up, no further code changes) in
@@ -48,17 +60,7 @@ above for what changed) - not assumed. Each one is called out in
 `README.md`/`sc_transport/README.md` where relevant so a reader does not
 mistake the behaviour for a bug in this example.
 
-1. **Certificate validation and CSR-generation callbacks have zero call
-   sites.** `RegisterCallbackValidateBACnetSCOperationalCertificate` and
-   `RegisterCallbackGenerateBACnetSCCertificateSigningRequest` are registered
-   in `main.cpp` (section 2d) for documentation/completeness only - grep
-   confirms neither is called anywhere in the stack's own source, only from
-   the registration function itself. This device's actual (and only)
-   certificate policy is the CA-chain check `sc_transport/ScTransport`'s TLS
-   contexts perform. **Filed:**
-   [chipkin/cas-bacnet-stack#2227](https://github.com/chipkin/cas-bacnet-stack/issues/2227) -
-   closed as a **duplicate**; the real wiring is tracked upstream under their
-   internal #988, still **not fixed**. The gap described above is unchanged.
+1. *(Resolved on `1fbf75d5` - see "Fixed since the last pin" above.)*
 2. **No hostname checking on the connector.** `ScTransport::Connect()` passes
    `LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK` - a deliberate choice, not an
    oversight (BACnet/SC certificates identify devices, not DNS hosts; see

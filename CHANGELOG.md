@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.15] - unreleased
+
+### Added
+
+- **Built-in lab certificate generator.** `--generate-certs [n]` writes a
+  fresh lab CA (`ca.crt`/`ca.key`), this hub's certificate
+  (`hub.crt`/`hub.key`/`hub.csr`) and `n` labeled client certificates
+  (default 3) to `--sc-cert-dir`, then exits. `--add-client-certs [n]` signs
+  `n` more clients (default 1) with the CA that's already there, continuing
+  the numbering, so a running hub trusts them without a restart.
+  `--cert-label <prefix>` names the clients (default `client`: `client-01`,
+  `client-02`, ...). Each certificate carries its label in its file name and
+  in its subject CN (`Chipkin Example B-SCHUB client-01`), and
+  `certificates.txt` lists every one with its serial, expiry and SHA-256
+  fingerprint. `--generate-certs` won't replace an existing CA without
+  `--force`. It uses the OpenSSL already linked for the SC transport, so no
+  `openssl` binary is needed. Same profile as
+  `scripts/generate-test-certs.cmake` (ECDSA P-256, SHA-256).
+- `tests/sc/hub_listener_test.py --client-cert <label>` picks the client
+  certificate to connect with. The default is `node` if present, otherwise
+  `client-01`.
+
+Verified live: `openssl verify` passes for every generated certificate. The
+hub, run on a generated set, passed `hub_listener_test.py` (7/7) with
+`client-01`, `client-02`, and with a `late-01` certificate added by
+`--add-client-certs` while the hub was running. A client certificate from a
+different CA was refused at the TLS handshake. `file_object_test.py` (V6)
+and `rpm_test.py` pass.
+
+### Changed
+
+- **CAS BACnet Stack pinned to `issues/runbook` @ `1fbf75d5` (6.0.23)**,
+  from `53739153`.
+- The stack removed `BACnetStack_RegisterCallbackValidateBACnetSCOperationalCertificate`
+  and `BACnetStack_RegisterCallbackGenerateBACnetSCCertificateSigningRequest`
+  (IFC-039/040): they were never called. This example's registrations and
+  their placeholder callbacks are deleted, and TODO.md item 1 is resolved.
+  Certificate validation stays where it always really was: the CA-chain
+  check in `ScTransport`'s TLS contexts.
+- APP_VERSION bumped 1.1.14 -> 1.1.15.
+
 ## [1.1.14] - unreleased
 
 ### Changed

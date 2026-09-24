@@ -130,8 +130,7 @@ node can connect to this hub, and this device can dial out to a real
 BACnet/SC hub, both verified against real peers. See
 [README.md "BACnet/SC support"](../README.md#bacnetsc-support-read-this-first)
 and [`../TODO.md`](../TODO.md) for the remaining, genuinely open items
-(certificate validation callbacks not wired up in this stack build, no
-hostname checking on the connector, no CRL support).
+(no hostname checking on the connector, no CRL support).
 
 ## 10. Character sets supported
 

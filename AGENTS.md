@@ -20,8 +20,7 @@ and [TODO.md](TODO.md) before touching anything SC-related: **both** the
 BACnet/SC *protocol* configuration and the WebSocket/TLS *transport*
 underneath it are real and verified against real peers - there is no
 remaining transport stub in this repository. `TODO.md` still lists genuine,
-documented limitations (certificate-validation callbacks not wired up in this
-stack build, no hostname check by design, no CRL support, the 1497-byte SC
+documented limitations (no hostname check by design, no CRL support, the 1497-byte SC
 ingress ceiling); read it before assuming a gap is a bug you should fix here
 versus a known limitation to work around or report upstream.
 
@@ -39,6 +38,12 @@ This repository is self-contained:
   enum, send/receive semantics) before changing anything in this folder -
   several of its rules come from reading the stack's source, not its manual,
   and are easy to get subtly wrong again.
+- `cert_tool.{h,cpp}` - `--generate-certs [n]` / `--add-client-certs [n]` /
+  `--cert-label`: the built-in lab certificate generator (a CA, the hub, and
+  labeled client certificates, plus `certificates.txt`). It runs before the
+  stack starts and exits. `--add-client-certs` must keep signing with the
+  existing `ca.crt`/`ca.key`, never a new CA, or running hubs stop trusting
+  the new clients.
 - `scripts/generate-test-certs.cmake` - generates the lab-only self-signed
   certificate set under `certs/` (gitignored) `sc_transport/` and the File
   objects (`main.cpp` section 2d) both read.

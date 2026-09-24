@@ -18,9 +18,9 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.8**, built and verified
-> against **CAS BACnet Stack 6.0.21** (`issues/runbook` @ `53739153`), at
-> **Protocol_Revision 24**, with the vendored `common/` helper at **v2.7.0**.
+> **Versions:** this document describes **example v1.1.15**, built and verified
+> against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
+> **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
 > line, trust the program and check `CHANGELOG.md`. (This line is manually
 > maintained and has drifted from the real version before - see `CHANGELOG.md`
@@ -86,6 +86,8 @@ objects (see the device tree below) for the certificate/CSR content.
   (Network Port 1) and BACnet/SC (Network Port 2, via `ScTransport`),
   alternating which datalink is polled first each tick so neither one can
   starve the other while both are busy.
+- `cert_tool.{h,cpp}` - the `--generate-certs` / `--add-client-certs`
+  certificate generator (OpenSSL, already linked for the SC transport).
 - `scripts/generate-test-certs.cmake` - generates a throwaway lab CA + hub +
   node certificate set under `certs/` (gitignored; **lab testing only** - see
   [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real) for
@@ -333,6 +335,42 @@ lab CA + hub + node certificate set under `certs/` (gitignored - **lab testing
 only**, see [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real)
 for what a production certificate story needs):
 
+The example can generate them itself (no separate `openssl` needed):
+
+```bash
+./build/BACnetExampleBSCHUB --generate-certs        # CA + hub + 3 client certificates
+./build/BACnetExampleBSCHUB --generate-certs 10     # ... or any number of clients
+```
+
+This writes to `--sc-cert-dir` (default `./certs`) and exits:
+
+| File | What it is |
+|---|---|
+| `ca.crt` / `ca.key` | The lab CA. Every connecting device needs `ca.crt`. Keep `ca.key` private: it is only used to sign more clients. |
+| `hub.crt` / `hub.key` / `hub.csr` | This hub's own certificate (EKU serverAuth+clientAuth, SAN `localhost`, `127.0.0.1` and this machine's hostname), plus the CSR served by Network Port 2's Certificate_Signing_Request_File object. |
+| `client-01.crt` / `client-01.key`, ... | One labeled certificate (EKU clientAuth) per device that connects to the hub. |
+| `certificates.txt` | One line per certificate: label, files, serial, expiry and SHA-256 fingerprint. |
+
+Every certificate is labeled in its file name and in its subject Common Name
+(`Chipkin Example B-SCHUB client-01`), so you can tell which device is which
+in a TLS capture or the hub's log. To add devices later, sign more clients
+with the **existing** CA. Numbering continues where it left off, and a hub
+that's already running trusts them straight away (same `ca.crt`, no
+restart):
+
+```bash
+./build/BACnetExampleBSCHUB --add-client-certs 2                    # client-04, client-05
+./build/BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # ahu-01 .. ahu-03
+```
+
+`--generate-certs` refuses to replace an existing CA, because that would
+invalidate every certificate already handed out. Add `--force` to start over
+(it deletes the old set first). All of this is **lab testing only**: ECDSA
+P-256, CA valid 10 years, device certificates 825 days.
+
+The older script still works and produces the `node.crt` client that
+`tests/sc/hub_listener_test.py` used before `--client-cert` existed:
+
 ```bash
 cmake --build build --target test-certs
 # or directly:
@@ -353,9 +391,9 @@ Expected output (with `certs/` already generated - see [Generate lab test
 certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.0
-CAS BACnet Stack version: 6.0.21.0
-Common helper (common/) version: 2.6.0
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.15
+CAS BACnet Stack version: 6.0.23.0
+Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
 TX 21 bytes to 192.168.3.255:47808 (broadcast) (Network Port 1)
 FYI: Device 389022 ("Chipkin Example B-SCHUB") ready. Vendor ID 389. Press 'h' for help.
@@ -423,6 +461,10 @@ firewall. To use a different port, pass `--port` (see below).
 | `--http-port <n>` | `8080` | TCP port for `GET /health`, `GET /metrics` and `POST /certs/<slot>` - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) and [Certificate upload endpoint](#certificate-upload-endpoint) below. |
 | `--http-bind <addr>` | `127.0.0.1` | Interface the HTTP endpoints above bind to. Loopback-only by default; see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) before setting this to anything else - this listener has no TLS and `GET /health`/`GET /metrics` have no authentication at all. |
 | `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `http-port`, `http-bind`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file - **except `dcc-password`, which has no CLI flag at all** (see [Secrets handling](#secrets-handling)). |
+| `--generate-certs [n]` | `3` | Write a fresh lab CA, hub certificate and `n` labeled client certificates to `--sc-cert-dir`, then exit. See [Generate lab test certificates](#generate-lab-test-certificates). |
+| `--add-client-certs [n]` | `1` | Sign `n` more client certificates with the CA already in `--sc-cert-dir`, then exit. |
+| `--cert-label <prefix>` | `client` | Label for client certificates (`<prefix>-01`, `<prefix>-02`, ...). |
+| `--force` | - | With `--generate-certs`: replace an existing certificate set. |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
 
