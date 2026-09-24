@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.18] - unreleased
+
+### Added
+
+- **`bacnetsc.config` in every `clients/<label>/` folder**: the BACnet/SC
+  connection file the Chipkin BACnet Explorer imports. It holds role
+  `device`, `primaryHubURI`, an empty `failoverHubURI`, the folder's
+  `operational-certificate.pem` / `private-key.pem` / `issuer-certificate.pem`,
+  and `ValidateHubCertificate` = `true`. The hub URI defaults to this
+  computer's IPv4 address and `--sc-port`. The new `--cert-hub-uri <uri>`
+  option overrides it for a hub on another address or a DNS name. Both
+  readmes describe the file and how to import it.
+- APP_VERSION bumped 1.1.17 -> 1.1.18.
+
+Verified: the generated file matches the Explorer sample line for line
+except for the hub address, which `--cert-hub-uri` sets. It is well-formed
+XML, and the hub still passes `hub_listener_test.py` with a client from
+the new set.
+
 ## [1.1.17] - unreleased
 
 ### Changed

@@ -158,7 +158,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.17";
+static const char* APP_VERSION = "1.1.18";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -1457,6 +1457,10 @@ int main(int argc, char** argv) {
                 printf("                      client-01, client-02, ... Each certificate's Common Name is\n");
                 printf("                      \"Chipkin Example B-SCHUB <label>-NN\". Every certificate is\n");
                 printf("                      also listed in <sc-cert-dir>/certificates.txt.\n");
+                printf("  --cert-hub-uri <wss://host:port/>\n");
+                printf("                      Primary hub URI written into each client's bacnetsc.config\n");
+                printf("                      (Chipkin BACnet Explorer import file). Default: this\n");
+                printf("                      machine's IPv4 address and --sc-port.\n");
                 printf("  --force             With --generate-certs: delete the old set first.\n");
                 printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
                 printf("  --http-port <n>     TCP port for the read-only GET /health, GET /metrics and\n");
@@ -1543,9 +1547,24 @@ int main(int argc, char** argv) {
             if (label.empty()) {
                 label = CertTool::DEFAULT_CLIENT_LABEL;
             }
+            // The hub URI written into each client's bacnetsc.config: this
+            // machine's IPv4 address and --sc-port, unless --cert-hub-uri says
+            // otherwise (a DNS name, another interface, a NAT address...).
+            std::string hubUri = ParseStringArg(argc, argv, "--cert-hub-uri");
+            if (hubUri.empty()) {
+                uint8_t ip[4] = {127, 0, 0, 1};
+                uint8_t mask[4] = {0, 0, 0, 0};
+                if (!CASExampleHelper::GetLocalIPv4(ip, mask)) {
+                    ip[0] = 127; ip[1] = 0; ip[2] = 0; ip[3] = 1;
+                }
+                char uri[64];
+                snprintf(uri, sizeof(uri), "wss://%u.%u.%u.%u:%u/", ip[0], ip[1], ip[2], ip[3], g_scPort);
+                hubUri = uri;
+            }
             const bool ok = generate
-                ? CertTool::GenerateCertificateSet(g_scCertDir, generateCount, label, HasFlag(argc, argv, "--force"))
-                : CertTool::AddClientCertificates(g_scCertDir, addCount, label);
+                ? CertTool::GenerateCertificateSet(g_scCertDir, generateCount, label, hubUri,
+                                                   HasFlag(argc, argv, "--force"))
+                : CertTool::AddClientCertificates(g_scCertDir, addCount, label, hubUri);
             return ok ? 0 : 1;
         }
     }

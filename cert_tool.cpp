@@ -400,6 +400,15 @@ issuer-certificate.pem                                            PUBLIC
     validate the hub's certificate. Load it into both of the device's
     Issuer_Certificate_Files slots (or its equivalent trust setting).
 
+bacnetsc.config                                                   PUBLIC
+    The device's BACnet/SC connection settings, ready to import into the
+    Chipkin BACnet Explorer: role "device", the hub's primary URI, the three
+    PEM files above (by file name, so keep them in the same folder) and
+    hub-certificate validation turned on. The URI is the one the hub had
+    when the certificates were made - this computer's IPv4 address and
+    --sc-port - or whatever --cert-hub-uri said. Edit primaryHubURI (and
+    failoverHubURI, if you have a second hub) if that changes.
+
 readme.txt                                                        PUBLIC
     A short note for whoever receives that folder.
 
@@ -415,12 +424,18 @@ HOW TO USE THESE FILES
    (change the port with --sc-port).
 
 2. Give each device that will connect to the hub its own clients/<label>/
-   folder. On that device:
+   folder.
+
+   Chipkin BACnet Explorer: import clients/<label>/bacnetsc.config. It
+   already names the hub URI and the three PEM files in the same folder.
+
+   Any other BACnet/SC device:
      - install operational-certificate.pem and private-key.pem as its
        operational certificate and key;
      - install issuer-certificate.pem as its issuer (trusted CA)
        certificate, in both issuer slots if it has two;
-     - set its primary hub URI to wss://<hub address>:47819/.
+     - set its primary hub URI to the primaryHubURI in bacnetsc.config
+       (wss://<hub address>:47819/ by default).
    Hand each folder to one device only. Two devices sharing a certificate
    can't be told apart by the hub.
 
@@ -481,9 +496,15 @@ issuer-certificate.pem         PUBLIC   The certificate authority that signed th
                                         certificate. The device uses it to validate the hub
                                         (Issuer_Certificate_Files - load it into both slots).
 
-To connect: install the operational certificate and key as this device's BACnet/SC
+bacnetsc.config                PUBLIC   This device's BACnet/SC connection settings: hub URI
+                                        %HUBURI% and the three files above.
+                                        Import it into the Chipkin BACnet Explorer.
+
+To connect from the Chipkin BACnet Explorer: import bacnetsc.config from this folder
+(keep the .pem files next to it).
+From any other BACnet/SC device: install the operational certificate and key as its
 operational certificate, install issuer-certificate.pem as its issuer certificate,
-and set its primary hub URI to wss://<hub address>:47819/.
+and set its primary hub URI to %HUBURI%.
 
 See ../../readme.txt in the hub's certificate folder for the full description.
 )";
@@ -505,6 +526,41 @@ std::string ReplaceAll(std::string text, const std::string& from, const std::str
         text.replace(pos, from.size(), to);
     }
     return text;
+}
+
+std::string XmlEscape(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+// bacnetsc.config for one client folder: the BACnet/SC connection settings
+// (this hub's URI and the folder's three PEM files, referenced by name) in the
+// XML format the Chipkin BACnet Explorer imports. Role "device" = a BACnet/SC
+// node that connects to a hub; ValidateHubCertificate makes it check the
+// hub's certificate against issuer-certificate.pem.
+std::string BacnetScConfig(const std::string& hubUri) {
+    std::string xml;
+    xml += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    xml += "<BACnetSCConfigChannel>\n";
+    xml += "    <Role>device</Role>\n";
+    xml += "    <primaryHubURI>" + XmlEscape(hubUri) + "</primaryHubURI>\n";
+    xml += "    <failoverHubURI></failoverHubURI>\n";
+    xml += std::string("    <operationalCertificate>") + OPERATIONAL_CERTIFICATE_FILE + "</operationalCertificate>\n";
+    xml += std::string("    <devicePrivateKeyFile>") + PRIVATE_KEY_FILE + "</devicePrivateKeyFile>\n";
+    xml += std::string("    <issuerCertificate>") + ISSUER_CERTIFICATE_FILE + "</issuerCertificate>\n";
+    xml += "    <ValidateHubCertificate>true</ValidateHubCertificate>\n";
+    xml += "</BACnetSCConfigChannel>\n";
+    return xml;
 }
 
 // Refuses to write over an existing file.
@@ -542,7 +598,8 @@ bool IssueHub(const fs::path& certDir, const Credential& issuer) {
 // Generates one client's folder: clients/<label>/ with its key, operational
 // certificate and a copy of the issuer certificate - everything that device
 // needs to connect to this hub.
-bool IssueClient(const fs::path& certDir, const Credential& issuer, const std::string& label) {
+bool IssueClient(const fs::path& certDir, const Credential& issuer, const std::string& label,
+                 const std::string& hubUri) {
     const fs::path dir = certDir / CLIENTS_DIR / label;
     const fs::path keyPath = dir / PRIVATE_KEY_FILE;
     const fs::path crtPath = dir / OPERATIONAL_CERTIFICATE_FILE;
@@ -561,7 +618,9 @@ bool IssueClient(const fs::path& certDir, const Credential& issuer, const std::s
         !WritePem(issuerPath, NULL, issuer.cert.get())) {
         return false;
     }
-    if (!WriteText(dir / README_FILE, ReplaceAll(CLIENT_DIR_README, "%LABEL%", label))) {
+    if (!WriteText(dir / BACNETSC_CONFIG_FILE, BacnetScConfig(hubUri)) ||
+        !WriteText(dir / README_FILE,
+                   ReplaceAll(ReplaceAll(CLIENT_DIR_README, "%LABEL%", label), "%HUBURI%", hubUri))) {
         return false;
     }
     RecordInManifest(certDir, label, "client", std::string(CLIENTS_DIR) + "/" + label + "/", cert.get());
@@ -605,10 +664,11 @@ bool ValidLabel(const std::string& label) {
     return true;
 }
 
-bool IssueClients(const fs::path& certDir, const Credential& issuer, unsigned count, const std::string& label) {
+bool IssueClients(const fs::path& certDir, const Credential& issuer, unsigned count, const std::string& label,
+                  const std::string& hubUri) {
     const unsigned first = HighestClientNumber(certDir, label) + 1;
     for (unsigned n = first; n < first + count; ++n) {
-        if (!IssueClient(certDir, issuer, ClientLabel(label, n))) {
+        if (!IssueClient(certDir, issuer, ClientLabel(label, n), hubUri)) {
             return false;
         }
     }
@@ -626,7 +686,7 @@ std::string ResolveCertFile(const std::string& certDir, const char* name, const 
 }
 
 bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
-                            const std::string& clientLabel, bool force) {
+                            const std::string& clientLabel, const std::string& hubUri, bool force) {
     if (!ValidLabel(clientLabel)) {
         return false;
     }
@@ -674,11 +734,12 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
     }
     RecordInManifest(certDir, ISSUER_LABEL, "issuer", "", issuer.cert.get());
 
-    if (!IssueHub(certDir, issuer) || !IssueClients(certDir, issuer, clientCount, clientLabel) ||
+    if (!IssueHub(certDir, issuer) || !IssueClients(certDir, issuer, clientCount, clientLabel, hubUri) ||
         !WriteText(certDir / README_FILE, CERT_DIR_README)) {
         return false;
     }
     printf("Wrote %s: what each file is, which are private, and how to use them.\n", README_FILE);
+    printf("Client bacnetsc.config files point at %s (change with --cert-hub-uri).\n", hubUri.c_str());
     printf("Done. Give each connecting device its own %s/<label>/ folder.\n"
            "Keep %s private: it is only needed to sign more clients (--add-client-certs).\n",
            CLIENTS_DIR, ISSUER_PRIVATE_KEY_FILE);
@@ -686,7 +747,7 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
 }
 
 bool AddClientCertificates(const std::string& certDirArg, unsigned clientCount,
-                           const std::string& clientLabel) {
+                           const std::string& clientLabel, const std::string& hubUri) {
     if (!ValidLabel(clientLabel)) {
         return false;
     }
@@ -697,7 +758,7 @@ bool AddClientCertificates(const std::string& certDirArg, unsigned clientCount,
     }
     printf("Adding %u client certificate(s) signed by the existing issuer in \"%s\":\n", clientCount,
            certDir.string().c_str());
-    if (!IssueClients(certDir, issuer, clientCount, clientLabel) ||
+    if (!IssueClients(certDir, issuer, clientCount, clientLabel, hubUri) ||
         !WriteText(certDir / README_FILE, CERT_DIR_README)) {
         return false;
     }

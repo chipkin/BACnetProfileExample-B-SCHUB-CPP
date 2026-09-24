@@ -41,6 +41,10 @@
 //       operational-certificate.pem       hand the whole folder to that device
 //       private-key.pem
 //       issuer-certificate.pem            (a copy of the hub's issuer)
+//       bacnetsc.config                   BACnet/SC connection settings (hub
+//                                         URI + the three files above) that
+//                                         the Chipkin BACnet Explorer imports
+//       readme.txt
 //
 // Every certificate is LABELED twice: by its folder (clients/client-01/) and
 // in its subject Common Name ("Chipkin Example B-SCHUB client-01"), so a
@@ -73,6 +77,7 @@ static const char* const CERTIFICATE_SIGNING_REQUEST_FILE = "certificate-signing
 static const char* const ISSUER_CERTIFICATE_FILE = "issuer-certificate.pem";
 static const char* const ISSUER_PRIVATE_KEY_FILE = "issuer-private-key.pem";
 static const char* const CLIENTS_DIR = "clients";
+static const char* const BACNETSC_CONFIG_FILE = "bacnetsc.config";
 
 // The older names scripts/generate-test-certs.cmake writes.
 static const char* const LEGACY_OPERATIONAL_CERTIFICATE_FILE = "hub.crt";
@@ -93,15 +98,17 @@ std::string ResolveCertFile(const std::string& certDir, const char* name, const 
 // the issuer invalidates every certificate already handed out; with `force`
 // the old set, the clients/ folder and certificates.txt are deleted first.
 // Prints what it wrote. Returns true on success.
+// `hubUri` (e.g. "wss://192.168.1.10:47819/") is the primary hub URI written
+// into each client's bacnetsc.config.
 bool GenerateCertificateSet(const std::string& certDir, unsigned clientCount,
-                            const std::string& clientLabel, bool force);
+                            const std::string& clientLabel, const std::string& hubUri, bool force);
 
 // Signs `clientCount` more labeled client sets with the issuer already in
 // certDir (either naming). Numbering continues after the highest
 // clients/<clientLabel>-NN folder already present. Never overwrites a file.
 // Returns true on success.
 bool AddClientCertificates(const std::string& certDir, unsigned clientCount,
-                           const std::string& clientLabel);
+                           const std::string& clientLabel, const std::string& hubUri);
 
 }  // namespace CertTool
 

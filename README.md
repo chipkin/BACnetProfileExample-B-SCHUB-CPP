@@ -18,7 +18,7 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.17**, built and verified
+> **Versions:** this document describes **example v1.1.18**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
 > **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -353,7 +353,7 @@ file names follow the BACnet Network Port properties that carry them
 | `certificate-signing-request.pem` | Served as **Certificate_Signing_Request_File** (File 2). |
 | `issuer-certificate.pem` | The lab CA, served as both **Issuer_Certificate_Files** entries (Files 3 and 4). Every connecting device needs it. |
 | `issuer-private-key.pem` | The CA's private key. Only used to sign more clients; keep it private. |
-| `clients/<label>/` | One folder per connecting device, holding its own `operational-certificate.pem`, `private-key.pem` and a copy of `issuer-certificate.pem`. Hand the whole folder to that device. |
+| `clients/<label>/` | One folder per connecting device, holding its own `operational-certificate.pem`, `private-key.pem`, a copy of `issuer-certificate.pem`, and a `bacnetsc.config` to import into the Chipkin BACnet Explorer (see below). Hand the whole folder to that device. |
 | `certificates.txt` | One line per certificate: label, location, serial, expiry and SHA-256 fingerprint. |
 | `readme.txt` | A walkthrough of the folder: what each file is for (described from ANSI/ASHRAE 135 cl. 12.56 and Annex AB), which files are private, and how to install the client folders on devices. Each `clients/<label>/` folder gets a short `readme.txt` of its own. |
 
@@ -368,6 +368,29 @@ straight away (same issuer, no restart):
 ./build/BACnetExampleBSCHUB --add-client-certs 2                    # clients/client-04/, clients/client-05/
 ./build/BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # clients/ahu-01/ .. clients/ahu-03/
 ```
+
+Each client folder's `bacnetsc.config` is the BACnet/SC connection file the
+**Chipkin BACnet Explorer** imports. It sets role `device`, the hub's primary
+URI, the folder's three PEM files (by name, so keep them together) and
+`ValidateHubCertificate` = `true`:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<BACnetSCConfigChannel>
+    <Role>device</Role>
+    <primaryHubURI>wss://192.168.1.10:47819/</primaryHubURI>
+    <failoverHubURI></failoverHubURI>
+    <operationalCertificate>operational-certificate.pem</operationalCertificate>
+    <devicePrivateKeyFile>private-key.pem</devicePrivateKeyFile>
+    <issuerCertificate>issuer-certificate.pem</issuerCertificate>
+    <ValidateHubCertificate>true</ValidateHubCertificate>
+</BACnetSCConfigChannel>
+```
+
+The hub URI defaults to this computer's IPv4 address and `--sc-port`. If the
+hub will run somewhere else, set it when generating:
+`--generate-certs --cert-hub-uri wss://192.168.3.73:47819/` (also works with
+`--add-client-certs`).
 
 `--generate-certs` refuses to replace an existing issuer, because that would
 invalidate every certificate already handed out. Add `--force` to start over
@@ -399,7 +422,7 @@ Expected output (with `certs/` already generated - see [Generate lab test
 certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.17
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.18
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -472,6 +495,7 @@ firewall. To use a different port, pass `--port` (see below).
 | `--generate-certs [n]` | `3` | Write a fresh set of BACnet-named PEM files (issuer, hub, and `n` labeled `clients/<label>/` folders) to `--sc-cert-dir`, then exit. See [Generate lab test certificates](#generate-lab-test-certificates). |
 | `--add-client-certs [n]` | `1` | Sign `n` more client certificate sets with the issuer already in `--sc-cert-dir`, then exit. |
 | `--cert-label <prefix>` | `client` | Label for client folders (`clients/<prefix>-01/`, `clients/<prefix>-02/`, ...). |
+| `--cert-hub-uri <wss://host:port/>` | this computer's IPv4 + `--sc-port` | Primary hub URI written into each client's `bacnetsc.config`. |
 | `--force` | - | With `--generate-certs`: replace an existing certificate set. |
 | `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
 | `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
