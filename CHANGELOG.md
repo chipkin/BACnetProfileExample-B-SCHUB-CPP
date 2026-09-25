@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.21] - unreleased
+
+### Fixed
+
+- **Replacing the operational certificate could be refused with
+  "certificate signature failure"** (seen on Linux CI) when two trusted
+  issuers had the same subject name and the new certificate had no Authority
+  Key Identifier: OpenSSL matched the wrong issuer by name.
+  - The activation check now verifies against each issuer on its own.
+  - `--generate-certs` gives every lab issuer a unique name
+    ("Chipkin Example B-SCHUB Lab CA <random hex>"), so two generated sets
+    never collide.
+  - `tests/sc/cert_procedure_test.py` signs the hub's CSR with an Authority
+    Key Identifier, as a real CA does.
+- APP_VERSION bumped 1.1.20 -> 1.1.21.
+
 ## [1.1.20] - unreleased
 
 ### Added

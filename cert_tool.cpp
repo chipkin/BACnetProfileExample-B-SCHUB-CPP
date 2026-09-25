@@ -740,7 +740,14 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
     if (!issuer.key) {
         return false;
     }
-    issuer.cert = MakeCertificate(Role::Ca, CA_COMMON_NAME, issuer.key.get(), NULL);
+    // A short random suffix gives every lab issuer its own subject name, so two
+    // certificate sets (e.g. an "add issuer" test) never have issuers that can
+    // only be told apart by key identifier.
+    unsigned char suffix[4];
+    RAND_bytes(suffix, sizeof(suffix));
+    char suffixHex[9];
+    snprintf(suffixHex, sizeof(suffixHex), "%02X%02X%02X%02X", suffix[0], suffix[1], suffix[2], suffix[3]);
+    issuer.cert = MakeCertificate(Role::Ca, std::string(CA_COMMON_NAME) + " " + suffixHex, issuer.key.get(), NULL);
     if (!issuer.cert || !WritePem(certDir / ISSUER_PRIVATE_KEY_FILE, issuer.key.get(), NULL) ||
         !WritePem(certDir / ISSUER_CERTIFICATE_FILE, NULL, issuer.cert.get())) {
         return false;

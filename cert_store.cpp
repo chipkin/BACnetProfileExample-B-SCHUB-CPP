@@ -282,26 +282,39 @@ bool ValidateStaged(std::string* reason) {
     ERR_clear_error();
 
     // ...and chain to one of the issuers, or no peer would accept this hub.
+    // Each issuer is tried on its own: two issuers can share a subject name
+    // (two lab CAs, or a renewed CA), and a certificate without an Authority
+    // Key Identifier then can't tell them apart - verifying against both at
+    // once lets OpenSSL pick the wrong one and report a signature failure.
     if (ok) {
-        X509_STORE* store = X509_STORE_new();
-        for (X509* ca : issuers) {
-            X509_STORE_add_cert(store, ca);
-        }
         STACK_OF(X509)* chain = sk_X509_new_null();
         for (size_t i = 1; i < operational.size(); ++i) {
             sk_X509_push(chain, operational[i]);  // intermediates in the same file
         }
-        X509_STORE_CTX* ctx = X509_STORE_CTX_new();
-        X509_STORE_CTX_init(ctx, store, operational[0], chain);
-        if (X509_verify_cert(ctx) != 1) {
-            *reason = std::string("the operational certificate does not chain to an issuer certificate (") +
-                      X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx)) + ")";
+        bool chained = false;
+        std::string lastError = "no issuer certificate";
+        for (X509* ca : issuers) {
+            X509_STORE* store = X509_STORE_new();
+            X509_STORE_add_cert(store, ca);
+            X509_STORE_CTX* ctx = X509_STORE_CTX_new();
+            X509_STORE_CTX_init(ctx, store, operational[0], chain);
+            if (X509_verify_cert(ctx) == 1) {
+                chained = true;
+            } else {
+                lastError = X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx));
+            }
+            X509_STORE_CTX_free(ctx);
+            X509_STORE_free(store);
+            if (chained) {
+                break;
+            }
+        }
+        sk_X509_free(chain);
+        ERR_clear_error();
+        if (!chained) {
+            *reason = "the operational certificate does not chain to an issuer certificate (" + lastError + ")";
             ok = false;
         }
-        X509_STORE_CTX_free(ctx);
-        sk_X509_free(chain);
-        X509_STORE_free(store);
-        ERR_clear_error();
     }
 
     FreeAll(&issuers);
