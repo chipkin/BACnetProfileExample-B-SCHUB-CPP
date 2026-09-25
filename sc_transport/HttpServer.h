@@ -74,6 +74,11 @@ using CertSlotResolver = std::function<bool(const std::string& slot, std::string
 // by the same function in main.cpp so the two can never drift apart.
 using HealthJsonBuilder = std::function<std::string()>;
 
+// Supplies the HTML for GET / - a human-readable status page (version numbers
+// plus the same health/metrics data as GET /health and GET /metrics), built in
+// main.cpp for the same single-source-of-truth reason as HealthJsonBuilder.
+using StatusPageBuilder = std::function<std::string()>;
+
 struct HttpServerConfig {
     uint16_t port = 0;             // TCP port to bind - see Start()
     // Interface to bind. Defaults to "127.0.0.1" (main.cpp's own default,
@@ -87,6 +92,7 @@ struct HttpServerConfig {
                                     // are unaffected either way.
     CertSlotResolver resolveCertSlot;
     HealthJsonBuilder buildHealthJson;
+    StatusPageBuilder buildStatusPage;
 };
 
 class HttpServer {

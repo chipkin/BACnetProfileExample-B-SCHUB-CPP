@@ -18,7 +18,7 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.19**, built and verified
+> **Versions:** this document describes **example v1.1.20**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
 > **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -429,7 +429,7 @@ Expected output (with `certs/` already generated - see [Generate lab test
 certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.19
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.20
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -693,6 +693,15 @@ BACnet/SC TX: 12 message(s), 456 byte(s)
 ```
 
 ### Health/metrics HTTP endpoint
+
+Open `http://<http-bind>:<http-port>/` (by default `http://127.0.0.1:8080/`)
+in a browser for a **status page**. It shows:
+- the example, CAS BACnet Stack and `common/` versions, and the Device;
+- BACnet/SC listener and connector state, and whether certificate changes
+  are staged;
+- the health/metrics numbers below, as a table and as the raw JSON.
+
+It refreshes every 5 seconds. Like `/health`, it has no authentication.
 
 `GET http://<http-bind>:<http-port>/health` and `GET .../metrics` (identical -
 two paths for whatever a monitoring tool expects) return the same data as the

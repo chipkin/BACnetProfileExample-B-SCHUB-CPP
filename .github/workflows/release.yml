@@ -192,6 +192,13 @@ jobs:
       - name: BACnet/SC File objects test (V6)
         run: python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47822 --cert-dir certs
 
+      - name: HTTP status page (GET /) shows the version
+        shell: bash
+        run: |
+          version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
+          curl -sf http://127.0.0.1:8080/ | grep -q "Version $version" || { echo "FAIL: GET / did not show Version $version"; exit 1; }
+          curl -sf http://127.0.0.1:8080/health | grep -q '"uptime_seconds"'
+
       # The clause 19.8.3 certificate procedures over BACnet (add issuer, rejected
       # activation, replace operational certificate). Runs a SECOND instance on its
       # own certificate sets, because the test rewrites the hub's certificates.

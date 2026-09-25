@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.20] - unreleased
+
+### Added
+
+- **Status page at `GET /`** on the HTTP listener (`--http-port`, default
+  `http://127.0.0.1:8080/`). It shows the example, CAS BACnet Stack and
+  `common/` versions, the Device, BACnet/SC listener/connector state,
+  whether certificate changes are staged, and the health/metrics numbers -
+  the same data `GET /health` and `GET /metrics` return, as a table and as
+  their raw JSON. It is server-rendered with no JavaScript or external
+  resources, refreshes every 5 seconds, and has no authentication, like
+  `/health`. CI now checks that `/` answers with the version.
+- The listener-restart crash fixed in 1.1.19 is filed as #13.
+- APP_VERSION bumped 1.1.19 -> 1.1.20.
+
 ## [1.1.19] - unreleased
 
 ### Added

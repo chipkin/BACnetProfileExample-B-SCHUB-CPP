@@ -206,13 +206,19 @@ void HttpServer::SendResponse(lws* wsi, Session* session, const int statusCode,
 }
 
 void HttpServer::HandleGet(lws* wsi, Session* session) {
+    // GET / - the status page for a person with a browser. Same data as
+    // /health and /metrics (no authentication either), plus version numbers.
+    if (session->uri == "/" && m_config.buildStatusPage) {
+        SendResponse(wsi, session, 200, "text/html; charset=utf-8", m_config.buildStatusPage());
+        return;
+    }
     if (session->uri == "/health" || session->uri == "/metrics") {
         const std::string json = m_config.buildHealthJson ? m_config.buildHealthJson() : std::string("{}");
         SendResponse(wsi, session, 200, "application/json", json);
         return;
     }
     SendResponse(wsi, session, 404, "text/plain",
-                "not found. Try GET /health, GET /metrics, or POST /certs/<slot>.\n");
+                "not found. Try GET /, GET /health, GET /metrics, or POST /certs/<slot>.\n");
 }
 
 void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {

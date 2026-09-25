@@ -159,7 +159,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.19";
+static const char* APP_VERSION = "1.1.20";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -1324,6 +1324,88 @@ static std::string BuildHealthJson() {
     return std::string(buf);
 }
 
+// HTML-escapes text for the status page (every value on it is built by this
+// program, but a URI or name could still contain '<' or '&').
+static std::string HtmlEscape(const std::string& s) {
+    std::string out;
+    for (const char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+// The page GET / serves: what is running (example, stack and common/
+// versions, device), BACnet/SC status, and the health/metrics numbers - the
+// SAME metrics GET /health and GET /metrics return, shown as a table and as
+// the raw JSON those endpoints send. Server-rendered, no JavaScript, no
+// external resources; refreshes itself every 5 seconds.
+static std::string BuildStatusPage() {
+    const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
+    const uint64_t uptime = UptimeSeconds();
+    const std::string json = BuildHealthJson();
+
+    struct Row { const char* label; std::string value; };
+    char n[64];
+    auto num = [&n](unsigned long long v) { snprintf(n, sizeof(n), "%llu", v); return std::string(n); };
+    const Row version[] = {
+        {"Example", std::string(APP_NAME) + " v" + APP_VERSION},
+        {"CAS BACnet Stack", g_firmwareRevision},
+        {"Common helper (common/)", CASExampleHelper::COMMON_VERSION},
+        {"Device", std::string(DEVICE_NAME) + " (instance " + num(g_deviceInstance) + ")"},
+    };
+    const Row sc[] = {
+        {"Hub function (listener)", g_scTransport.IsListening() ? "listening on " + g_scTransport.ListenUri() : "not listening"},
+        {"Hub connector", g_scHubUri.empty() ? std::string("off") : "dialing " + g_scHubUri},
+        {"Staged certificate changes", CertStore::HasStagedChanges()
+            ? std::string("yes - applied on ReinitializeDevice ACTIVATE_CHANGES") : std::string("none")},
+    };
+    const Row metrics[] = {
+        {"Uptime", FormatUptime(uptime)},
+        {"Hub connections (current / max)", num(m.currentPeerCount) + " / " + num(g_scMaxHubConnections)},
+        {"Connects (total)", num(m.totalConnects)},
+        {"Disconnects (total)", num(m.totalDisconnects)},
+        {"Rate-limit rejections", num(m.rateLimitRejections)},
+        {"RX", num(m.rxMessages) + " messages, " + num(m.rxBytes) + " bytes"},
+        {"TX", num(m.txMessages) + " messages, " + num(m.txBytes) + " bytes"},
+    };
+
+    std::string html;
+    html += "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"refresh\" content=\"5\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>B-SCHUB status</title><style>"
+            "body{font-family:system-ui,sans-serif;margin:24px;max-width:760px;color:#1f2328;background:#fff}"
+            "h1{font-size:1.4em;margin:0 0 4px}h2{font-size:1.05em;margin:24px 0 8px}"
+            "p.sub{margin:0;color:#59636e}table{border-collapse:collapse;width:100%}"
+            "td{padding:6px 8px;border-bottom:1px solid #d1d9e0;vertical-align:top}"
+            "td:first-child{color:#59636e;width:42%}pre{background:#f6f8fa;padding:12px;overflow-x:auto}"
+            "@media (prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}"
+            "p.sub,td:first-child{color:#9198a1}td{border-color:#3d444d}pre{background:#161b22}a{color:#4493f8}}"
+            "</style></head><body>\n";
+    html += "<h1>" + HtmlEscape(DEVICE_NAME) + "</h1><p class=\"sub\">Version " + HtmlEscape(APP_VERSION) +
+            " &middot; BACnet/SC hub &middot; refreshes every 5 s</p>\n";
+    auto table = [&html](const char* title, const Row* rows, size_t count) {
+        html += std::string("<h2>") + title + "</h2><table>";
+        for (size_t i = 0; i < count; ++i) {
+            html += "<tr><td>" + HtmlEscape(rows[i].label) + "</td><td>" + HtmlEscape(rows[i].value) + "</td></tr>";
+        }
+        html += "</table>\n";
+    };
+    table("Version", version, sizeof(version) / sizeof(version[0]));
+    table("BACnet/SC", sc, sizeof(sc) / sizeof(sc[0]));
+    table("Health and metrics", metrics, sizeof(metrics) / sizeof(metrics[0]));
+    html += "<h2>Endpoints</h2><p><a href=\"/health\">/health</a> and <a href=\"/metrics\">/metrics</a> "
+            "return this JSON (for monitoring tools):</p><pre>" + HtmlEscape(json) + "</pre>\n";
+    html += "</body></html>\n";
+    return html;
+}
+
 // Plain-text health/metrics snapshot for the 'm' keypress (Task 2) - same
 // fields as BuildHealthJson() above, formatted for a human reading stdout
 // rather than a monitoring scraper.
@@ -1611,7 +1693,8 @@ int main(int argc, char** argv) {
                 printf("                      machine's IPv4 address and --sc-port.\n");
                 printf("  --force             With --generate-certs: delete the old set first.\n");
                 printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
-                printf("  --http-port <n>     TCP port for the read-only GET /health, GET /metrics and\n");
+                printf("  --http-port <n>     TCP port for GET / (status page), the read-only GET /health,\n");
+                printf("                      GET /metrics and\n");
                 printf("                      POST /certs/<slot> HTTP endpoints. Default 8080.\n");
                 printf("                      GET /health and GET /metrics need no authentication.\n");
                 printf("                      POST /certs/<slot> (slot: operational, csr, issuer1, issuer2)\n");
@@ -2101,6 +2184,7 @@ int main(int argc, char** argv) {
         httpConfig.bearerToken = g_dccPassword;  // Task 4: empty => upload endpoint disabled entirely
         httpConfig.resolveCertSlot = ResolveCertUploadSlot;
         httpConfig.buildHealthJson = BuildHealthJson;
+        httpConfig.buildStatusPage = BuildStatusPage;  // GET / - see BuildStatusPage()
         g_httpServer.Start(httpConfig);
     }
 
