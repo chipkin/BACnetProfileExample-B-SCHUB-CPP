@@ -119,3 +119,31 @@ Checks: a single `ReadPropertyMultiple` request for the Device object's
 (`Object_Name == "Chipkin Example B-SCHUB"`, `Vendor_Identifier == 389`).
 
 Exit code 0 = every check passed.
+
+## `cert_procedure_test.py` (the clause 19.8.3 certificate procedures)
+
+Drives the hub the way a certificate tool (e.g. the CAS BACnet Explorer's
+BACnet/SC certificate page) does, over plain BACnet/IP:
+
+- **Add issuer:** File_Size = 0 + AtomicWriteFile a second CA into File 4,
+  Changes_Pending, ReinitializeDevice ACTIVATE_CHANGES. Then a client signed
+  by the new CA and one signed by the original CA both complete a TLS
+  handshake.
+- **Rejected activation:** garbage in File 1 -> INVALID_CONFIGURATION_DATA,
+  and the file on disk is unchanged.
+- **Replace operational certificate (existing CSR):** read File 2, sign it
+  with the second CA, write File 1, activate. The hub then presents the new
+  certificate.
+- The CSR File (File 2) refuses writes, and ReinitializeDevice COLDSTART is
+  refused.
+
+```
+BACnetExampleBSCHUB --sc-cert-dir hub-certs --generate-certs 1
+BACnetExampleBSCHUB --sc-cert-dir other-certs --generate-certs 1
+BACnetExampleBSCHUB --port 47870 --sc-port 47819 --sc-cert-dir hub-certs
+# in a separate terminal:
+python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 47819 \
+    --cert-dir hub-certs --second-issuer-dir other-certs
+```
+
+It **rewrites the hub's certificate files** - use a throwaway set.

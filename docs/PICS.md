@@ -49,9 +49,16 @@ superset of B-GENERAL's, a conformant B-SCHUB device also satisfies
 | DM-DCC-B | Device Management - DeviceCommunicationControl - B | |
 | NM-SCH-B | Network - Secure Connect Hub Function - B | protocol and WebSocket/TLS transport both real and verified against real peers - see §9 and [README.md "BACnet/SC support"](../README.md#bacnetsc-support-read-this-first) |
 
-No other BIBBs are supported. In particular this device does **not** support
-DS-WP-B (WriteProperty), DS-COV-B, any alarm and event (AE-*) BIBB,
-scheduling (SCHED-*), or trending (T-*).
+No other BIBBs are supported. In particular this device does **not** claim
+DS-WP-B, DS-COV-B, any alarm and event (AE-*) BIBB, scheduling (SCHED-*), or
+trending (T-*).
+
+It does execute the device-B side of the BACnet/SC certificate procedures
+(135-2024 clause 19.8.3): WriteProperty `File_Size` and AtomicWriteFile into
+the operational and issuer certificate File objects, applied by
+ReinitializeDevice `ACTIVATE_CHANGES`/`WARMSTART`. `GENERATE_CSR_FILE` isn't
+supported (cas-bacnet-stack#2976). See
+[README.md "Certificate management over BACnet"](../README.md#certificate-management-over-bacnet).
 
 ## 4. Application services supported
 
@@ -64,12 +71,17 @@ scheduling (SCHED-*), or trending (T-*).
 | Who-Has | no | **yes** |
 | I-Have | **yes** | - |
 | DeviceCommunicationControl | no | **yes** |
+| AtomicReadFile | no | **yes** |
+| AtomicWriteFile | no | **yes** (certificate File objects 1, 3, 4) |
+| WriteProperty | no | **yes** (`File_Size` of File objects 1, 3, 4 only) |
+| ReinitializeDevice | no | **yes** (`ACTIVATE_CHANGES`, `WARMSTART` only) |
 
 An unsolicited I-Am is broadcast to the local subnet at start-up, as well as in
 response to Who-Is.
 
-Any other confirmed service - including WriteProperty - is rejected. That
-rejection is part of the profile boundary, not a limitation to work around.
+Any other confirmed service is rejected, and WriteProperty to any other
+property is refused with write-access-denied. That is part of the profile
+boundary, not a limitation to work around.
 
 ## 5. Segmentation capability
 
@@ -242,7 +254,22 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Changes_Pending | Boolean | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 1 "Operational Certificate" - read-only; serves the hub's operational certificate (certs/hub.crt) via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date are the real on-disk size/mtime of that file, so they always agree with what AtomicReadFile actually returns. Never certs/hub.key - see main.cpp section 2d
+### File 1 "Operational Certificate" - writable over BACnet (clause 19.8.3): File_Size and AtomicWriteFile, staged until ReinitializeDevice ACTIVATE_CHANGES/WARMSTART, which validates the set (parses, matches the hub's private key, chains to an issuer) before writing operational-certificate.pem and reloading TLS. Serves the hub's operational certificate via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date come from the staged copy or the file on disk
+
+| Property | Datatype | Served by | Writable |
+|---|---|---|:---:|
+| Object_Identifier | BACnetObjectIdentifier | stack | no |
+| Object_Name | CharacterString | app | no |
+| Object_Type | BACnetObjectType | stack | no |
+| File_Type | CharacterString | app | no |
+| File_Size | Unsigned | app | yes |
+| Modification_Date | BACnetDateTime | app | no |
+| Archive | Boolean | app | no |
+| Read_Only | Boolean | app | no |
+| File_Access_Method | BACnetFileAccessMethod | stack | no |
+| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
+
+### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. GENERATE_CSR_FILE is not supported (cas-bacnet-stack#2976), so this CSR is for the hub's existing key
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -257,7 +284,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1
+### File 3 "Issuer Certificate Slot 1" - writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (issuer-certificate.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -265,14 +292,14 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Object_Name | CharacterString | app | no |
 | Object_Type | BACnetObjectType | stack | no |
 | File_Type | CharacterString | app | no |
-| File_Size | Unsigned | app | no |
+| File_Size | Unsigned | app | yes |
 | Modification_Date | BACnetDateTime | app | no |
 | Archive | Boolean | app | no |
 | Read_Only | Boolean | app | no |
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 3 "Issuer Certificate Slot 1" - read-only; issuer certificate slot 1 (certs/ca.crt) - one of Network Port 2's 2 Issuer_Certificate_Files entries (the stack requires exactly 2 slots)
+### File 4 "Issuer Certificate Slot 2" - writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (issuer-certificate-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -280,22 +307,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Object_Name | CharacterString | app | no |
 | Object_Type | BACnetObjectType | stack | no |
 | File_Type | CharacterString | app | no |
-| File_Size | Unsigned | app | no |
-| Modification_Date | BACnetDateTime | app | no |
-| Archive | Boolean | app | no |
-| Read_Only | Boolean | app | no |
-| File_Access_Method | BACnetFileAccessMethod | stack | no |
-| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
-
-### File 4 "Issuer Certificate Slot 2" - read-only; issuer certificate slot 2 - also certs/ca.crt (same file as File 3): this lab setup has one CA, and the stack requires exactly 2 issuer slots regardless of how many distinct CAs exist
-
-| Property | Datatype | Served by | Writable |
-|---|---|---|:---:|
-| Object_Identifier | BACnetObjectIdentifier | stack | no |
-| Object_Name | CharacterString | app | no |
-| Object_Type | BACnetObjectType | stack | no |
-| File_Type | CharacterString | app | no |
-| File_Size | Unsigned | app | no |
+| File_Size | Unsigned | app | yes |
 | Modification_Date | BACnetDateTime | app | no |
 | Archive | Boolean | app | no |
 | Read_Only | Boolean | app | no |

@@ -71,9 +71,9 @@
       "name": "Operational Certificate",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
-      "writable": [],
+      "writable": ["File_Size"],
       "accepted": [],
-      "note": "read-only; serves the hub's operational certificate (certs/hub.crt) via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date are the real on-disk size/mtime of that file, so they always agree with what AtomicReadFile actually returns. Never certs/hub.key - see main.cpp section 2d"
+      "note": "writable over BACnet (clause 19.8.3): File_Size and AtomicWriteFile, staged until ReinitializeDevice ACTIVATE_CHANGES/WARMSTART, which validates the set (parses, matches the hub's private key, chains to an issuer) before writing operational-certificate.pem and reloading TLS. Serves the hub's operational certificate via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date come from the staged copy or the file on disk"
     },
     {
       "type": "File",
@@ -83,7 +83,7 @@
       "enabled": [],
       "writable": [],
       "accepted": [],
-      "note": "read-only; serves the hub's certificate signing request (certs/hub.csr) - bound to Network Port 2's Certificate_Signing_Request_File. Same file-serving mechanism as File 1"
+      "note": "read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. GENERATE_CSR_FILE is not supported (cas-bacnet-stack#2976), so this CSR is for the hub's existing key"
     },
     {
       "type": "File",
@@ -91,9 +91,9 @@
       "name": "Issuer Certificate Slot 1",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
-      "writable": [],
+      "writable": ["File_Size"],
       "accepted": [],
-      "note": "read-only; issuer certificate slot 1 (certs/ca.crt) - one of Network Port 2's 2 Issuer_Certificate_Files entries (the stack requires exactly 2 slots)"
+      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (issuer-certificate.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries"
     },
     {
       "type": "File",
@@ -101,9 +101,9 @@
       "name": "Issuer Certificate Slot 2",
       "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
       "enabled": [],
-      "writable": [],
+      "writable": ["File_Size"],
       "accepted": [],
-      "note": "read-only; issuer certificate slot 2 - also certs/ca.crt (same file as File 3): this lab setup has one CA, and the stack requires exactly 2 issuer slots regardless of how many distinct CAs exist"
+      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (issuer-certificate-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)"
     }
   ]
 }

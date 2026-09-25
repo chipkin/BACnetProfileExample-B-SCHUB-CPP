@@ -130,6 +130,7 @@
 #include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
 #include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
+#include "cert_store.h" // certificate File object contents + clause 19.8.3 staging - see cert_store.h
 
 // Unlike sc_transport/ScTransport.h (which forward-declares lws types
 // specifically to avoid this), main.cpp already needs the real
@@ -158,7 +159,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.18";
+static const char* APP_VERSION = "1.1.21";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -347,6 +348,26 @@ static const uint32_t PROPERTY_IDENTIFIER_READ_ONLY = 99;
 // other File-object constants above.
 static const uint32_t SERVICE_ATOMIC_READ_FILE = 6;
 
+// The device-B side of the BACnet/SC certificate procedures (ANSI/ASHRAE
+// 135-2024 clause 19.8.3, e.g. the CAS BACnet Explorer's certificate page):
+// a client writes File_Size = 0 (WriteProperty, common/'s
+// SERVICE_WRITE_PROPERTY) and AtomicWriteFile's a new certificate into a
+// certificate File object, then sends ReinitializeDevice ACTIVATE_CHANGES
+// (SERVICE_REINITIALIZE_DEVICE). See cert_store.h for how the writes are staged.
+static const uint32_t SERVICE_ATOMIC_WRITE_FILE = 7;     // BACnetServicesSupported.h atomicWriteFile
+// BACnetReinitializedStateOfDevice activateChanges (WARMSTART comes from common/).
+static const uint32_t REINITIALIZE_STATE_ACTIVATE_CHANGES = 7;
+static const uint32_t ERROR_CODE_INVALID_CONFIGURATION_DATA = 46;
+
+// Set by the ReinitializeDevice callback once new certificates are committed;
+// the main loop then reloads the TLS contexts (see ScTransport::ReloadCredentials).
+static bool g_scReloadCredentialsRequested = false;
+
+// The file TLS trusts peers against: every issuer certificate from both
+// Issuer_Certificate_Files slots (CertStore::WriteTrustedIssuerBundle), so a
+// newly added issuer is trusted alongside the existing one.
+static std::string g_scTrustedIssuersPath;
+
 // The BACnet/SC hub accept role's WebSocket/TLS listener - CLI-configurable
 // (--sc-port, --sc-cert-dir; see ParseSCPortArg/ParseSCCertDirArg below), since
 // unlike the stub this replaces, ScTransport actually opens this port.
@@ -492,9 +513,13 @@ static std::string ScCertFileRelativePath(const uint32_t fileInstance) {
             return CertTool::ResolveCertFile(g_scCertDir, CertTool::CERTIFICATE_SIGNING_REQUEST_FILE,
                                              CertTool::LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE);
         case FILE_ISSUER_CERT_1_INSTANCE:
-        case FILE_ISSUER_CERT_2_INSTANCE: // same issuer both slots - see the instance's own comment above
             return CertTool::ResolveCertFile(g_scCertDir, CertTool::ISSUER_CERTIFICATE_FILE,
                                              CertTool::LEGACY_ISSUER_CERTIFICATE_FILE);
+        case FILE_ISSUER_CERT_2_INSTANCE:
+            // Slot 2 has its own file, so a client can add a second issuer
+            // without overwriting slot 1. Until something is written to it,
+            // it serves slot 1's certificate (CertStore's read fallback).
+            return CertTool::ISSUER_CERTIFICATE_2_FILE;
         default:
             return std::string();
     }
@@ -514,24 +539,9 @@ static std::string ScCertFilePath(const uint32_t fileInstance) {
 // (e.g. --sc-cert-dir doesn't have it yet - same "certs missing" case ScTransport
 // already handles for the listener).
 static bool StatScCertFile(const uint32_t fileInstance, long* size, time_t* mtime) {
-    const std::string path = ScCertFilePath(fileInstance);
-    if (path.empty()) {
-        return false;
-    }
-#if defined(_WIN32)
-    struct _stat st;
-    if (_stat(path.c_str(), &st) != 0) {
-        return false;
-    }
-#else
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0) {
-        return false;
-    }
-#endif
-    *size = (long)st.st_size;
-    *mtime = st.st_mtime;
-    return true;
+    // CertStore answers for the staged copy while a certificate procedure is
+    // in progress (see cert_store.h), otherwise for the file on disk.
+    return IsScCertFileInstance(fileInstance) && CertStore::Stat(fileInstance, size, mtime);
 }
 
 // REAL (floating point) - the Analog Input's Present_Value.
@@ -686,18 +696,17 @@ bool GetPropertyBool(const uint32_t deviceInstance, const uint16_t objectType,
         *value = false;
         return true;
     }
-    // Archive / Read_Only (both required; no stack default) - all 4 File objects
-    // are plain, never-archived, read-only certificate/CSR files. Read_Only mirrors
-    // the isWritable=false given to BACnetStack_AddFileObject; Archive is served
-    // here because it has no stack default either, even though nothing ever writes
-    // it (this device does not implement WriteProperty - see the file header).
+    // Archive / Read_Only (both required; no stack default). Read_Only mirrors the
+    // isWritable given to BACnetStack_AddFileObject: the operational and issuer
+    // certificate files are writable (clause 19.8.3 certificate procedures), the
+    // Certificate Signing Request is not. Archive is never set by this device.
     if (objectType == OBJECT_TYPE_FILE && IsScCertFileInstance(objectInstance)) {
         if (propertyIdentifier == PROPERTY_IDENTIFIER_ARCHIVE) {
             *value = false;
             return true;
         }
         if (propertyIdentifier == PROPERTY_IDENTIFIER_READ_ONLY) {
-            *value = true;
+            *value = (objectInstance == FILE_CSR_INSTANCE);
             return true;
         }
     }
@@ -1047,35 +1056,174 @@ bool CallbackReadFile(const uint32_t deviceInstance, const uint32_t fileInstance
     if (deviceInstance != g_deviceInstance) {
         return false;
     }
-    const std::string path = ScCertFilePath(fileInstance);
-    if (path.empty()) {
-        return false;
-    }
-    FILE* f = fopen(path.c_str(), "rb");
-    if (f == NULL) {
+    // CertStore serves the staged copy while a certificate procedure is in
+    // progress (so a client can read back what it just wrote), otherwise the
+    // file on disk.
+    std::string bytes;
+    if (!IsScCertFileInstance(fileInstance) || !CertStore::Read(fileInstance, &bytes)) {
         // Cert file missing under --sc-cert-dir (same condition ScTransport's
         // listener already handles for the TLS side) - Abort(other) rather than a
         // fabricated empty file, so a client sees this failed rather than believing
         // it read a real, empty certificate.
         return false;
     }
-    fseek(f, 0, SEEK_END);
-    const long totalSize = ftell(f);
-    if (totalSize < 0 || (uint32_t)totalSize < fileStart) {
-        fclose(f);
+    const long totalSize = (long)bytes.size();
+    if ((uint32_t)totalSize < fileStart) {
         return false; // fileStart past end-of-file
     }
-    fseek(f, (long)fileStart, SEEK_SET);
     uint32_t remaining = (uint32_t)totalSize - fileStart;
     uint32_t toRead = requestedCount < remaining ? requestedCount : remaining;
     if (toRead > maxFileDataLength) {
         toRead = maxFileDataLength; // stream reads are silently clamped, per this
                                      // callback's own doc comment - never abort here
     }
-    const size_t bytesRead = toRead > 0 ? fread(fileData, 1, toRead, f) : 0;
-    fclose(f);
+    if (toRead > 0) {
+        memcpy(fileData, bytes.data() + fileStart, toRead);
+    }
+    const size_t bytesRead = toRead;
     *fileDataLength = (uint32_t)bytesRead;
     *endOfFile = (fileStart + bytesRead) >= (uint32_t)totalSize;
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// 2d-ii. Writing certificates over BACnet (ANSI/ASHRAE 135-2024 clause 19.8.3)
+//
+// The device-B side of the BACnet/SC certificate procedures - what the CAS
+// BACnet Explorer's certificate page drives:
+//   1. WriteProperty File_Size = 0 on a certificate File object
+//      -> SetPropertyUnsignedInteger below -> CertStore::Resize
+//   2. AtomicWriteFile the new PEM certificate into it
+//      -> CallbackWriteFile below -> CertStore::Write
+//      (the stack sets Network Port 2's Changes_Pending on its own, cl. 12.56.100)
+//   3. ReinitializeDevice ACTIVATE_CHANGES (or WARMSTART)
+//      -> ReinitializeDevice below: validate, commit to disk, reload TLS.
+// Writes are STAGED in CertStore until step 3 - see cert_store.h for why.
+// -----------------------------------------------------------------------------
+
+// Only the operational certificate and the two issuer slots are writable; the
+// Certificate Signing Request (File 2) is read-only - see TODO.md (GENERATE_CSR_FILE).
+static bool IsWritableScCertFileInstance(const uint32_t fileInstance) {
+    return fileInstance == FILE_OPERATIONAL_CERT_INSTANCE ||
+           fileInstance == FILE_ISSUER_CERT_1_INSTANCE ||
+           fileInstance == FILE_ISSUER_CERT_2_INSTANCE;
+}
+
+bool CallbackWriteFile(const uint32_t deviceInstance, const uint32_t fileInstance,
+                       const int32_t fileStart, const uint8_t* fileData,
+                       const uint32_t fileDataLength, int32_t* ackFileStart, uint32_t* errorCode) {
+    if (deviceInstance != g_deviceInstance || !IsWritableScCertFileInstance(fileInstance)) {
+        return false;  // the stack rejects read-only File objects before calling this
+    }
+    if (!CertStore::Write(fileInstance, fileStart, fileData, fileDataLength, ackFileStart, errorCode)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "AtomicWriteFile File %u at %d (%u octets): REJECTED (error code %u)",
+                              fileInstance, fileStart, fileDataLength, *errorCode);
+        return false;
+    }
+    CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                          "AtomicWriteFile File %u: %u octets staged at %d - applied on "
+                          "ReinitializeDevice ACTIVATE_CHANGES",
+                          fileInstance, fileDataLength, *ackFileStart);
+    return true;
+}
+
+// WriteProperty on an UNSIGNED property. The only writable one in this device is
+// a certificate File object's File_Size (the stack makes it writable for a
+// writable stream-access File object): 0 empties the file before a new
+// certificate is written into it; a smaller size truncates, a larger one
+// extends with zero octets (cl. 12.13.6).
+bool SetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t objectType,
+                                const uint32_t objectInstance, const uint32_t propertyIdentifier,
+                                const uint32_t value, const bool useArrayIndex,
+                                const uint32_t propertyArrayIndex, const uint8_t priority,
+                                uint32_t* errorCode) {
+    (void)useArrayIndex;
+    (void)propertyArrayIndex;
+    (void)priority;
+    if (deviceInstance != g_deviceInstance || objectType != OBJECT_TYPE_FILE ||
+        propertyIdentifier != PROPERTY_IDENTIFIER_FILE_SIZE ||
+        !IsWritableScCertFileInstance(objectInstance)) {
+        return false;  // the stack answers write-access-denied
+    }
+    if (!CertStore::Resize(objectInstance, value, errorCode)) {
+        return false;
+    }
+    CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                          "WriteProperty File %u File_Size = %u: staged - applied on "
+                          "ReinitializeDevice ACTIVATE_CHANGES",
+                          objectInstance, value);
+    return true;
+}
+
+// Password check shared by DeviceCommunicationControl and ReinitializeDevice.
+// dcc-password (config file only - see README.md "Secrets handling") guards
+// both: "" means no password is required.
+static bool PasswordMatches(const char* password, const size_t passwordLength) {
+    const size_t requiredLength = strlen(g_dccPassword);
+    if (requiredLength == 0) {
+        return true;
+    }
+    return password != NULL && passwordLength == requiredLength &&
+           memcmp(password, g_dccPassword, requiredLength) == 0;
+}
+
+// ReinitializeDevice. This hub only supports the two states the certificate
+// procedures use: ACTIVATE_CHANGES and WARMSTART both apply staged certificate
+// writes. The stack calls this BEFORE it activates its own pending Network Port
+// changes, so refusing here (INVALID_CONFIGURATION_DATA) leaves everything as
+// it was - the hub never swaps in certificates it couldn't run on. The process
+// is not restarted: "warm start" here means "apply the pending changes".
+bool ReinitializeDevice(const uint32_t deviceInstance, const uint32_t reinitializedState,
+                        const char* password, const uint32_t passwordLength, uint32_t* errorCode) {
+    if (deviceInstance != g_deviceInstance) {
+        *errorCode = ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+        return false;
+    }
+    if (!PasswordMatches(password, passwordLength)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "ReinitializeDevice: REJECTED (password failure)");
+        *errorCode = ERROR_CODE_PASSWORD_FAILURE;
+        return false;
+    }
+    if (reinitializedState != REINITIALIZE_STATE_ACTIVATE_CHANGES &&
+        reinitializedState != REINITIALIZE_STATE_WARMSTART) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "ReinitializeDevice: state %u not supported (only WARMSTART and "
+                              "ACTIVATE_CHANGES)", reinitializedState);
+        *errorCode = ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+        return false;
+    }
+    if (!CertStore::HasStagedChanges()) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                              "ReinitializeDevice %s: no staged certificate changes",
+                              reinitializedState == REINITIALIZE_STATE_WARMSTART ? "WARMSTART" : "ACTIVATE_CHANGES");
+        return true;
+    }
+    std::string reason;
+    if (!CertStore::ValidateStaged(&reason)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "ReinitializeDevice: staged certificates REJECTED, nothing changed: %s",
+                              reason.c_str());
+        *errorCode = ERROR_CODE_INVALID_CONFIGURATION_DATA;
+        return false;
+    }
+    if (!CertStore::CommitStaged(&reason)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
+                              "ReinitializeDevice: could not save the new certificates: %s", reason.c_str());
+        *errorCode = ERROR_CODE_INVALID_CONFIGURATION_DATA;
+        return false;
+    }
+    // Refresh what TLS trusts now, before the stack activates its pending
+    // changes - it may restart the SC port itself, and a restarted listener
+    // must load the new issuers.
+    if (!CertStore::WriteTrustedIssuerBundle(g_scTrustedIssuersPath, &reason)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
+                              "could not refresh \"%s\": %s", g_scTrustedIssuersPath.c_str(), reason.c_str());
+    }
+    CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                          "ReinitializeDevice: new certificates saved; reloading BACnet/SC TLS");
+    g_scReloadCredentialsRequested = true;  // done in the main loop, outside the stack's callback
     return true;
 }
 
@@ -1174,6 +1322,88 @@ static std::string BuildHealthJson() {
         (unsigned long long)m.rxMessages, (unsigned long long)m.rxBytes,
         (unsigned long long)m.txMessages, (unsigned long long)m.txBytes);
     return std::string(buf);
+}
+
+// HTML-escapes text for the status page (every value on it is built by this
+// program, but a URI or name could still contain '<' or '&').
+static std::string HtmlEscape(const std::string& s) {
+    std::string out;
+    for (const char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+// The page GET / serves: what is running (example, stack and common/
+// versions, device), BACnet/SC status, and the health/metrics numbers - the
+// SAME metrics GET /health and GET /metrics return, shown as a table and as
+// the raw JSON those endpoints send. Server-rendered, no JavaScript, no
+// external resources; refreshes itself every 5 seconds.
+static std::string BuildStatusPage() {
+    const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
+    const uint64_t uptime = UptimeSeconds();
+    const std::string json = BuildHealthJson();
+
+    struct Row { const char* label; std::string value; };
+    char n[64];
+    auto num = [&n](unsigned long long v) { snprintf(n, sizeof(n), "%llu", v); return std::string(n); };
+    const Row version[] = {
+        {"Example", std::string(APP_NAME) + " v" + APP_VERSION},
+        {"CAS BACnet Stack", g_firmwareRevision},
+        {"Common helper (common/)", CASExampleHelper::COMMON_VERSION},
+        {"Device", std::string(DEVICE_NAME) + " (instance " + num(g_deviceInstance) + ")"},
+    };
+    const Row sc[] = {
+        {"Hub function (listener)", g_scTransport.IsListening() ? "listening on " + g_scTransport.ListenUri() : "not listening"},
+        {"Hub connector", g_scHubUri.empty() ? std::string("off") : "dialing " + g_scHubUri},
+        {"Staged certificate changes", CertStore::HasStagedChanges()
+            ? std::string("yes - applied on ReinitializeDevice ACTIVATE_CHANGES") : std::string("none")},
+    };
+    const Row metrics[] = {
+        {"Uptime", FormatUptime(uptime)},
+        {"Hub connections (current / max)", num(m.currentPeerCount) + " / " + num(g_scMaxHubConnections)},
+        {"Connects (total)", num(m.totalConnects)},
+        {"Disconnects (total)", num(m.totalDisconnects)},
+        {"Rate-limit rejections", num(m.rateLimitRejections)},
+        {"RX", num(m.rxMessages) + " messages, " + num(m.rxBytes) + " bytes"},
+        {"TX", num(m.txMessages) + " messages, " + num(m.txBytes) + " bytes"},
+    };
+
+    std::string html;
+    html += "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"refresh\" content=\"5\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>B-SCHUB status</title><style>"
+            "body{font-family:system-ui,sans-serif;margin:24px;max-width:760px;color:#1f2328;background:#fff}"
+            "h1{font-size:1.4em;margin:0 0 4px}h2{font-size:1.05em;margin:24px 0 8px}"
+            "p.sub{margin:0;color:#59636e}table{border-collapse:collapse;width:100%}"
+            "td{padding:6px 8px;border-bottom:1px solid #d1d9e0;vertical-align:top}"
+            "td:first-child{color:#59636e;width:42%}pre{background:#f6f8fa;padding:12px;overflow-x:auto}"
+            "@media (prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}"
+            "p.sub,td:first-child{color:#9198a1}td{border-color:#3d444d}pre{background:#161b22}a{color:#4493f8}}"
+            "</style></head><body>\n";
+    html += "<h1>" + HtmlEscape(DEVICE_NAME) + "</h1><p class=\"sub\">Version " + HtmlEscape(APP_VERSION) +
+            " &middot; BACnet/SC hub &middot; refreshes every 5 s</p>\n";
+    auto table = [&html](const char* title, const Row* rows, size_t count) {
+        html += std::string("<h2>") + title + "</h2><table>";
+        for (size_t i = 0; i < count; ++i) {
+            html += "<tr><td>" + HtmlEscape(rows[i].label) + "</td><td>" + HtmlEscape(rows[i].value) + "</td></tr>";
+        }
+        html += "</table>\n";
+    };
+    table("Version", version, sizeof(version) / sizeof(version[0]));
+    table("BACnet/SC", sc, sizeof(sc) / sizeof(sc[0]));
+    table("Health and metrics", metrics, sizeof(metrics) / sizeof(metrics[0]));
+    html += "<h2>Endpoints</h2><p><a href=\"/health\">/health</a> and <a href=\"/metrics\">/metrics</a> "
+            "return this JSON (for monitoring tools):</p><pre>" + HtmlEscape(json) + "</pre>\n";
+    html += "</body></html>\n";
+    return html;
 }
 
 // Plain-text health/metrics snapshot for the 'm' keypress (Task 2) - same
@@ -1463,7 +1693,8 @@ int main(int argc, char** argv) {
                 printf("                      machine's IPv4 address and --sc-port.\n");
                 printf("  --force             With --generate-certs: delete the old set first.\n");
                 printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
-                printf("  --http-port <n>     TCP port for the read-only GET /health, GET /metrics and\n");
+                printf("  --http-port <n>     TCP port for GET / (status page), the read-only GET /health,\n");
+                printf("                      GET /metrics and\n");
                 printf("                      POST /certs/<slot> HTTP endpoints. Default 8080.\n");
                 printf("                      GET /health and GET /metrics need no authentication.\n");
                 printf("                      POST /certs/<slot> (slot: operational, csr, issuer1, issuer2)\n");
@@ -1626,8 +1857,28 @@ int main(int argc, char** argv) {
         CASSc::ScTlsFiles tls;
         // BACnet-named PEM files from --generate-certs, or the older names
         // from scripts/generate-test-certs.cmake - see cert_tool.h.
-        tls.caCertPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
-            g_scCertDir, CertTool::ISSUER_CERTIFICATE_FILE, CertTool::LEGACY_ISSUER_CERTIFICATE_FILE);
+        const std::string issuer1Path = ScCertFilePath(FILE_ISSUER_CERT_1_INSTANCE);
+
+        // CertStore owns the 4 certificate File objects' contents (section 2d-ii).
+        CertStore::Layout layout;
+        const uint32_t certInstances[4] = {FILE_OPERATIONAL_CERT_INSTANCE, FILE_CSR_INSTANCE,
+                                           FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE};
+        for (const uint32_t instance : certInstances) {
+            layout.paths[instance] = ScCertFilePath(instance);
+        }
+        layout.readFallbacks[FILE_ISSUER_CERT_2_INSTANCE] = issuer1Path;
+        layout.operationalInstance = FILE_OPERATIONAL_CERT_INSTANCE;
+        layout.issuerInstances = {FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE};
+        layout.privateKeyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
+            g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+        CertStore::SetLayout(layout);
+
+        // TLS trusts every issuer in both slots. With no certificates yet, fall
+        // back to slot 1's path so the "certificates missing" message names it.
+        g_scTrustedIssuersPath = g_scCertDir + "/" + CertTool::TRUSTED_ISSUERS_FILE;
+        std::string bundleReason;
+        tls.caCertPath = CertStore::WriteTrustedIssuerBundle(g_scTrustedIssuersPath, &bundleReason)
+                             ? g_scTrustedIssuersPath : issuer1Path;
         tls.certPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
             g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE, CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
         tls.keyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
@@ -1667,6 +1918,10 @@ int main(int argc, char** argv) {
     // File objects (phase 4) - AtomicReadFile for the 4 certificate/CSR File
     // objects, see section 2d above.
     BACnetStack_RegisterCallbackReadFile(CallbackReadFile);
+    // Certificate writes over BACnet (clause 19.8.3) - see section 2d-ii.
+    BACnetStack_RegisterCallbackWriteFile(CallbackWriteFile);
+    BACnetStack_RegisterCallbackSetPropertyUnsignedInteger(SetPropertyUnsignedInteger);
+    BACnetStack_RegisterCallbackReinitializeDevice(ReinitializeDevice);
 
     // --- Create the device --------------------------------------------------
     if (!BACnetStack_AddDevice(g_deviceInstance)) {
@@ -1676,9 +1931,9 @@ int main(int argc, char** argv) {
 
     // Enable the services this B-SCHUB profile requires: ReadProperty (DS-RP-B),
     // ReadPropertyMultiple (DS-RPM-B), and DeviceCommunicationControl (DM-DCC-B).
-    // We deliberately do NOT enable WriteProperty, SubscribeCOV, or any
-    // alarm/event service - a BACnet/SC Hub does not require them, so a
-    // faithful B-SCHUB example leaves them off.
+    // WriteProperty, AtomicWriteFile and ReinitializeDevice are enabled further
+    // down, only for the BACnet/SC certificate procedures (section 2d-ii). No
+    // SubscribeCOV or alarm/event service - a BACnet/SC Hub does not need them.
     if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_READ_PROPERTY, true)) {
         printf("Error: Failed to enable the ReadProperty service.\n");
         return 1;
@@ -1701,6 +1956,16 @@ int main(int argc, char** argv) {
     // to actually answer reads; see SERVICE_ATOMIC_READ_FILE's own comment above.
     if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_ATOMIC_READ_FILE, true)) {
         printf("Error: Failed to enable the AtomicReadFile service.\n");
+        return 1;
+    }
+    // The BACnet/SC certificate procedures (clause 19.8.3, section 2d-ii):
+    // WriteProperty (only a certificate File object's File_Size is writable),
+    // AtomicWriteFile (into the operational/issuer certificate File objects) and
+    // ReinitializeDevice (ACTIVATE_CHANGES / WARMSTART apply them).
+    if (!BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_WRITE_PROPERTY, true) ||
+        !BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_ATOMIC_WRITE_FILE, true) ||
+        !BACnetStack_SetServiceEnabled(g_deviceInstance, SERVICE_REINITIALIZE_DEVICE, true)) {
+        printf("Error: Failed to enable the certificate-procedure services.\n");
         return 1;
     }
 
@@ -1780,14 +2045,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --- Add the 4 read-only certificate/CSR File objects (phase 4) ---------
+    // --- Add the 4 certificate/CSR File objects (phase 4) -------------------
     // and bind them to Network Port 2's SC certificate properties. Content is
-    // served from --sc-cert-dir by CallbackReadFile (section 2d) - never
-    // hub.key. See the FILE_*_INSTANCE constants' own comment above for which
-    // file each instance serves and why the two issuer slots are the same file
-    // in this lab setup.
+    // served from --sc-cert-dir by CallbackReadFile (section 2d) - never the
+    // private key. The operational and issuer certificates are writable for the
+    // clause 19.8.3 certificate procedures (section 2d-ii); the Certificate
+    // Signing Request is read-only.
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_OPERATIONAL_CERT_INSTANCE,
-                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   /*isWritable*/ true, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
         printf("Error: Failed to add File %u (Operational Certificate, operational certificate).\n", FILE_OPERATIONAL_CERT_INSTANCE);
         return 1;
@@ -1799,21 +2064,21 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_ISSUER_CERT_1_INSTANCE,
-                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   /*isWritable*/ true, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
         printf("Error: Failed to add File %u (Issuer Certificate Slot 1, issuer certificate 1).\n", FILE_ISSUER_CERT_1_INSTANCE);
         return 1;
     }
     if (!BACnetStack_AddFileObject(g_deviceInstance, FILE_ISSUER_CERT_2_INSTANCE,
-                                   /*isWritable*/ false, /*isConfigurationFile*/ false,
+                                   /*isWritable*/ true, /*isConfigurationFile*/ false,
                                    FILE_ACCESS_METHOD_STREAM)) {
         printf("Error: Failed to add File %u (Issuer Certificate Slot 2, issuer certificate 2).\n", FILE_ISSUER_CERT_2_INSTANCE);
         return 1;
     }
     {
         // Exactly 2 issuer slots - the stack requires this regardless of how many
-        // distinct CAs the lab setup actually has (see the FILE_ISSUER_CERT_2_INSTANCE
-        // comment above: both slots point at the same certs/ca.crt here).
+        // distinct CAs are in use. Slot 2 serves slot 1's certificate until a
+        // client writes its own (see ScCertFileRelativePath).
         const uint32_t issuerCertificateFileInstances[2] = {
             FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE
         };
@@ -1919,6 +2184,7 @@ int main(int argc, char** argv) {
         httpConfig.bearerToken = g_dccPassword;  // Task 4: empty => upload endpoint disabled entirely
         httpConfig.resolveCertSlot = ResolveCertUploadSlot;
         httpConfig.buildHealthJson = BuildHealthJson;
+        httpConfig.buildStatusPage = BuildStatusPage;  // GET / - see BuildStatusPage()
         g_httpServer.Start(httpConfig);
     }
 
@@ -1934,6 +2200,17 @@ int main(int argc, char** argv) {
         // BACnetStack_SetBACnetSCWebSocketStatus, safely here in the main loop.
         g_scTransport.Service();
         g_scRouter.DrainStatusEvents();
+
+        // New certificates activated by ReinitializeDevice (section 2d-ii):
+        // rebuild the TLS contexts so they load the new files (the callback
+        // already refreshed the trusted-issuer bundle). The stack restarts
+        // the SC port by itself only when a File object REFERENCE changed,
+        // not the contents, so this is what applies a content-only change.
+        // Peers reconnect under the new certificates.
+        if (g_scReloadCredentialsRequested) {
+            g_scReloadCredentialsRequested = false;
+            g_scTransport.ReloadCredentials();
+        }
         g_httpServer.Service(); // Tasks 3/4 - non-blocking, same mechanism as g_scTransport.Service()
 
         switch (CASExampleHelper::PollKey()) {

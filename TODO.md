@@ -365,3 +365,41 @@ mistake the behaviour for a bug in this example.
     regardless of delay or failure cause), but not confirmed. A debugger
     session with a real stack trace would be needed to root-cause this
     precisely enough to report upstream to libwebsockets.
+
+    **Root cause found (1.1.19):** confirmed with a stand-alone probe against
+    this project's vcpkg libwebsockets + OpenSSL 3 - destroying the last
+    `lws_context` created with `LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT` tears
+    down OpenSSL for the whole process: `PEM_read_bio_X509` fails afterwards,
+    and the next `lws_create_context()` crashes with an access violation.
+    Keeping one TLS context alive for the process
+    (`ScTransport.cpp`'s `EnsureTlsLifetimeContext`) makes destroy/recreate
+    safe (probe: create, destroy, create, destroy, create - all fine). That
+    is what lets the listener restart after a certificate change. The
+    permanent "refuse to retry" latch above is now probably unnecessary, but
+    it is left in place until a failed-create retry is re-tested.
+
+## BACnet/SC certificate procedures over BACnet (clause 19.8.3) - gaps
+
+Added in 1.1.19 (BACnetProfileExample-B-SCHUB-CPP#10); see README.md
+"Certificate management over BACnet". Verified by
+`tests/sc/cert_procedure_test.py` (13/13).
+
+1. **No key-pair regeneration (`GENERATE_CSR_FILE`).** The stack answers the
+   Network Port Command write with OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED and
+   has no host hook for it. **Filed:**
+   [chipkin/cas-bacnet-stack#2976](https://github.com/chipkin/cas-bacnet-stack/issues/2976).
+   The Command property also isn't exposed on Network Port 2 today (reads
+   answer unknown-property). Expose it once the stack can hand
+   GENERATE_CSR_FILE and DISCARD_CHANGES to the host.
+2. **`DISCARD_CHANGES` can't drop staged writes.** The stack doesn't tell the
+   host, so staged certificate bytes survive until the next activation or a
+   restart. Commented on
+   [chipkin/cas-bacnet-stack#2557](https://github.com/chipkin/cas-bacnet-stack/issues/2557)
+   (which asks for exactly this revert).
+3. **Every ReinitializeDevice logs "Backup callbacks are missing"** (an
+   error-level line) even for ACTIVATE_CHANGES/WARMSTART. Harmless. **Filed:**
+   [chipkin/cas-bacnet-stack#2977](https://github.com/chipkin/cas-bacnet-stack/issues/2977).
+4. **A rejected activation keeps the staged writes.** After
+   INVALID_CONFIGURATION_DATA, the File objects still read back what the
+   client wrote (the stack's Changes_Pending is still TRUE too), so the
+   client can correct and re-activate. A restart discards them.
