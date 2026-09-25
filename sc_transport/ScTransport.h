@@ -202,6 +202,15 @@ public:
     void StopListening(const std::string& uri);
 
     bool IsListening() const;
+
+    // Rebuilds the TLS contexts so they load the certificate/key/CA files
+    // again - called after new certificates were activated over BACnet
+    // (main.cpp section 2d-ii). The listener is torn down and restarted on the
+    // same URI: every accepted peer is disconnected (reported to the stack as
+    // Disconnected, like any close) and reconnects under the new certificates.
+    // Every outbound hub connection is closed; the stack's own retry timer
+    // re-dials it (this class never reconnects on its own - plan fact 7).
+    void ReloadCredentials();
     const std::string& ListenUri() const { return m_listenUri; }
 
     // Snapshot of the cumulative counters above - see ScTransportMetrics'

@@ -362,11 +362,12 @@ issuer-certificate.pem                                            PUBLIC
     operational certificate in this set - the hub's and every client's. The
     standard's Issuer_Certificate_Files property is an array of exactly two
     file references: the issuer certificates a device uses to validate the
-    certificates its peers present. With one lab CA, both entries refer to
-    this same file; BACnetExampleBSCHUB serves it as File 3 ("Issuer
-    Certificate Slot 1") and File 4 ("Issuer Certificate Slot 2"). With a
-    real PKI the two slots typically hold a root and an intermediate
-    certificate. Every device that connects to the hub needs a copy.
+    certificates its peers present. BACnetExampleBSCHUB serves this file as
+    File 3 ("Issuer Certificate Slot 1"). File 4 ("Issuer Certificate Slot
+    2") serves issuer-certificate-2.pem once a client has written one over
+    BACnet, and this same file until then. With a real PKI the two slots
+    typically hold a root and an intermediate certificate. Every device that
+    connects to the hub needs a copy.
 
 issuer-private-key.pem                                            PRIVATE
     The issuer's private key. It is the only thing that can sign new
@@ -374,6 +375,16 @@ issuer-private-key.pem                                            PRIVATE
     to your BACnet/SC network. It is used only by
     "BACnetExampleBSCHUB --add-client-certs"; the running hub never reads
     it. Keep it off devices, and ideally off the network entirely.
+
+issuer-certificate-2.pem                                          PUBLIC
+    Not created by --generate-certs. Written when a client adds a second
+    issuer over BACnet (clause 19.8.3 "add issuer", File 4), so devices
+    signed by either issuer are accepted.
+
+trusted-issuers.pem                                               PUBLIC
+    Written by the hub at startup and after every certificate change: every
+    issuer certificate from both slots. This is what TLS trusts peers
+    against. Don't edit it; it's regenerated.
 
 certificates.txt                                                  PUBLIC
     One line per certificate in this set: label, location, serial number,
@@ -700,10 +711,12 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
         PRIVATE_KEY_FILE, CERTIFICATE_SIGNING_REQUEST_FILE,
         LEGACY_ISSUER_CERTIFICATE_FILE, LEGACY_ISSUER_PRIVATE_KEY_FILE,
         LEGACY_OPERATIONAL_CERTIFICATE_FILE, LEGACY_PRIVATE_KEY_FILE,
-        LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE, "ca.srl", "node.crt", "node.key", MANIFEST_FILE, README_FILE};
+        LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE, ISSUER_CERTIFICATE_2_FILE, TRUSTED_ISSUERS_FILE,
+        "ca.srl", "node.crt", "node.key", MANIFEST_FILE, README_FILE};
     if (!force) {
         for (const char* name : setFiles) {
-            if (fs::exists(certDir / name) && strcmp(name, MANIFEST_FILE) != 0 && strcmp(name, README_FILE) != 0) {
+            if (fs::exists(certDir / name) && strcmp(name, MANIFEST_FILE) != 0 && strcmp(name, README_FILE) != 0 &&
+                strcmp(name, TRUSTED_ISSUERS_FILE) != 0) {
                 fprintf(stderr,
                         "Error: \"%s\" already exists. Replacing the issuer invalidates every certificate "
                         "already handed out. Use --add-client-certs to add clients to the existing set, "

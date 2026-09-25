@@ -50,6 +50,13 @@ This repository is self-contained:
   than hard-coding a name. `--add-client-certs` must keep signing with the
   existing issuer, never a new one, or running hubs stop trusting the new
   clients.
+- `cert_store.{h,cpp}` - the 4 certificate File objects' contents and the
+  device-B side of the BACnet/SC certificate procedures (clause 19.8.3):
+  File_Size/AtomicWriteFile writes are STAGED in memory, and main.cpp's
+  ReinitializeDevice callback validates and commits them on ACTIVATE_CHANGES
+  or WARMSTART. Never write through to disk (a hub re-dial mid-upload would
+  load a half-written certificate), and never commit a set that fails
+  `ValidateStaged()` - that is what stops the hub locking itself out.
 - `scripts/generate-test-certs.cmake` - generates the lab-only self-signed
   certificate set under `certs/` (gitignored) `sc_transport/` and the File
   objects (`main.cpp` section 2d) both read.
@@ -121,8 +128,15 @@ Interactive keys while running: `h` help, `q` quit, up/down nudge Analog Input 1
 - Device is named "Chipkin Example B-SCHUB"; objects use the series' colour names; vendor id 389.
 - Implement **only** the services and objects the B-SCHUB profile requires -
   but expose **every required property** of each object for Protocol_Revision
-  24. No WriteProperty, no commandable outputs - this profile does not require
-  DS-WP-B.
+  24. No commandable outputs, and WriteProperty only for the certificate File
+  objects' `File_Size` (the clause 19.8.3 certificate procedures, with
+  AtomicWriteFile and ReinitializeDevice ACTIVATE_CHANGES/WARMSTART) - this
+  profile does not require DS-WP-B.
+- **Never destroy the last TLS lws_context.** `ScTransport` keeps a
+  process-lifetime context (`EnsureTlsLifetimeContext`), because destroying
+  the last context created with `LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT` tears
+  down OpenSSL for the whole process (the next `lws_create_context` crashes).
+  Listener restarts - the stack's own, and `ReloadCredentials()` - depend on it.
 - Two Network Port objects: 1 "BACnet IP" (BACnet/IP - keep this fully
   functional, it is the example's fallback discovery path) and 2 "BACnet SC"
   (BACnet/SC, `Network_Type = secureConnect (11)`, a **local** constant in

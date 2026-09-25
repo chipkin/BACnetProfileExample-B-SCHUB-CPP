@@ -18,7 +18,7 @@ that last part does and does not do in this build.
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.1.18**, built and verified
+> **Versions:** this document describes **example v1.1.19**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
 > **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -92,10 +92,12 @@ objects (see the device tree below) for the certificate/CSR content.
   node certificate set under `certs/` (gitignored; **lab testing only** - see
   [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real) for
   what a production certificate story needs).
-- 4 read-only File objects (`Operational Certificate`/`Certificate Signing Request`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
-  hub's operational certificate, CSR, and issuer certificate (×2 slots) over
+- 4 File objects (`Operational Certificate`/`Certificate Signing Request`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
+  hub's operational certificate, CSR, and issuer certificates (×2 slots) over
   AtomicReadFile - **never the private key**, which has no File object at
-  all. Verified byte-for-byte over BACnet/IP against `certs/operational-certificate.pem`, with the
+  all. The operational and issuer certificates can also be **replaced over
+  BACnet** (clause 19.8.3) - see [Certificate management over
+  BACnet](#certificate-management-over-bacnet). Verified byte-for-byte over BACnet/IP against `certs/operational-certificate.pem`, with the
   private key confirmed unreachable through any File object instance.
 
 **Known, documented limitations (not bugs in this example) - see
@@ -128,8 +130,10 @@ BACnet/IP's plain UDP.
 A B-SCHUB device answers **ReadProperty**, is discoverable, responds to
 **DeviceCommunicationControl**, and operates the hub function above. It does
 not have to support **WriteProperty**, **alarming / event reporting**,
-**scheduling**, or **trending**, and this example implements none of them on
-purpose.
+**scheduling**, or **trending**. This example implements none of them for its
+data objects; the only writes it accepts are the BACnet/SC certificate
+procedures on its certificate File objects (see [Certificate management over
+BACnet](#certificate-management-over-bacnet)).
 
 **But it is still a full BACnet device.** Even a simple profile must present
 the standard object model - a **Device** object, at least one **Network Port**
@@ -203,7 +207,10 @@ still claims exactly one profile.
 | Who-Has / I-Have | Answers Who-Has with I-Have (DM-DOB-B). |
 | DeviceCommunicationControl | Stops/resumes communication, optionally timed/passworded (DM-DCC-B). |
 | BACnet/SC hub function | Protocol/state-machine AND WebSocket/TLS transport both real (NM-SCH-B) - see above. |
-| AtomicReadFile | Serves the 4 certificate/CSR File objects, stream access, read-only. |
+| AtomicReadFile | Serves the 4 certificate/CSR File objects, stream access. |
+| AtomicWriteFile | Writes a new certificate into File 1 (operational) or File 3/4 (issuer slots) - staged until activated. See [Certificate management over BACnet](#certificate-management-over-bacnet). |
+| WriteProperty | Only `File_Size` of Files 1, 3 and 4 (0 empties the file before a new certificate is written). Every other property of every object is read-only. |
+| ReinitializeDevice | `ACTIVATE_CHANGES` and `WARMSTART` apply staged certificate writes (validated first); other states are refused. Uses the `dcc-password` when one is set. |
 
 ### Object types
 
@@ -215,10 +222,10 @@ still claims exactly one profile.
 | Multi-State Input | 1 | Hot Pink | read-only |
 | Network Port | 1 | BACnet IP | - (BACnet/IP) |
 | Network Port | 2 | BACnet SC | - (BACnet/SC) |
-| File | 1 | Operational Certificate | read-only (operational certificate) |
+| File | 1 | Operational Certificate | writable over BACnet (operational certificate) |
 | File | 2 | Certificate Signing Request | read-only (certificate signing request) |
-| File | 3 | Issuer Certificate Slot 1 | read-only (issuer certificate slot 1) |
-| File | 4 | Issuer Certificate Slot 2 | read-only (issuer certificate slot 2) |
+| File | 3 | Issuer Certificate Slot 1 | writable over BACnet (issuer certificate slot 1) |
+| File | 4 | Issuer Certificate Slot 2 | writable over BACnet (issuer certificate slot 2) |
 
 Every required property of every object, and who answers it, is in
 [docs/PICS.md](docs/PICS.md).
@@ -422,7 +429,7 @@ Expected output (with `certs/` already generated - see [Generate lab test
 certificates](#generate-lab-test-certificates) above):
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.18
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.19
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -799,6 +806,52 @@ endpoint](#healthmetrics-http-endpoint)) - and a bearer token in a header
 rather than a real auth scheme (mTLS, OAuth). See `TODO.md`'s "Genuinely open
 items" for the full list.
 
+### Certificate management over BACnet
+
+A BACnet client can replace this hub's certificates over plain BACnet, using
+the BACnet/SC certificate procedures (ANSI/ASHRAE 135-2024 clause 19.8.3) -
+for example the CAS BACnet Explorer's BACnet/SC certificate page. This hub is
+the "device B" side:
+
+1. The client writes `File_Size = 0` to a certificate File object
+   (WriteProperty), then `AtomicWriteFile`s the new PEM certificate into it:
+   File 1 for a new operational certificate, File 3 or 4 for an issuer.
+2. The writes are **staged**: reading the File object back returns what was
+   written, and Network Port 2's `Changes_Pending` goes TRUE, but nothing is
+   written to disk and TLS keeps using the current certificates.
+3. The client sends **ReinitializeDevice `ACTIVATE_CHANGES`** (or
+   `WARMSTART`). The hub checks the staged set first. It refuses with
+   `INVALID_CONFIGURATION_DATA`, changing nothing, if:
+   - a certificate doesn't parse;
+   - both issuer slots would be empty;
+   - the operational certificate doesn't match this hub's private key or
+     doesn't chain to an issuer.
+   Otherwise it writes the files atomically and restarts its TLS listener
+   and hub connection, and peers reconnect under the new certificates.
+
+Two procedures work end to end (`tests/sc/cert_procedure_test.py`):
+
+- **Add issuer** - write a new CA into the unused issuer slot. Slot 2 has
+  its own file (`issuer-certificate-2.pem`) and serves slot 1's certificate
+  until something is written to it. TLS trusts every issuer in both slots
+  (the hub writes them to `trusted-issuers.pem`), so devices from the old
+  and new CA are both accepted.
+- **Replace operational certificate, existing CSR** - read File 2
+  (`Certificate Signing Request`), have the site CA sign it, write the result
+  into File 1, activate.
+
+**Not supported:**
+- **Key-pair regeneration.** Writing `GENERATE_CSR_FILE` to Network Port 2's
+  Command needs a host hook the stack doesn't have yet
+  ([cas-bacnet-stack#2976](https://github.com/chipkin/cas-bacnet-stack/issues/2976)).
+  A new operational certificate therefore has to be issued for the hub's
+  existing key, which is what the CSR File holds.
+- **Discarding staged writes.** The hub isn't told about a `DISCARD_CHANGES`
+  ([cas-bacnet-stack#2557](https://github.com/chipkin/cas-bacnet-stack/issues/2557)),
+  so staged writes last until the next activation or a restart.
+
+If `dcc-password` is set in the config file, ReinitializeDevice needs it too.
+
 ## Verify
 
 ### Over BACnet/IP (verified, real client)
@@ -815,8 +868,8 @@ against a running instance of this example:
 4. **Read Network Port 2** - `Object_Name` = `"BACnet SC"`; `Network_Type` =
    `11` (`secureConnect`) - confirming the BACnet/SC Network Port object is
    present and correctly typed, over ordinary BACnet/IP ReadProperty.
-5. **Confirm the profile boundary** - a **WriteProperty** to any object is
-   rejected, and `DeviceCommunicationControl` with the deprecated plain
+5. **Confirm the profile boundary** - a **WriteProperty** to any property
+   other than a certificate File object's `File_Size` is rejected, and `DeviceCommunicationControl` with the deprecated plain
    `disable` value is rejected with `service-request-denied`.
 
 You can repeat this with the [CAS BACnet

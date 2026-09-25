@@ -192,6 +192,26 @@ jobs:
       - name: BACnet/SC File objects test (V6)
         run: python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47822 --cert-dir certs
 
+      # The clause 19.8.3 certificate procedures over BACnet (add issuer, rejected
+      # activation, replace operational certificate). Runs a SECOND instance on its
+      # own certificate sets, because the test rewrites the hub's certificates.
+      - name: BACnet/SC certificate procedures over BACnet (clause 19.8.3)
+        shell: bash
+        run: |
+          "${{ matrix.exe }}" --sc-cert-dir ci-hub-certs --generate-certs 1
+          "${{ matrix.exe }}" --sc-cert-dir ci-other-certs --generate-certs 1
+          "${{ matrix.exe }}" --port 47824 --sc-port 47825 --http-port 18081 --sc-cert-dir ci-hub-certs > cert-proc.log 2>&1 &
+          echo $! > cert-proc.pid
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" cert-proc.log && break
+            sleep 0.2
+          done
+          rc=0
+          python tests/sc/cert_procedure_test.py --target-port 47824 --sc-port 47825 \
+            --cert-dir ci-hub-certs --second-issuer-dir ci-other-certs || rc=$?
+          kill "$(cat cert-proc.pid)" 2>/dev/null || true
+          [ "$rc" -eq 0 ] || { cat cert-proc.log; exit "$rc"; }
+
       - name: Stop the example
         shell: bash
         if: always()

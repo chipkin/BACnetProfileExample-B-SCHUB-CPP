@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.19] - unreleased
+
+### Added
+
+- **Certificates can be replaced over BACnet** - the device-B side of the
+  BACnet/SC certificate procedures (ANSI/ASHRAE 135-2024 clause 19.8.3), so a
+  certificate tool such as the CAS BACnet Explorer can run "add issuer" and
+  "replace operational certificate (existing CSR)" against this hub (#10).
+  - WriteProperty `File_Size` and AtomicWriteFile into File 1 (operational)
+    and Files 3/4 (issuer slots). File 2 (CSR) stays read-only.
+  - The writes are staged in memory (new `cert_store.{h,cpp}`): read back
+    over BACnet, Changes_Pending TRUE, nothing on disk, TLS unchanged.
+  - ReinitializeDevice `ACTIVATE_CHANGES`/`WARMSTART` validates the staged
+    set - it must parse, the operational certificate must match the hub's
+    private key and chain to an issuer - then writes the files atomically
+    and reloads TLS (`ScTransport::ReloadCredentials`). A set that would
+    lock the hub out is refused with INVALID_CONFIGURATION_DATA and nothing
+    changes. Other states answer OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. The
+    `dcc-password`, when set, is required.
+  - Issuer slot 2 now has its own file (`issuer-certificate-2.pem`, serving
+    slot 1's until written), and TLS trusts every issuer in both slots
+    (`trusted-issuers.pem`, regenerated at startup and on activation).
+  - New `tests/sc/cert_procedure_test.py` (13/13): add issuer (a client
+    from the new CA is then accepted, the old CA's still is), rejected
+    activation, replace operational certificate (the hub then presents the
+    new one), CSR not writable, COLDSTART refused.
+  - Not supported: `GENERATE_CSR_FILE` key regeneration (no stack hook,
+    cas-bacnet-stack#2976) and dropping staged writes on `DISCARD_CHANGES`
+    (cas-bacnet-stack#2557). See TODO.md.
+
+### Fixed
+
+- **Restarting the BACnet/SC listener crashed or hung the process.**
+  Destroying the last libwebsockets context created with
+  `LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT` tears down OpenSSL for the whole
+  process; the next `lws_create_context` then crashes. Confirmed with a
+  stand-alone probe. `ScTransport` now keeps one TLS context alive for the
+  process, so the stack's own SC port restart and a certificate reload both
+  work. This is also the root cause of TODO.md item 15.
+- APP_VERSION bumped 1.1.18 -> 1.1.19.
+
 ## [1.1.18] - 2026-09-24
 
 ### Added

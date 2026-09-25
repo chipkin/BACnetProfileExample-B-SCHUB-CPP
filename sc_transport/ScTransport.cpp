@@ -598,7 +598,54 @@ ScTransport::~ScTransport() {
     m_clientProtocols = nullptr;
 }
 
+// -----------------------------------------------------------------------------
+// Keeping OpenSSL alive for the whole process.
+//
+// Destroying an lws_context created with LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT
+// tears down OpenSSL's global state for the WHOLE process when it is the last
+// such context alive. Confirmed with a stand-alone probe against this
+// project's vcpkg libwebsockets + OpenSSL 3: after lws_context_destroy(),
+// PEM_read_bio_X509 fails, and the next lws_create_context() crashes with an
+// access violation. That is the root cause of TODO.md item 15's "retrying
+// lws_create_context crashes", and it broke any listener restart - the stack
+// stopping and restarting the SC port, or a certificate reload
+// (ReloadCredentials()).
+//
+// The fix: one TLS-initialised context with no listener, created once and
+// never destroyed, so lws never runs that global teardown. Every real
+// listener/client context can then be destroyed and recreated safely (also
+// confirmed by the probe: create/destroy/create/destroy, parsing still works).
+// It holds no certificates, so it works even before certs/ exists.
+// -----------------------------------------------------------------------------
+namespace {
+int LifetimeContextCallback(lws*, lws_callback_reasons, void*, void*, size_t) {
+    return 0;
+}
+}  // namespace
+
+static void EnsureTlsLifetimeContext() {
+    static lws_context* lifetimeContext = nullptr;
+    if (lifetimeContext != nullptr) {
+        return;
+    }
+    static lws_protocols protocols[2] = {
+        {"bacnet-sc-tls-lifetime", LifetimeContextCallback, 0, 0, 0, nullptr, 0},
+        {nullptr, nullptr, 0, 0, 0, nullptr, 0}};
+    lws_context_creation_info info;
+    std::memset(&info, 0, sizeof(info));
+    info.port = CONTEXT_PORT_NO_LISTEN;
+    info.protocols = protocols;
+    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    info.gid = static_cast<gid_t>(-1);
+    info.uid = static_cast<uid_t>(-1);
+    lifetimeContext = lws_create_context(&info);  // deliberately never destroyed
+    if (lifetimeContext == nullptr) {
+        fprintf(stderr, "BACnet/SC: could not create the TLS lifetime context - a listener restart may crash\n");
+    }
+}
+
 void ScTransport::Configure(const ScTlsFiles& tls, const std::string& acceptSubprotocol) {
+    EnsureTlsLifetimeContext();
     m_tls = tls;
     m_acceptSubprotocol = acceptSubprotocol;
     // Set once, here, so both m_protocols[0].name (listener, built in
@@ -840,6 +887,24 @@ void ScTransport::StopListening(const std::string& uri) {
     }
     printf("BACnet/SC: no longer listening on %s\n", uri.c_str());
     DestroyListenerContext();
+}
+
+void ScTransport::ReloadCredentials() {
+    if (m_listenerContext != nullptr) {
+        const std::string uri = m_listenUri;
+        printf("BACnet/SC: reloading certificates - restarting the listener on %s\n", uri.c_str());
+        DestroyListenerContext();  // queues a Disconnected event per accepted peer
+        if (!StartListening(uri)) {
+            printf("BACnet/SC: could not restart the listener on %s with the new certificates\n", uri.c_str());
+        }
+    }
+    for (auto& kv : m_clients) {
+        if (kv.second.wsi != nullptr) {
+            printf("BACnet/SC: reloading certificates - closing hub connection %s (the stack re-dials it)\n",
+                   kv.first.c_str());
+            Disconnect(kv.first);
+        }
+    }
 }
 
 bool ScTransport::IsListening() const {

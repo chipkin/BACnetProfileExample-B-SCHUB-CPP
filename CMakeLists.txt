@@ -126,6 +126,7 @@ add_executable(BACnetExampleBSCHUB
     main.cpp
     config.cpp
     cert_tool.cpp
+    cert_store.cpp
     ${SC_TRANSPORT_SOURCES}
     ${COMMON_SOURCES})
 
@@ -148,7 +149,7 @@ if(MSVC)
 else()
     set(EXAMPLE_WARNINGS "-Wall;-Wextra")
 endif()
-set_source_files_properties(main.cpp config.cpp ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
+set_source_files_properties(main.cpp config.cpp cert_tool.cpp cert_store.cpp ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
     PROPERTIES COMPILE_OPTIONS "${EXAMPLE_WARNINGS}")
 
 # --- Platform sockets --------------------------------------------------------

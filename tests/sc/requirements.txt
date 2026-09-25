@@ -1,2 +1,3 @@
 websockets>=12.0
+cryptography>=42  # tests/sc/cert_procedure_test.py (signs the hub's CSR with a second CA)
 bacpypes3>=0.0.100  # tests/sc/file_object_test.py (V6: File objects over BACnet/IP)
