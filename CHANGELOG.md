@@ -22,6 +22,10 @@ Open work is tracked in
   build-provenance attestation: `gh attestation verify <file> --repo
   chipkin/BACnetProfileExample-B-SCHUB-CPP`
   ([#34](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/34)).
+- On Windows 10 the hub logs a start-up warning: BACnet/SC tools on that
+  computer that use Windows' own TLS (such as YABE) can't connect, because
+  Windows 10 can't make the TLS 1.3 client connections BACnet/SC requires
+  ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
 
 ## [1.3.0] - 2026-09-26
 

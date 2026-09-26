@@ -1613,6 +1613,44 @@ static void LwsLogCallback(int level, const char* line) {
 }
 
 // -----------------------------------------------------------------------------
+// 2g. Windows 10 notice (issue #39).
+//
+// BACnet/SC requires TLS 1.3. The hub itself is fine on Windows 10 - it uses
+// OpenSSL - but Windows' own TLS stack (Schannel) only makes TLS 1.3 client
+// connections from Windows 11 / Server 2022 (build 22000) on. So BACnet/SC
+// tools on a Windows 10 computer that use Windows' TLS, such as YABE, fail
+// the handshake with this hub (and any conformant hub). Warn once at start-up
+// so that failure isn't a mystery.
+//
+// RtlGetVersion, not GetVersionEx: without a compatibility manifest,
+// GetVersionEx reports Windows 8 on every later version.
+// -----------------------------------------------------------------------------
+static const char* const WINDOWS10_ISSUE_URL = "https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39";
+
+static void WarnIfWindows10() {
+#if defined(_WIN32)
+    typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOW*);
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const RtlGetVersionFn rtlGetVersion =
+        ntdll != NULL ? reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion")) : NULL;
+    OSVERSIONINFOW version;
+    memset(&version, 0, sizeof(version));
+    version.dwOSVersionInfoSize = sizeof(version);
+    if (rtlGetVersion == NULL || rtlGetVersion(&version) != 0) {
+        return;  // can't tell - say nothing rather than guess
+    }
+    if (version.dwMajorVersion == 10 && version.dwBuildNumber < 22000) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "This computer runs Windows 10 (build %lu). The hub works, but BACnet/SC tools on this computer "
+            "that use Windows' own TLS (for example YABE) can't connect: BACnet/SC requires TLS 1.3, and "
+            "Windows 10 can't make TLS 1.3 client connections. Use Windows 11 / Server 2022 or later for "
+            "those tools, or a client with its own TLS 1.3 (CAS BACnet Explorer). See %s",
+            version.dwBuildNumber, WINDOWS10_ISSUE_URL);
+    }
+#endif
+}
+
+// -----------------------------------------------------------------------------
 // 3. main()
 // -----------------------------------------------------------------------------
 // Parse "--sc-port <n>" (1..65535); returns defaultPort if not given/invalid.
@@ -2126,6 +2164,7 @@ static int RunHub(int argc, char** argv) {
         g_httpTlsKey = fileConfig.httpTlsKey;
     }
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
+    WarnIfWindows10();  // issue #39
     g_startTime = std::chrono::steady_clock::now();
 
     // Item 5: route libwebsockets' own internal logging through this app's

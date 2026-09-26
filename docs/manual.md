@@ -123,6 +123,13 @@ build is made on the current Ubuntu LTS, so it needs a distribution with that
 glibc version or newer; for an older distribution, build from source (see the
 README). The hub also builds from source on macOS.
 
+The hub runs fine on Windows 10, but BACnet/SC tools on a Windows 10
+computer that use Windows' own TLS (such as YABE) can't connect to it or to
+any other BACnet/SC hub: BACnet/SC requires TLS 1.3, and Windows 10 can't
+make TLS 1.3 client connections. The hub logs a warning about this when it
+starts on Windows 10
+([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
+
 ### Firewall
 
 Allow in:
@@ -563,6 +570,7 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | `ERROR: TOO MANY BACnet/SC CONNECTIONS REQUESTED` and the hub exits | `sc-max-hub-connections` is above 4. Set it to 4 or less. See [Connection limit](#connection-limit). |
 | `/health` is `degraded` and BACnet/IP is off | BACnet/SC isn't listening, so the device is unreachable over BACnet. Fix the certificates, or run with `--bacnet-ip on`. |
 | Red `Error:` lines at start-up | Normal CAS BACnet Stack debug output (e.g. the hub hearing its own broadcast I-Am). |
+| A BACnet/SC tool on Windows 10 (e.g. YABE) fails with `A call to SSPI failed` / a TLS handshake error, and the hub logs nothing | Windows 10's own TLS can't do TLS 1.3, which BACnet/SC requires. The hub warns about this at start-up on Windows 10. Run the tool on Windows 11 / Server 2022 or later, or use a client with its own TLS 1.3 (CAS BACnet Explorer). See [#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39). |
 | The Windows service doesn't start | Check `log-file` in the service's `hub.conf`, and Windows Event Viewer > Windows Logs > System for Service Control Manager errors. |
 
 ## 11. The BACnet device
