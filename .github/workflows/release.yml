@@ -552,7 +552,8 @@ jobs:
           sudo journalctl -u bacnet-schub-hub --no-pager | tail -20
           [ "$ok" = 1 ] || { echo "FAIL: the bacnet-schub-hub service did not answer /health"; exit 1; }
           curl -s http://127.0.0.1:8080/health; echo
-          test -f /var/log/bacnet-schub/hub.log || { echo "FAIL: no /var/log/bacnet-schub/hub.log"; exit 1; }
+          # /var/log/bacnet-schub is 0750 bacnethub (like the certificates), so check it as root.
+          sudo grep -q "ready" /var/log/bacnet-schub/hub.log || { echo "FAIL: /var/log/bacnet-schub/hub.log missing or has no start-up lines"; sudo ls -la /var/log/bacnet-schub; exit 1; }
           sudo apt-get purge -y -qq bacnet-schub-hub > /dev/null
           ! systemctl is-active bacnet-schub-hub
 
