@@ -182,6 +182,18 @@ async def main():
         record("ReinitializeDevice COLDSTART refused",
                "optional-functionality-not-supported" in error_text(response), error_text(response))
 
+        # --- Changes_Pending before any write (issue #41) ---------------------------------------
+        # Should be FALSE: nothing has been written. The stack reports TRUE on every start
+        # (cas-bacnet-stack#2866: SetBACnetSCCertificateFileObjects leaves its own start-up
+        # binding pending), so this is reported as a known issue rather than failed. When it
+        # reads FALSE, #2866 is fixed: make this a normal record().
+        pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
+        if pending:
+            print("KNOWN ISSUE: Network Port 2 Changes_Pending is TRUE before any write "
+                  "(#41, cas-bacnet-stack#2866) - not counted as a failure")
+        else:
+            record("Network Port 2 Changes_Pending FALSE before any write (cas-bacnet-stack#2866 fixed)", True)
+
         # --- add issuer -----------------------------------------------------------------------
         new_ca = (other_dir / "issuer-certificate.pem").read_bytes()
         await write_file(app, device, FILE_ISSUER_2, new_ca)
@@ -192,6 +204,8 @@ async def main():
                not (hub_dir / "issuer-certificate-2.pem").exists())
         response = await reinitialize(app, device, "activateChanges")
         record("ACTIVATE_CHANGES (add issuer) acknowledged", isinstance(response, SimpleAckPDU), str(response))
+        pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
+        record("Network Port 2 Changes_Pending FALSE after ACTIVATE_CHANGES", not pending, str(pending))
         record("issuer-certificate-2.pem written on activation",
                (hub_dir / "issuer-certificate-2.pem").read_bytes() == new_ca)
         await asyncio.sleep(2)  # the main loop reloads TLS on its next pass

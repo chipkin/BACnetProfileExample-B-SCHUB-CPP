@@ -62,6 +62,9 @@ These are known and documented; record how the test plan treats each one:
   and `DISCARD_CHANGES`
   ([#29](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/29))
   can't be written; both wait on CAS BACnet Stack changes.
+- Network Port 2 reads `Changes_Pending` TRUE right after start-up with
+  nothing written (cas-bacnet-stack#2866,
+  [#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
 - A device's Connect-Request without the Hello option is refused (strict
   AB.2.2); `--sc-accept-hub-without-hello` only relaxes the connector.
 - At most 4 BACnet/SC connections (an evaluation limit of this example).

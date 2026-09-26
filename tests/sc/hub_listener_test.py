@@ -279,6 +279,31 @@ async def v2_connect_request_gets_accept(uri: str, cert_dir: Path):
         return False
 
 
+async def v2_connect_request_without_hello_refused(uri: str, cert_dir: Path):
+    """A Connect-Request WITHOUT the Hello destination option - what YABE sends
+    (issue #40) - gets a BVLC-Result NAK: the hub follows 135-2024 AB.2.2
+    strictly. (cas-bacnet-stack#3097 asks for a flag to relax this; until the
+    hub offers it, refusal is the expected answer.) The NAK carries the
+    stack's reason, which the hub also logs."""
+    ctx = make_ssl_context(cert_dir, use_client_cert=True)
+    vmac = bytes([0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x1F])
+    device_uuid = bytes(range(0x60, 0x70))
+    payload = vmac + device_uuid + struct.pack(">HH", 65535, 1497)
+    request = struct.pack(">BBH", FUNC_CONNECT_REQUEST, 0x00, 4243) + payload  # no destination options
+    name = "V2: Connect-Request without Hello -> BVLC-Result NAK"
+    try:
+        async with websockets.connect(uri, ssl=ctx, subprotocols=[SUBPROTOCOL], open_timeout=5) as ws:
+            await ws.send(request)
+            reply = await asyncio.wait_for(ws.recv(), timeout=5)
+            ok = isinstance(reply, bytes) and len(reply) >= 6 and reply[0] == 0x00 and reply[5] == 0x01
+            details = reply[11:].decode("utf-8", "replace") if ok and len(reply) > 11 else ""
+            record(name, ok, f"{len(reply)} bytes: {reply.hex()}" + (f' - "{details}"' if details else ""))
+            return ok
+    except Exception as exc:
+        record(name, False, f"{type(exc).__name__}: {exc}")
+        return False
+
+
 async def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1")
@@ -309,6 +334,7 @@ async def main():
     await v1_wrong_subprotocol(uri, cert_dir)
     await v1_text_frame_closes_1003(uri, cert_dir)
     await v2_connect_request_gets_accept(uri, cert_dir)
+    await v2_connect_request_without_hello_refused(uri, cert_dir)
 
     print()
     failed = [name for name, passed, _ in RESULTS if not passed]

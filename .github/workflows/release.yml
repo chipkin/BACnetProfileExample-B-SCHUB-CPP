@@ -337,6 +337,14 @@ jobs:
       - name: BACnet/SC listener test (V1/V2)
         run: python tests/sc/hub_listener_test.py --port 47823 --cert-dir certs
 
+      # The no-Hello Connect-Request in the listener test is refused by the stack; the hub
+      # must log the stack's own reason from the NAK, not a guess (issue #40).
+      - name: Refused Connect-Request is logged with the stack's reason
+        shell: bash
+        run: |
+          grep "Connect-Request refused by the hub" sc-smoke.log
+          grep -q 'Connect-Request refused by the hub: "' sc-smoke.log || { echo "FAIL: no reason in the refusal log line"; exit 1; }
+
       - name: BACnet/SC File objects test (V6)
         run: python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47822 --cert-dir certs
 

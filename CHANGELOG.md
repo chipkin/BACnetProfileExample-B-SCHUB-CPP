@@ -27,6 +27,19 @@ Open work is tracked in
   Windows 10 can't make the TLS 1.3 client connections BACnet/SC requires
   ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
 
+### Changed
+
+- When the hub refuses a BACnet/SC Connect-Request, the audit log gives the
+  CAS BACnet Stack's own reason (from the BVLC-Result NAK it sends, e.g.
+  "Connect messages require the Hello destination option") instead of
+  guessing; `hub_listener_test.py` checks a Connect-Request without Hello
+  gets that NAK
+  ([#40](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/40)).
+- `cert_procedure_test.py` checks `Changes_Pending` is FALSE after
+  ACTIVATE_CHANGES, and reports the start-up `Changes_Pending` = TRUE stack
+  bug as a known issue; the manual documents it
+  ([#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
+
 ## [1.3.0] - 2026-09-26
 
 ### Added

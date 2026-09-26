@@ -470,6 +470,15 @@ nor `DISCARD_CHANGES`
 To drop staged writes, write the file's original contents back, or restart
 the hub (a restart discards staged writes).
 
+**Known issue:** right after the hub starts, Network Port 2 reads
+`Changes_Pending` = TRUE (and `Current_Health` may report
+`invalid-configuration-data`) although nothing has been written. The CAS
+BACnet Stack leaves the hub's own start-up certificate settings pending
+(cas-bacnet-stack#2866,
+[#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
+The certificates in use are correct. The first ReinitializeDevice
+`ACTIVATE_CHANGES` clears it.
+
 If `dcc-password` is set, ReinitializeDevice requires it.
 
 ## 8. Status page and HTTP endpoints
