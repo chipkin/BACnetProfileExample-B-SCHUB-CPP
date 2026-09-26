@@ -7,17 +7,14 @@
 #include "CASExampleLog.h"
 
 #include <libwebsockets.h>
+#include <openssl/crypto.h>  // CRYPTO_memcmp - SecretsEqual()
+#include <openssl/evp.h>     // SHA-256 - SecretsEqual()
+#include <openssl/ssl.h>     // SSL_OP_NO_* - HTTPS protocol versions
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
+#include <iterator>
 
 namespace CASSc {
 
@@ -25,8 +22,8 @@ namespace CASSc {
 // certificate/CSR PEM file is a few KB; 64 bytes is comfortably below the
 // smallest plausible real cert, 65536 (64 KiB) comfortably above the largest
 // plausible one (even a long chain pasted into one slot by mistake) - this is
-// a sanity bound, not a precise one; see main() below for the honest
-// statement that this is NOT full X.509 validation.
+// a sanity bound, not a precise one - the real validation is main.cpp's
+// ApplyCertUpload (issue #25).
 const size_t kMinUploadBytes = 64;
 const size_t kMaxUploadBytes = 65536;
 
@@ -48,6 +45,9 @@ struct HttpServer::Session {
     std::string relativeFilename;  // under certDir, from resolveCertSlot()
     std::string slot;              // raw slot name, for logging
 
+    bool rateLimited = false;          // refused by AllowUploadAttempt() (issue #24)
+    const char* rateLimitWhich = "";
+
     bool tooLarge = false;   // Content-Length header (or accumulated body) exceeded kMaxUploadBytes
     std::string body;        // accumulated POST body (empty/ignored once tooLarge)
 
@@ -62,6 +62,8 @@ struct HttpServer::Session {
         slotKnown = false;
         relativeFilename.clear();
         slot.clear();
+        rateLimited = false;
+        rateLimitWhich = "";
         tooLarge = false;
         body.clear();
         response.clear();
@@ -86,6 +88,65 @@ int LwsHttpCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user,
 }
 
 }  // namespace
+
+bool SecretsEqual(const std::string& presented, const std::string& expected) {
+    unsigned char presentedDigest[EVP_MAX_MD_SIZE];
+    unsigned char expectedDigest[EVP_MAX_MD_SIZE];
+    unsigned int presentedLen = 0;
+    unsigned int expectedLen = 0;
+    if (EVP_Digest(presented.data(), presented.size(), presentedDigest, &presentedLen, EVP_sha256(), nullptr) != 1 ||
+        EVP_Digest(expected.data(), expected.size(), expectedDigest, &expectedLen, EVP_sha256(), nullptr) != 1 ||
+        presentedLen != expectedLen) {
+        return false;
+    }
+    return CRYPTO_memcmp(presentedDigest, expectedDigest, presentedLen) == 0;
+}
+
+// Refills a bucket holding at most `capacity` tokens at `capacity` per minute,
+// then takes one token if there is one. A bucket never used before starts full.
+static bool TakeAttempt(double* tokens, std::chrono::steady_clock::time_point* lastRefill, const unsigned capacity,
+                        const std::chrono::steady_clock::time_point now) {
+    if (*lastRefill == std::chrono::steady_clock::time_point()) {
+        *tokens = capacity;
+    } else {
+        const double perSecond = capacity / 60.0;
+        const double refilled = *tokens + std::chrono::duration<double>(now - *lastRefill).count() * perSecond;
+        *tokens = (refilled < capacity) ? refilled : capacity;  // not std::min - <windows.h> min/max macros
+    }
+    *lastRefill = now;
+    if (*tokens >= 1.0) {
+        *tokens -= 1.0;
+        return true;
+    }
+    return false;
+}
+
+bool HttpServer::AllowUploadAttempt(const std::string& client, const char** which) {
+    const auto now = std::chrono::steady_clock::now();
+    // Bounded table: forget clients whose bucket has had a minute to refill
+    // (a new bucket starts full, so nothing is lost). If every tracked client
+    // is recent, the total limit alone applies to a new one.
+    const size_t kMaxTrackedClients = 256;
+    auto it = m_uploadByClient.find(client);
+    if (it == m_uploadByClient.end() && m_uploadByClient.size() >= kMaxTrackedClients) {
+        for (auto c = m_uploadByClient.begin(); c != m_uploadByClient.end();) {
+            c = (now - c->second.lastRefill >= std::chrono::minutes(1)) ? m_uploadByClient.erase(c) : std::next(c);
+        }
+    }
+    if (it == m_uploadByClient.end() && m_uploadByClient.size() < kMaxTrackedClients) {
+        it = m_uploadByClient.emplace(client, AttemptBucket()).first;
+    }
+    if (it != m_uploadByClient.end() &&
+        !TakeAttempt(&it->second.tokens, &it->second.lastRefill, kUploadAttemptsPerClient, now)) {
+        *which = "per-client";
+        return false;
+    }
+    if (!TakeAttempt(&m_uploadTotal.tokens, &m_uploadTotal.lastRefill, kUploadAttemptsTotal, now)) {
+        *which = "total";
+        return false;
+    }
+    return true;
+}
 
 HttpServer::HttpServer() {}
 
@@ -115,13 +176,18 @@ bool HttpServer::Start(const HttpServerConfig& config) {
     info.port = m_config.port;
     info.iface = m_config.bindAddress.c_str();
     info.protocols = m_protocols;
-    // No TLS - this is plain HTTP. Was acceptable UNCONDITIONALLY when this
-    // listener could only ever bind 127.0.0.1; now that --http-bind /
-    // config-file http-bind can point it elsewhere, that safety margin is
-    // gone the moment an operator opts in - see the loud warning just below
-    // and issue #22 for why this would need real TLS
-    // (or a unix domain socket / named pipe instead of TCP) to be a sound
-    // default off loopback, which this fix does NOT add.
+    // HTTPS when a certificate is configured (issue #22), plain HTTP otherwise.
+    // TLS 1.2 or 1.3 (browsers and curl, not BACnet/SC peers, connect here).
+    // The process already keeps a TLS lws_context alive for its whole life
+    // (ScTransport's EnsureTlsLifetimeContext), so creating/destroying this one
+    // is safe.
+    const bool useTls = !m_config.tlsCertPath.empty();
+    if (useTls) {
+        info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+        info.ssl_cert_filepath = m_config.tlsCertPath.c_str();
+        info.ssl_private_key_filepath = m_config.tlsKeyPath.c_str();
+        info.ssl_options_set = SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1;
+    }
     info.user = this;
     info.gid = static_cast<gid_t>(-1);
     info.uid = static_cast<uid_t>(-1);
@@ -129,33 +195,37 @@ bool HttpServer::Start(const HttpServerConfig& config) {
     lws_context* ctx = lws_create_context(&info);
     if (ctx == nullptr) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
-            "HTTP server: failed to bind %s:%u (port already in use? address not assigned to this host?). "
+            "HTTP server: failed to start on %s:%u (port already in use? address not assigned to this host?%s). "
             "Health/metrics (Task 3) and certificate upload (Task 4) endpoints are NOT available "
             "this run; BACnet/IP and BACnet/SC are unaffected.",
-            m_config.bindAddress.c_str(), (unsigned)m_config.port);
+            m_config.bindAddress.c_str(), (unsigned)m_config.port,
+            useTls ? " HTTPS certificate or key unreadable?" : "");
         return false;
     }
 
     m_context = ctx;
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-        "HTTP server: listening on http://%s:%u (GET /health, GET /metrics - no auth; "
+        "HTTP server: listening on %s://%s:%u (GET /health, GET /metrics - no auth; "
         "POST /certs/<slot> - %s)",
-        m_config.bindAddress.c_str(), (unsigned)m_config.port,
-        m_config.bearerToken.empty() ? "DISABLED, dcc-password not configured" : "requires Authorization: Bearer <dcc-password>");
+        useTls ? "https" : "http", m_config.bindAddress.c_str(), (unsigned)m_config.port,
+        m_config.bearerToken.empty() ? "DISABLED, http-upload-token not configured"
+                                     : "requires Authorization: Bearer <http-upload-token>");
 
     // Logged every Start() (not once-ever) so this cannot scroll past an
     // operator who only checks the tail of a long-running log - see
     // HttpServer.h's Start() doc comment for the full reasoning. Deliberately
     // separate from the INFO line above (a Warning-level line an operator's
     // own log filtering is more likely to surface) rather than folded into it.
-    if (!isLoopback) {
+    if (!isLoopback && !useTls) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "HTTP server: bound to %s, NOT 127.0.0.1/localhost - GET /health and GET /metrics are now "
-            "reachable from off this host with NO authentication and NO TLS, and POST /certs/<slot> "
-            "(if enabled) has only a bearer-token check, not a real auth scheme, also over plain HTTP. "
-            "This is a deliberate opt-in (--http-bind / config-file http-bind), not this example's "
-            "default - see README.md \"Health/metrics HTTP endpoint\" before doing this on a network "
-            "you do not fully trust.",
+            "HTTP server: bound to %s, NOT 127.0.0.1/localhost, over PLAIN HTTP - GET /, /health and /metrics "
+            "(no authentication) and the POST /certs/<slot> bearer token travel unencrypted. Turn on "
+            "--http-tls, or use an SSH tunnel or a TLS reverse proxy - see docs/manual.md \"Security\".",
+            m_config.bindAddress.c_str());
+    } else if (!isLoopback) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+            "HTTP server: bound to %s over HTTPS - GET /, /health and /metrics need no authentication; "
+            "anyone who can reach this address can read them.",
             m_config.bindAddress.c_str());
     }
     return true;
@@ -232,15 +302,25 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     lws_get_peer_simple(wsi, peer, sizeof(peer));
 
     // Task 4 safety requirement: the endpoint is DISABLED ENTIRELY (not
-    // "accepts with no auth") when dcc-password is unset/empty - see
+    // "accepts with no auth") when http-upload-token is unset/empty - see
     // HttpServer.h's class comment and main.cpp's wiring of bearerToken.
     if (m_config.bearerToken.empty()) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - upload endpoint is disabled "
-            "(dcc-password is not configured; see README.md \"Secrets handling\").",
+            "(http-upload-token is not configured).",
             peer, session->slot.c_str());
         SendResponse(wsi, session, 503, "text/plain",
-                    "certificate upload is disabled: no dcc-password is configured.\n");
+                    "certificate upload is disabled: no http-upload-token is configured.\n");
+        return;
+    }
+    // Too many attempts (issue #24) - checked before the token, so a guesser
+    // learns nothing from a refused attempt.
+    if (session->rateLimited) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "cert upload REFUSED from %s: slot=\"%s\" - %s limit reached (%u attempts a minute per client, "
+            "%u in total)", peer, session->slot.c_str(), session->rateLimitWhich, kUploadAttemptsPerClient,
+            kUploadAttemptsTotal);
+        SendResponse(wsi, session, 429, "text/plain", "too many upload attempts; try again in a minute.\n");
         return;
     }
     if (!session->authOk) {
@@ -248,7 +328,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
             "cert upload REJECTED from %s: slot=\"%s\" - missing/invalid bearer token.",
             peer, session->slot.c_str());
         SendResponse(wsi, session, 401, "text/plain",
-                    "missing or invalid Authorization: Bearer <dcc-password> header.\n");
+                    "missing or invalid Authorization: Bearer <http-upload-token> header.\n");
         return;
     }
     if (!session->slotKnown) {
@@ -266,72 +346,25 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
         return;
     }
 
-    // PEM sanity check (Task 4: "looks like a PEM certificate" - deliberately
-    // NOT a full X.509 parse. OpenSSL is already vendored for the SC
-    // transport's TLS and COULD be used here for a real parse-and-sanity
-    // check; this example sticks to a header/size check because (a) it is a
-    // small, contained, easy-to-audit amount of code for a tutorial, (b) the
-    // real trust decision for an uploaded cert is made by the peer TLS stack
-    // at the next handshake anyway - a malformed cert simply fails to work,
-    // it does not compromise this device - and (c) adding a full ASN.1/X.509
-    // parse here would be exactly the kind of scope creep this batch's task
-    // list explicitly asks to weigh carefully. Issue #25 tracks validating
-    // uploads the way CertStore validates BACnet writes.
-    const bool isCsr = (session->slot == "csr");
-    const std::string neededHeader = isCsr ? "-----BEGIN CERTIFICATE REQUEST-----" : "-----BEGIN CERTIFICATE-----";
-    if (session->body.find(neededHeader) == std::string::npos) {
+    // Validate and install it (issue #25): main.cpp's handler runs the upload
+    // through the same checks as a certificate written over BACnet - it must
+    // parse as X.509, and the resulting set must still let the hub run
+    // BACnet/SC (the operational certificate matches the private key and
+    // chains to an issuer) - before anything reaches disk.
+    std::string message;
+    const int status = m_config.applyCertUpload
+        ? m_config.applyCertUpload(session->slot, session->body, &message)
+        : 503;
+    if (status != 200) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "cert upload REJECTED from %s: slot=\"%s\" - body does not look like PEM (missing \"%s\").",
-            peer, session->slot.c_str(), neededHeader.c_str());
-        SendResponse(wsi, session, 400, "text/plain",
-                    "upload rejected: does not look like a PEM " + std::string(isCsr ? "CSR" : "certificate") + ".\n");
+            "cert upload REJECTED from %s: slot=\"%s\" (%zu bytes) - %s",
+            peer, session->slot.c_str(), session->body.size(), message.c_str());
+        SendResponse(wsi, session, status, "text/plain", "upload rejected: " + message + "\n");
         return;
     }
-
-    // Write to a temp file, then atomically rename over the live target -
-    // peers may be actively reading the live file via AtomicReadFile
-    // (main.cpp's CallbackReadFile) mid-upload; a partial/truncated write to
-    // the live path would corrupt an in-progress read.
-    const std::string targetPath = m_config.certDir + "/" + session->relativeFilename;
-    const std::string tmpPath = targetPath + ".upload-tmp";
-    {
-        std::ofstream tmp(tmpPath, std::ios::binary | std::ios::trunc);
-        if (!tmp.is_open()) {
-            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                "cert upload FAILED from %s: slot=\"%s\" - could not open temp file \"%s\" for writing.",
-                peer, session->slot.c_str(), tmpPath.c_str());
-            SendResponse(wsi, session, 500, "text/plain", "upload failed: could not write temp file.\n");
-            return;
-        }
-        tmp.write(session->body.data(), static_cast<std::streamsize>(session->body.size()));
-        tmp.close();
-        if (!tmp.good()) {
-            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                "cert upload FAILED from %s: slot=\"%s\" - write to temp file \"%s\" failed.",
-                peer, session->slot.c_str(), tmpPath.c_str());
-            std::remove(tmpPath.c_str());
-            SendResponse(wsi, session, 500, "text/plain", "upload failed: write error.\n");
-            return;
-        }
-    }
-
-#if defined(_WIN32)
-    const bool renamed = MoveFileExA(tmpPath.c_str(), targetPath.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
-#else
-    const bool renamed = std::rename(tmpPath.c_str(), targetPath.c_str()) == 0;
-#endif
-    if (!renamed) {
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "cert upload FAILED from %s: slot=\"%s\" - could not rename \"%s\" -> \"%s\".",
-            peer, session->slot.c_str(), tmpPath.c_str(), targetPath.c_str());
-        std::remove(tmpPath.c_str());
-        SendResponse(wsi, session, 500, "text/plain", "upload failed: could not replace target file.\n");
-        return;
-    }
-
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-        "cert upload SUCCESS from %s: slot=\"%s\" -> \"%s\" (%zu bytes).",
-        peer, session->slot.c_str(), targetPath.c_str(), session->body.size());
+        "cert upload SUCCESS from %s: slot=\"%s\" (%zu bytes) - %s",
+        peer, session->slot.c_str(), session->body.size(), message.c_str());
     SendResponse(wsi, session, 200, "application/json",
                 "{\"status\":\"ok\",\"slot\":\"" + session->slot + "\",\"bytes\":" +
                 std::to_string(session->body.size()) + "}");
@@ -362,6 +395,13 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
                 return 0;
             }
 
+            // Count the attempt (issue #24) - every POST, before anything else.
+            {
+                char client[128] = {0};
+                lws_get_peer_simple(wsi, client, sizeof(client));
+                session->rateLimited = !AllowUploadAttempt(client, &session->rateLimitWhich);
+            }
+
             // POST /certs/<slot> - resolve auth + slot NOW, before any body
             // byte is read (Task 4 safety requirement: reject before
             // touching disk). See Session::authOk's comment.
@@ -373,7 +413,7 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
             if (std::strncmp(authHeader, kBearerPrefix, prefixLen) == 0) {
                 presentedToken = std::string(authHeader + prefixLen);
             }
-            session->authOk = !m_config.bearerToken.empty() && presentedToken == m_config.bearerToken;
+            session->authOk = !m_config.bearerToken.empty() && SecretsEqual(presentedToken, m_config.bearerToken);
 
             static const char kCertsPrefix[] = "/certs/";
             if (session->uri.compare(0, sizeof(kCertsPrefix) - 1, kCertsPrefix) == 0) {
@@ -406,7 +446,7 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
                 break;
             }
             Session* session = it->second;
-            if (session->tooLarge) {
+            if (session->tooLarge || session->rateLimited) {
                 break;  // already known to be rejected - discard rather than buffer
             }
             session->body.append(static_cast<const char*>(in), len);

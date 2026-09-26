@@ -4,7 +4,7 @@
 
 // HttpServer.h
 // =============================================================================
-// A minimal, plain-HTTP (no TLS) server built on the already-vendored
+// A minimal HTTP server (plain HTTP, or HTTPS with --http-tls) built on the already-vendored
 // libwebsockets library (sc_transport/ScTransport.cpp already links it for
 // the BACnet/SC WebSocket+TLS transport - see that file's header) - added
 // this batch for:
@@ -25,9 +25,9 @@
 // WHY ONE SEPARATE lws_context, NOT A SHARED ONE WITH ScTransport'S LISTENER.
 // ScTransport's listener context is TLS 1.3 + mutual-client-cert, speaks the
 // "hub.bsc.bacnet.org" WebSocket subprotocol, and its per-connection state
-// (PeerConnection) is BACnet/SC-specific. This HTTP server is plain HTTP
-// (no TLS - see Start()'s own comment on the risk this creates once bound
-// off loopback), a completely different protocol handler
+// (PeerConnection) is BACnet/SC-specific. This HTTP server speaks plain HTTP
+// or ordinary server-only HTTPS (see Start()'s own comment on binding off
+// loopback), a completely different protocol handler
 // (LWS_CALLBACK_HTTP/_BODY/_BODY_COMPLETION/_WRITEABLE, not the WebSocket
 // RECEIVE/WRITEABLE reasons ScTransport handles), and deliberately isolated
 // from the BACnet/SC transport's own state so a bug in one cannot corrupt
@@ -44,12 +44,13 @@
 // deliberately unauthenticated - read-only, low-risk, and a tutorial
 // monitoring integration should not need a secret just to poll uptime).
 // POST /certs/<slot> ALWAYS requires it (and is disabled outright if no
-// dcc-password is configured - see Start()'s comment). HandleHttp() below
+// http-upload-token is configured - see Start()'s comment). HandleHttp() below
 // keeps this a hard branch on HTTP method, not a shared code path, precisely
 // so a bug cannot accidentally let the auth requirement leak from one route
 // to the other in either direction.
 // =============================================================================
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -68,6 +69,12 @@ namespace CASSc {
 // here) so this class does not duplicate main.cpp's own File-object-instance
 // -> filename mapping (ScCertFileRelativePath) - single source of truth.
 using CertSlotResolver = std::function<bool(const std::string& slot, std::string* outRelativeFilename)>;
+
+// POST /certs/<slot> - installs an uploaded file (issue #25). Supplied by
+// main.cpp, which validates it the same way as a certificate written over
+// BACnet (CertStore). Returns the HTTP status to answer with (200 on success)
+// and sets *message to the response body / reason.
+using CertUploadHandler = std::function<int(const std::string& slot, const std::string& body, std::string* message)>;
 
 // GET /health - "is the hub working?". Returns the JSON body and sets
 // *healthy; the server answers 200 when healthy, 503 when not, so a load
@@ -89,16 +96,40 @@ struct HttpServerConfig {
     // not enforced here) - see Start()'s doc comment for the risk of setting
     // this to anything else (--http-bind / config-file http-bind).
     std::string bindAddress = "127.0.0.1";
-    std::string certDir;           // --sc-cert-dir - where an accepted upload is written
-    std::string bearerToken;       // dcc-password (Task 1's config-file-only setting).
+    std::string certDir;           // --sc-cert-dir (shown in logs)
+    // HTTPS (issue #22). When tlsCertPath is set, the listener serves HTTPS
+    // (TLS 1.2 or 1.3) with this certificate and key instead of plain HTTP.
+    // main.cpp defaults them to the hub's own operational certificate and key.
+    std::string tlsCertPath;
+    std::string tlsKeyPath;
+    std::string bearerToken;       // http-upload-token (config-file-only, like dcc-password,
+                                    // and deliberately a separate secret from it - issue #23).
                                     // EMPTY means the upload endpoint is DISABLED entirely
                                     // (see Start()'s comment) - GET /health and GET /metrics
                                     // are unaffected either way.
     CertSlotResolver resolveCertSlot;
+    CertUploadHandler applyCertUpload;
     HealthJsonBuilder buildHealthJson;
     MetricsJsonBuilder buildMetricsJson;
     StatusPageBuilder buildStatusPage;
 };
+
+// Compares two secrets (a presented token or password against the configured
+// one) in time that doesn't depend on where they differ, or on how long either
+// is: both are hashed with SHA-256 and the digests compared with
+// CRYPTO_memcmp. A plain == stops at the first differing byte, which lets an
+// attacker who can time many attempts learn the secret a byte at a time
+// (issue #23). Used for the upload token and for the DCC/Reinitialize
+// password in main.cpp.
+bool SecretsEqual(const std::string& presented, const std::string& expected);
+
+// Upload attempt limits (issue #24): POST /certs/<slot> is refused with 429
+// once a client has made kUploadAttemptsPerClient attempts, or all clients
+// together kUploadAttemptsTotal, within the last minute (token buckets that
+// refill continuously). This caps how fast the upload token can be guessed.
+// Every POST counts, successful or not.
+const unsigned kUploadAttemptsPerClient = 5;
+const unsigned kUploadAttemptsTotal = 30;
 
 class HttpServer {
 public:
@@ -108,19 +139,15 @@ public:
     // Starts listening on config.bindAddress:config.port. Defaults to
     // 127.0.0.1 (main.cpp never sets bindAddress unless --http-bind / the
     // config file's http-bind key was given) - a deliberate default, not
-    // just a convenient one: this server has NO TLS, and GET /health, GET
-    // /metrics have NO authentication at all (see the class comment above
-    // for why that is an accepted tradeoff on loopback specifically). Every
-    // time this binds to anything other than "127.0.0.1"/"localhost", it
-    // logs a Warning-level line via CASExampleHelper::Log naming the address
-    // it bound to and what that exposes - once per Start() call, not just
-    // once ever, so an operator scanning a log cannot miss it even if they
-    // start skimming partway through. See README.md "Health/metrics HTTP
-    // endpoint" and issues #22/#23 for the fuller risk
-    // reasoning (still no TLS, still only a bearer-token check on the
-    // upload endpoint, not a real auth scheme) that this setting does NOT
-    // fix - it only removes the loopback-only guarantee, which was masking
-    // those gaps rather than closing them.
+    // just a convenient one: GET /, /health and /metrics have NO
+    // authentication at all (see the class comment above for why that is an
+    // accepted tradeoff on loopback specifically), and without
+    // config.tlsCertPath the server is plain HTTP. Every time this binds to
+    // anything other than "127.0.0.1"/"localhost" over plain HTTP, it logs a
+    // Warning-level line naming the address and what that exposes - once per
+    // Start() call, so an operator scanning a log cannot miss it. With HTTPS
+    // (--http-tls, issue #22) the traffic is encrypted, but the GET endpoints
+    // still need no authentication - an Info line says so.
     // Returns false (logs) if the bind fails - NOT fatal to the rest of the
     // program (main.cpp keeps running with this endpoint simply absent) so a
     // busy --http-port does not take down BACnet/SC or BACnet/IP.
@@ -145,6 +172,11 @@ private:
                       // it lives in a std::map keyed by wsi*, not in lws's own
                       // raw-zalloc'd per-session-data block.
 
+    // Takes one upload attempt for `client` from its bucket and the shared one
+    // (see kUploadAttemptsPerClient). False = refuse with 429; *which says
+    // which limit ("per-client" or "total").
+    bool AllowUploadAttempt(const std::string& client, const char** which);
+
     void HandleGet(lws* wsi, Session* session);
     void HandlePostBodyComplete(lws* wsi, Session* session);
     void SendResponse(lws* wsi, Session* session, int statusCode, const std::string& contentType,
@@ -155,6 +187,13 @@ private:
     struct lws_protocols* m_protocols = nullptr;  // heap-allocated, same reason as ScTransport's m_protocols
 
     std::map<lws*, Session*> m_sessions;
+
+    struct AttemptBucket {
+        double tokens = 0.0;
+        std::chrono::steady_clock::time_point lastRefill;
+    };
+    AttemptBucket m_uploadTotal;
+    std::map<std::string, AttemptBucket> m_uploadByClient;  // bounded - see AllowUploadAttempt()
 };
 
 }  // namespace CASSc

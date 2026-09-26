@@ -11,6 +11,7 @@
 #include <openssl/x509v3.h> // GENERAL_NAME_print - SAN entries, startup cert diagnostics (Item 3)
 #include <openssl/pem.h>    // PEM_read_X509/PEM_read_PrivateKey - startup cert diagnostics (Item 3)
 #include <openssl/bio.h>    // in-memory BIO - SAN entries via GENERAL_NAME_print (Item 3)
+#include <openssl/err.h>    // ERR_clear_error - CRL loading (issue #15)
 
 #include <cctype>
 #include <cstdio>
@@ -49,49 +50,18 @@ namespace {
 // docs/bacnet-sc-transport-plan.md.
 const std::size_t kMaxIngressBytes = 1600;
 
-// ScTransport::m_haveAttempted*CreateContext (listener and connector each
-// track their own - see ScTransport.h) is a PERMANENT, process-lifetime
-// latch: once a call to lws_create_context() has failed once, this class
-// never calls it again for that role, ever, for the rest of the process's
-// life. This is more conservative than it looks, and the conservatism is
-// deliberate - it was arrived at empirically, not assumed:
-//
-// A first fix (this same commit's history) only refused to retry for ONE
-// specific, provable failure cause - a confirmed cert/key mismatch, detected
-// via LogCertificateDiagnostics()'s own X509_check_private_key() check -
-// on the theory that the reproduced segfault (issue #13) was caused by
-// calling lws_create_context() a second time too QUICKLY (the stack's own
-// per-Tick retry contract calls StartListening()/Connect() again roughly
-// every 30-40ms when failing). A follow-up code review correctly pointed out
-// that fix was narrower than the actual risk (any OTHER lws_create_context
-// failure mode - an unparseable cert file, a port already in use - was still
-// retried unthrottled). The natural next attempt was a time-based cooldown
-// (e.g. "no more than once every 2 seconds") on the theory that RATE was the
-// trigger.
-//
-// That theory was tested and DISPROVED by direct reproduction: deliberately
-// corrupting certs/hub.crt to an unparseable PEM file, with a 2-second
-// cooldown in place, still crashed on the SECOND lws_create_context() call -
-// at a ~2-second gap, not ~30ms. The crash is NOT a rate/timing issue; it is
-// triggered by calling lws_create_context() again at all after a prior
-// failure, regardless of delay - almost certainly because
-// LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT (set on every call in both
-// StartListening() and Connect()) performs OpenSSL global library
-// initialisation on every lws_create_context() call, and re-running that
-// after a partial/failed prior initialisation is a well-known source of
-// corruption in libraries that expect global init to run exactly once per
-// process - consistent with what was observed, though not confirmed with a
-// debugger (see issue #13's own honest caveat about the true root
-// cause remaining unconfirmed).
-//
-// Given that, a permanent latch is the only fix actually supported by what
-// was reproduced. The real cost: a transient failure (e.g. the SC port
-// briefly held by another process at startup) no longer self-recovers -
-// this process must be restarted once lws_create_context has failed once,
-// for either role. That is a real regression in retry robustness, accepted
-// deliberately in exchange for not crashing - see issue #13 and
-// CHANGELOG.md for this tradeoff stated plainly, not buried in a comment
-// only a maintainer reading this file would find.
+// RETRYING lws_create_context. A failed lws_create_context() (the SC port
+// briefly in use, a certificate file that doesn't parse yet) is retried: the
+// stack calls StartListening() again every Tick and Connect() again on its own
+// reconnect timer. That used to crash the process (issue #13), so an earlier
+// release refused to retry at all until restart (issue #28). The crash was
+// OpenSSL being torn down by the last TLS lws_context's destroy, not the retry
+// itself - EnsureTlsLifetimeContext() (below) keeps one TLS context alive for
+// the whole process, which makes a failed-then-retried create safe (verified:
+// port in use then freed, unparseable certificate then fixed, both recover
+// without a restart). The listener waits kListenRetryInterval between failed
+// attempts so a port that stays busy is not re-bound 30 times a second.
+const std::chrono::seconds kListenRetryInterval(5);
 
 bool FileReadable(const std::string& path) {
     if (path.empty()) {
@@ -183,30 +153,12 @@ bool SubprotocolListContains(const char* headerValue, const std::string& wanted)
 // the same information a peer's own OS-level connection table has, just not
 // exposed through lws's own API.
 //
-// Tested from LWS_CALLBACK_FILTER_NETWORK_CONNECTION (the earliest call site
-// here, Item 2's rate-limit-rejection case) - the raw accept() socket already
-// EXISTS at that point (lws's own doc comment on the reason: "wsi still
-// pointing to the main server socket"), and lws_get_peer_simple()/
-// getpeername() are both syntactically callable there. In practice, though,
-// this batch's own --sc-rate-limit verification test (repeated: a burst of
-// connection attempts against a 1/sec limit, several always rejected) found
-// BOTH consistently unable to resolve an address for the wsi FILTER_NETWORK_
-// CONNECTION hands the callback at this Windows/lws-4.5.8 build - not an
-// occasional race, a reproducible result across multiple runs of this exact
-// test (see this task's own report for the captured log lines). On failure,
-// lws_get_peer_simple() writes ITS OWN diagnostic text (e.g. "getpeername:
-// wsaerrno 10057") into the output buffer rather than leaving it empty or
-// returning NULL - left unguarded, that text would leak into this app's log
-// line looking like a real address. The digit-or-colon check below tells a
-// real numeric IPv4/IPv6 address (lws_get_peer_simple() never does reverse
-// DNS - "without RDNS" is in its own name) apart from that failure text, so
-// this function honestly reports "?" instead - exactly the "log whatever IS
-// available instead of nothing, with an honest note" case this task's own
-// instructions anticipated for this call site, not a fabricated address.
-// ESTABLISHED (below, a later point in the SAME connection's lifecycle, once
-// lws's own accept processing has moved further along) is NOT affected -
-// PeerAddressPort() resolves real addresses there every time in this same
-// verification pass (see the connect/disconnect audit-line evidence).
+// Not usable from LWS_CALLBACK_FILTER_NETWORK_CONNECTION: there, wsi is still
+// the LISTENING socket, so lws_get_peer_simple()/getpeername() have no peer
+// (on failure lws_get_peer_simple() writes its own error text, such as
+// "getpeername: wsaerrno 10057", into the buffer - the digit-or-colon check
+// below keeps that text out of the log). That callback gets the peer from
+// struct lws_filter_network_conn_args instead - see AddressFromSockaddr().
 std::string PeerAddressPort(lws* wsi) {
     char ip[64] = {0};
     lws_get_peer_simple(wsi, ip, sizeof(ip));
@@ -233,6 +185,128 @@ std::string PeerAddressPort(lws* wsi) {
         std::snprintf(result, sizeof(result), "%s:?", ip);
     }
     return std::string(result);
+}
+
+// The numeric address ("192.0.2.7", "2001:db8::5") in a sockaddr_storage - the
+// form struct lws_filter_network_conn_args gives LWS_CALLBACK_FILTER_NETWORK_
+// CONNECTION. An IPv4-mapped IPv6 address is shown as plain IPv4, so the same
+// host always gets the same rate-limit bucket.
+std::string AddressFromSockaddr(const sockaddr_storage& addr) {
+    char text[INET6_ADDRSTRLEN] = {0};
+    if (addr.ss_family == AF_INET) {
+        const sockaddr_in* in4 = reinterpret_cast<const sockaddr_in*>(&addr);
+        inet_ntop(AF_INET, const_cast<in_addr*>(&in4->sin_addr), text, sizeof(text));
+    } else if (addr.ss_family == AF_INET6) {
+        const sockaddr_in6* in6 = reinterpret_cast<const sockaddr_in6*>(&addr);
+        inet_ntop(AF_INET6, const_cast<in6_addr*>(&in6->sin6_addr), text, sizeof(text));
+    }
+    std::string result(text);
+    if (result.compare(0, 7, "::ffff:") == 0 && result.find('.') != std::string::npos) {
+        result = result.substr(7);
+    }
+    return result.empty() ? std::string("?") : result;
+}
+
+// Refills a token bucket for the time since it was last touched (at `rate`
+// tokens a second, holding at most `rate`), then takes one token if there is
+// one. A bucket that has never been touched starts full.
+bool TakeToken(double* tokens, std::chrono::steady_clock::time_point* lastRefill, const uint32_t rate,
+               const std::chrono::steady_clock::time_point now) {
+    const double capacity = static_cast<double>(rate);
+    if (*lastRefill == std::chrono::steady_clock::time_point()) {
+        *tokens = capacity;
+    } else {
+        const double refilled = *tokens + std::chrono::duration<double>(now - *lastRefill).count() * capacity;
+        // NOT std::min(): libwebsockets.h pulls in <windows.h> without
+        // NOMINMAX, whose min/max macros shadow std::min/std::max.
+        *tokens = (refilled < capacity) ? refilled : capacity;
+    }
+    *lastRefill = now;
+    if (*tokens >= 1.0) {
+        *tokens -= 1.0;
+        return true;
+    }
+    return false;
+}
+
+// ---- BACnet/SC message identity (audit trail, issue #21) -------------------
+// Just enough of the BVLC-SC header (135-2024 AB.2.1) to find a
+// Connect-Request's payload: function, control flags, message ID, optional
+// originating/destination VMACs, optional destination/data header options.
+// The stack does all real BACnet/SC processing; this only reads identity.
+const uint8_t kBvlcResult = 0x00;
+const uint8_t kBvlcConnectRequest = 0x06;
+const uint8_t kBvlcConnectAccept = 0x07;
+
+// Returns the offset of the payload, or 0 if the header is malformed.
+std::size_t BvlcPayloadOffset(const uint8_t* data, const std::size_t len) {
+    if (len < 4) {
+        return 0;
+    }
+    const uint8_t flags = data[1];
+    std::size_t offset = 4;                    // function, control flags, message ID
+    if (flags & 0x08) offset += 6;             // originating virtual address
+    if (flags & 0x04) offset += 6;             // destination virtual address
+    for (int optionList = 0; optionList < 2; ++optionList) {
+        const bool present = (optionList == 0) ? (flags & 0x02) != 0 : (flags & 0x01) != 0;
+        bool more = present;
+        while (more) {
+            if (offset >= len) {
+                return 0;
+            }
+            const uint8_t marker = data[offset++];
+            more = (marker & 0x80) != 0;       // More Options
+            if (marker & 0x20) {               // Header Data Flag: 2-octet length + data
+                if (offset + 2 > len) {
+                    return 0;
+                }
+                offset += 2 + ((static_cast<std::size_t>(data[offset]) << 8) | data[offset + 1]);
+            }
+        }
+    }
+    return offset <= len ? offset : 0;
+}
+
+std::string HexBytes(const uint8_t* data, const std::size_t len, const char* separator) {
+    std::string out;
+    char byte[4];
+    for (std::size_t i = 0; i < len; ++i) {
+        std::snprintf(byte, sizeof(byte), "%02x", data[i]);
+        if (i > 0) {
+            out += separator;
+        }
+        out += byte;
+    }
+    return out;
+}
+
+// A 16-octet device UUID as 8-4-4-4-12 hex.
+std::string FormatUuid(const uint8_t* uuid) {
+    return HexBytes(uuid, 4, "") + "-" + HexBytes(uuid + 4, 2, "") + "-" + HexBytes(uuid + 6, 2, "") + "-" +
+           HexBytes(uuid + 8, 2, "") + "-" + HexBytes(uuid + 10, 6, "");
+}
+
+// The subject of the certificate the peer presented in the TLS handshake, as
+// one line ("O=Example Site, CN=AHU-3 controller"), or "?" if there is none.
+std::string PeerCertificateSubject(lws* wsi) {
+    SSL* ssl = lws_get_ssl(wsi);
+    X509* cert = (ssl != nullptr) ? SSL_get1_peer_certificate(ssl) : nullptr;
+    if (cert == nullptr) {
+        return "?";
+    }
+    std::string subject = "?";
+    BIO* bio = BIO_new(BIO_s_mem());
+    if (bio != nullptr) {
+        X509_NAME_print_ex(bio, X509_get_subject_name(cert), 0, XN_FLAG_ONELINE & ~ASN1_STRFLGS_ESC_MSB);
+        char* text = nullptr;
+        const long textLen = BIO_get_mem_data(bio, &text);
+        if (textLen > 0) {
+            subject.assign(text, static_cast<std::size_t>(textLen));
+        }
+        BIO_free(bio);
+    }
+    X509_free(cert);
+    return subject;
 }
 
 // Diagnostic Item 1: makes a rejected mTLS handshake visible. Before this, a
@@ -391,6 +465,56 @@ void LogOneCertificate(const std::string& label, X509* cert) {
     }
 }
 
+// ---- Certificate revocation (issue #15) -------------------------------------
+// Loads every CRL in `path` into a TLS context's certificate store and turns
+// on revocation checking of the peer's certificate (X509_V_FLAG_CRL_CHECK -
+// the peer's own certificate; its CA certificates are trusted as configured).
+// Called from the LWS_CALLBACK_OPENSSL_LOAD_EXTRA_{SERVER,CLIENT}_VERIFY_CERTS
+// callbacks, which lws fires once per TLS context as it is created, so a
+// ReloadCredentials() picks up a changed file. Returns false only when the
+// file exists but holds no CRL at all - the caller then fails the context
+// (fail closed, rather than silently accepting revoked devices).
+bool LoadRevocationList(SSL_CTX* sslCtx, const std::string& path, const char* role) {
+    if (sslCtx == nullptr || path.empty() || !FileReadable(path)) {
+        return true;  // no CRL configured - nothing to check against
+    }
+    X509_STORE* store = SSL_CTX_get_cert_store(sslCtx);
+    BIO* bio = BIO_new_file(path.c_str(), "r");
+    int count = 0;
+    X509_CRL* crl = nullptr;
+    while (bio != nullptr && (crl = PEM_read_bio_X509_CRL(bio, nullptr, nullptr, nullptr)) != nullptr) {
+        char issuer[256] = {0};
+        X509_NAME_get_text_by_NID(X509_CRL_get_issuer(crl), NID_commonName, issuer, sizeof(issuer));
+        const ASN1_TIME* nextUpdate = X509_CRL_get0_nextUpdate(crl);
+        int days = 0;
+        int seconds = 0;
+        const bool expired = nextUpdate != nullptr && ASN1_TIME_diff(&days, &seconds, nullptr, nextUpdate) &&
+                             (days < 0 || (days == 0 && seconds < 0));
+        const STACK_OF(X509_REVOKED)* revoked = X509_CRL_get_REVOKED(crl);
+        CASExampleHelper::Log(expired ? CASExampleHelper::LogLevel::Warning : CASExampleHelper::LogLevel::Info,
+            "SC revocation (%s): CRL from \"%s\", %d certificate(s) revoked, next update %s%s", role,
+            issuer[0] != '\0' ? issuer : "?", revoked != nullptr ? sk_X509_REVOKED_num(revoked) : 0,
+            DaysRelativeToNow(nextUpdate).c_str(),
+            expired ? " - EXPIRED: every certificate from this issuer is refused until a new CRL is installed" : "");
+        if (X509_STORE_add_crl(store, crl) == 1) {  // the store takes its own reference
+            ++count;
+        }
+        X509_CRL_free(crl);
+    }
+    ERR_clear_error();  // the read loop always ends with a harmless "no start line"
+    if (bio != nullptr) {
+        BIO_free(bio);
+    }
+    if (count == 0) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
+            "SC revocation (%s): \"%s\" exists but holds no PEM CRL - refusing to start TLS until it is "
+            "fixed or removed", role, path.c_str());
+        return false;
+    }
+    X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
+    return true;
+}
+
 // Diagnostic Item 3: startup certificate self-diagnosis, called once per
 // StartListening()/Connect() (NOT per-connection) - see the header comment on
 // each call site below. Loads m_tls.certPath/caCertPath with OpenSSL's X.509
@@ -403,36 +527,19 @@ void LogOneCertificate(const std::string& label, X509* cert) {
 //
 // Returns false ONLY for the one case this function can prove with certainty
 // is broken - both files parsed fine as PEM, and X509_check_private_key()
-// definitively says they don't match - which the caller (StartListening()/
-// Connect()) now treats as fatal, refusing to call lws_create_context() at
-// all (issue #13): repeatedly calling lws_create_context with a
-// mismatched cert/key across this class's own retry loop (the stack retries
-// StartListening()/Connect() every Tick per its own contract - see the
-// header comment on each) was found, via direct reproduction, to eventually
-// segfault inside the vendored libwebsockets/OpenSSL teardown-and-retry path
-// (2nd or later attempt, not the 1st) - not something a fix on this side can
-// root-cause without debugging inside a vcpkg-built binary this repo does
-// not own the source of. Refusing to ever reach that code path with a known-
-// bad pair is a real fix for the reachable symptom, not a workaround for a
-// still-open root cause. Every OTHER outcome here (a file that fails to
-// PARSE as PEM, as opposed to merely being unreadable/already caught
-// earlier) is still just logged as a Warning and treated as non-fatal -
-// lws_create_context remains the authority for every case this function
-// cannot prove is broken with certainty.
+// definitively says they don't match. The caller (StartListening()/Connect())
+// then skips lws_create_context for this attempt: it could only fail, and the
+// next retry re-checks the files, so fixing the pair under --sc-cert-dir takes
+// effect without a restart. Every OTHER outcome here (a file that fails to
+// PARSE as PEM) is just logged - lws_create_context remains the authority for
+// every case this function cannot prove is broken with certainty.
 bool LogCertificateDiagnostics(const ScTlsFiles& tls) {
     // Rate-limited to once per kMinLogInterval, not once per call: the stack
-    // retries StartListening()/Connect() every Tick per its own contract, and
-    // this function used to log its full multi-line diagnosis on EVERY one of
-    // those retries - harmless when a bad pair made lws_create_context fail
-    // fast and the process would crash within a couple of retries anyway (see
-    // this function's own header comment on that), but once the fatal-on-
-    // confirmed-mismatch check below stops the crash, an unfixed mismatch now
-    // retries forever - measured at ~30 attempts/second on this build, which
-    // would otherwise mean 30 multi-line log blocks/second, forever, for a
-    // condition that does not change tick-to-tick. The X.509 parse and
-    // X509_check_private_key() below still run every call (cheap, and the
-    // caller needs an accurate up-to-date answer every time to notice a live
-    // fix) - only the CASExampleHelper::Log calls are gated.
+    // retries StartListening()/Connect() while they fail, and an unfixed
+    // cert/key mismatch would otherwise print this multi-line diagnosis on
+    // every retry. The X.509 parse and X509_check_private_key() below still
+    // run every call (cheap, and the caller needs an up-to-date answer to
+    // notice a live fix) - only the CASExampleHelper::Log calls are gated.
     static std::chrono::steady_clock::time_point lastLogTime;
     static bool haveLoggedOnce = false;
     const auto now = std::chrono::steady_clock::now();
@@ -656,33 +763,48 @@ void ScTransport::Configure(const ScTlsFiles& tls, const std::string& acceptSubp
     m_configured = true;
 }
 
-void ScTransport::SetMaxConnectionAttemptsPerSecond(const uint32_t perSecond) {
-    m_maxConnAttemptsPerSecond = perSecond;
-    // Start the bucket full (burst up to the configured rate is allowed
-    // immediately, e.g. right after startup) - see the header comment.
-    m_rateLimitTokens = static_cast<double>(perSecond);
-    m_rateLimitLastRefill = std::chrono::steady_clock::now();
+void ScTransport::SetConnectionRateLimits(const uint32_t perAddressPerSecond, const uint32_t totalPerSecond) {
+    m_perAddressRateLimit = perAddressPerSecond;
+    m_totalRateLimit = totalPerSecond;
+    m_totalBucket = TokenBucket();  // starts full on first use
+    m_addressBuckets.clear();
 }
 
-bool ScTransport::AllowNewConnectionAttempt() {
-    if (m_maxConnAttemptsPerSecond == 0) {
-        return true;  // rate-limiting disabled
-    }
+bool ScTransport::AllowNewConnectionAttempt(const std::string& address, const char** limitHit) {
     const auto now = std::chrono::steady_clock::now();
-    const double elapsedSeconds = std::chrono::duration<double>(now - m_rateLimitLastRefill).count();
-    m_rateLimitLastRefill = now;
-    const double capacity = static_cast<double>(m_maxConnAttemptsPerSecond);
-    const double refilled = m_rateLimitTokens + elapsedSeconds * capacity;
-    // NOT std::min() here: this translation unit includes <windows.h>
-    // (transitively, via libwebsockets.h) without NOMINMAX, which #defines
-    // min/max as function-like macros that shadow std::min/std::max - a
-    // well-known Windows.h footgun. A plain comparison sidesteps it entirely.
-    m_rateLimitTokens = (refilled < capacity) ? refilled : capacity;
-    if (m_rateLimitTokens >= 1.0) {
-        m_rateLimitTokens -= 1.0;
-        return true;
+
+    if (m_perAddressRateLimit != 0) {
+        auto it = m_addressBuckets.find(address);
+        if (it == m_addressBuckets.end() && m_addressBuckets.size() >= kMaxTrackedAddresses) {
+            // Age out every address whose bucket would be full again by now -
+            // forgetting it loses nothing, since a new bucket starts full.
+            const double idleSeconds = 1.0;
+            for (auto a = m_addressBuckets.begin(); a != m_addressBuckets.end();) {
+                if (std::chrono::duration<double>(now - a->second.lastRefill).count() >= idleSeconds) {
+                    a = m_addressBuckets.erase(a);
+                } else {
+                    ++a;
+                }
+            }
+        }
+        if (it == m_addressBuckets.end() && m_addressBuckets.size() < kMaxTrackedAddresses) {
+            it = m_addressBuckets.emplace(address, TokenBucket()).first;
+        }
+        // Still no room: every tracked address is busy right now. Fall back to
+        // the total limit alone for this attempt rather than grow the table.
+        if (it != m_addressBuckets.end() &&
+            !TakeToken(&it->second.tokens, &it->second.lastRefill, m_perAddressRateLimit, now)) {
+            *limitHit = "per-address";
+            return false;
+        }
     }
-    return false;
+
+    if (m_totalRateLimit != 0 &&
+        !TakeToken(&m_totalBucket.tokens, &m_totalBucket.lastRefill, m_totalRateLimit, now)) {
+        *limitHit = "total";
+        return false;
+    }
+    return true;
 }
 
 void ScTransport::LogListenFailureOnce(const std::string& reason) {
@@ -728,17 +850,13 @@ bool ScTransport::StartListening(const std::string& uri) {
     // Item 3: startup certificate self-diagnosis - runs even though the files
     // above ARE readable (this diagnoses a file that exists but is WRONG -
     // expired, mismatched key, unparseable - not a replacement for the
-    // missing-file check above). A confirmed cert/key mismatch is fatal here
-    // (issue #13) - see LogCertificateDiagnostics's own comment for why
-    // this refuses to reach lws_create_context at all in that one case,
-    // rather than letting the stack's own per-Tick retry call this again
-    // with the same known-bad pair.
+    // missing-file check above). A confirmed cert/key mismatch skips this
+    // attempt (lws_create_context could only fail); the next retry re-checks.
     if (!LogCertificateDiagnostics(m_tls)) {
         LogListenFailureOnce(
-            "refusing to start listening on " + uri + ": certificate/private key mismatch (see the "
-            "\"DOES NOT MATCH\" line above) - repeatedly retrying lws_create_context with a known-bad "
-            "cert/key pair was found to eventually crash this process (issue #13). Fix the cert/key "
-            "pair under --sc-cert-dir and restart.");
+            "cannot start listening on " + uri + ": certificate/private key mismatch (see the "
+            "\"DOES NOT MATCH\" line above). Fix the cert/key pair under --sc-cert-dir; the hub "
+            "retries on its own.");
         return false;
     }
 
@@ -756,37 +874,17 @@ bool ScTransport::StartListening(const std::string& uri) {
     // where SubprotocolListContains's re-check below sends a clean WS close
     // (1002) - correct, and unchanged by this fix.
     //
-    // A client that NAMES a subprotocol, though, is matched by lws via a
-    // straight loop of exact strcmp() against every registered protocol name
-    // (lib/core-net/wsi.c's lws_vhost_name_to_protocol - verified by reading
-    // the pinned lws 4.5.8 source directly, not assumed): no match anywhere
-    // in that list means lws_process_ws_upgrade itself logs "No supported
-    // protocol" and drops the raw TCP connection - no HTTP response, no WS
-    // close frame, nothing - before this application's ESTABLISHED callback
-    // ever runs. An EARLIER attempt at this fix added a protocols[1] entry
-    // with an empty name ("") hoping lws would treat that as a wildcard/
-    // catch-all; re-reading lws_vhost_name_to_protocol's actual `strcmp(name,
-    // vh->protocols[n].name)` disproved that (an empty registered name only
-    // matches a client that literally sends an empty subprotocol TOKEN, not
-    // "any name lws doesn't otherwise recognise") - confirmed empirically too,
-    // rebuilding with that change and re-running this exact 3-request probe
-    // still showed "No supported protocol" for both bad cases in the running
-    // binary's own log. There is no general fix for an ARBITRARY unrecognised
-    // subprotocol name without bypassing lws's own WS-role upgrade handling
-    // entirely (a much larger change than this issue calls for) - see
-    // issue #27.
+    // A client that NAMES a subprotocol lws doesn't have registered would be
+    // dropped by lws_process_ws_upgrade ("No supported protocol") with no
+    // response at all. HandleServerCallback's LWS_CALLBACK_HTTP_CONFIRM_UPGRADE
+    // case answers that request with HTTP 400 first (issue #27), so a client
+    // with a typo in its subprotocol gets a clear refusal instead.
     //
-    // What IS fixable, and what this fix actually does: "dc.bsc.bacnet.org"
-    // (135-2020 AB.7.1's direct-connect subprotocol) is not an arbitrary
-    // string, it is a SPECIFIC, KNOWN, legitimate BACnet/SC name this example
-    // simply does not implement (hub-function only) - so it can be
-    // registered explicitly as its own protocol entry, giving it a real
-    // strcmp match and routing it into ESTABLISHED like protocols[0] does,
-    // where the isDirectConnect branch below gives it its own honest close
-    // reason instead of a bare TCP drop. This directly answers the issue's
-    // own request ("dc.bsc.bacnet.org specifically deserves a reason string
-    // saying so, since it is a valid BACnet/SC subprotocol rather than a
-    // client error").
+    // "dc.bsc.bacnet.org" (135-2020 AB.7.1's direct-connect subprotocol) is
+    // registered as protocols[1] so it reaches ESTABLISHED, where it is closed
+    // with its own reason ("direct-connect not supported by this hub") - it
+    // is a valid BACnet/SC subprotocol this hub-only example doesn't
+    // implement, not a client error.
     m_protocolNameStorage = m_acceptSubprotocol;
     delete[] m_protocols;
     m_protocols = new lws_protocols[3];
@@ -821,28 +919,20 @@ bool ScTransport::StartListening(const std::string& uri) {
     info.gid = static_cast<gid_t>(-1);
     info.uid = static_cast<uid_t>(-1);
 
-    // General crash-prevention latch (see the file-scope comment on
-    // m_haveAttemptedListenCreateContext's own declaration in ScTransport.h
-    // for why this is permanent, not a cooldown) - covers every
-    // lws_create_context failure mode, not just the one confirmed-mismatch
-    // case guarded above.
-    if (m_haveAttemptedListenCreateContext) {
-        if (!m_loggedListenCreateContextRefusal) {
-            m_loggedListenCreateContextRefusal = true;
-            fprintf(stderr,
-                    "BACnet/SC: refusing to retry lws_create_context for %s - it already failed once "
-                    "this run, and retrying it was found to eventually crash this process (issue #13). "
-                    "Restart the process to try again.\n",
-                    uri.c_str());
-        }
+    // A failed create is retried, but not more often than kListenRetryInterval
+    // (see the note above FileReadable()).
+    const auto now = std::chrono::steady_clock::now();
+    if (m_lastListenCreateFailure != std::chrono::steady_clock::time_point() &&
+        now - m_lastListenCreateFailure < kListenRetryInterval) {
         return false;
     }
-    m_haveAttemptedListenCreateContext = true;
 
     lws_context* ctx = lws_create_context(&info);
     if (ctx == nullptr) {
+        m_lastListenCreateFailure = now;
         LogListenFailureOnce("lws_create_context failed for " + uri + " (port " + std::to_string(port) +
-                              " already in use? cert files malformed?)");
+                              " already in use? cert files malformed?) - retrying every " +
+                              std::to_string(kListenRetryInterval.count()) + " s");
         return false;
     }
 
@@ -850,8 +940,7 @@ bool ScTransport::StartListening(const std::string& uri) {
     m_listenUri = uri;
     m_nextClientId = 1;
     m_loggedListenFailure = false;
-    m_haveAttemptedListenCreateContext = false;
-    m_loggedListenCreateContextRefusal = false;
+    m_lastListenCreateFailure = std::chrono::steady_clock::time_point();
     printf("BACnet/SC: listening for WebSocket/TLS connections on %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
            uri.c_str(), m_acceptSubprotocol.c_str());
     return true;
@@ -959,17 +1048,12 @@ bool ScTransport::Connect(const std::string& uri) {
     // Item 3 - same startup self-diagnosis as StartListening() above; the
     // connector presents the SAME identity cert (this device has one identity
     // regardless of role - see the class header comment), so it is worth
-    // diagnosing here too, not only for the listener. Same fatal-on-confirmed-
-    // mismatch handling as StartListening() (issue #13) - the stack's
-    // own retry timer calls Connect() again on failure, so this guards the
-    // same repeated-lws_create_context-with-a-known-bad-pair crash on the
-    // connector side too.
+    // diagnosing here too, not only for the listener. A confirmed mismatch
+    // skips this attempt; the stack's reconnect timer calls Connect() again.
     if (!LogCertificateDiagnostics(m_tls)) {
         fprintf(stderr,
-                "BACnet/SC: refusing to Connect(\"%s\"): certificate/private key mismatch (see the "
-                "\"DOES NOT MATCH\" line above) - repeatedly retrying lws_create_context with a known-bad "
-                "cert/key pair was found to eventually crash this process (issue #13). Fix the "
-                "cert/key pair under --sc-cert-dir.\n",
+                "BACnet/SC: cannot Connect(\"%s\"): certificate/private key mismatch (see the "
+                "\"DOES NOT MATCH\" line above). Fix the cert/key pair under --sc-cert-dir.\n",
                 uri.c_str());
         return false;
     }
@@ -985,27 +1069,6 @@ bool ScTransport::Connect(const std::string& uri) {
                 uri.c_str());
         return false;
     }
-
-    // General crash-prevention latch (see the file-scope comment on
-    // m_haveAttemptedListenCreateContext's declaration in ScTransport.h) -
-    // covers every lws_create_context failure mode on the connector side
-    // too, not just the confirmed-mismatch case the cert diagnostics above
-    // already guard. Placed BEFORE any of the stale-entry teardown/
-    // re-insertion below, so a refused attempt leaves m_clients completely
-    // untouched rather than tearing down a still-relevant existing entry for
-    // nothing.
-    if (m_haveAttemptedConnectCreateContext) {
-        if (!m_loggedConnectCreateContextRefusal) {
-            m_loggedConnectCreateContextRefusal = true;
-            fprintf(stderr,
-                    "BACnet/SC: refusing to retry lws_create_context for Connect(\"%s\") - it already "
-                    "failed once this run, and retrying it was found to eventually crash this process "
-                    "(issue #13). Restart the process to try again.\n",
-                    uri.c_str());
-        }
-        return false;
-    }
-    m_haveAttemptedConnectCreateContext = true;
 
     // A fresh dial every time Connect() is called for this URI - tear down
     // any stale context first (a previous attempt that already closed/errored;
@@ -1048,8 +1111,6 @@ bool ScTransport::Connect(const std::string& uri) {
         return false;
     }
     conn.context = ctx;
-    m_haveAttemptedConnectCreateContext = false;
-    m_loggedConnectCreateContextRefusal = false;
 
     lws_client_connect_info ccinfo;
     std::memset(&ccinfo, 0, sizeof(ccinfo));
@@ -1098,18 +1159,64 @@ void ScTransport::Disconnect(const std::string& connStr) {
     // Case 1: an accepted server peer ("<acceptUri>|client=N", Phase 2 half).
     auto serverIt = m_connStringToWsi.find(connStr);
     if (serverIt != m_connStringToWsi.end()) {
-        lws_close_reason(serverIt->second, LWS_CLOSE_STATUS_NORMAL, nullptr, 0);
-        lws_callback_on_writable(serverIt->second);  // completes the close handshake asynchronously
+        PeerConnection* peer = FindPeerByWsi(serverIt->second);
+        if (peer != nullptr) {
+            RequestClose(peer->wsi, &peer->closeRequest, LWS_CLOSE_STATUS_NORMAL, std::string());
+        }
         return;
     }
     // Case 2: an outbound connector URI (this phase).
     auto clientIt = m_clients.find(connStr);
     if (clientIt != m_clients.end() && clientIt->second.wsi != nullptr) {
-        lws_close_reason(clientIt->second.wsi, LWS_CLOSE_STATUS_NORMAL, nullptr, 0);
-        lws_callback_on_writable(clientIt->second.wsi);
+        RequestClose(clientIt->second.wsi, &clientIt->second.closeRequest, LWS_CLOSE_STATUS_NORMAL, std::string());
         return;
     }
     // Unknown/already-closed connString - no-op, matching the header's contract.
+}
+
+void ScTransport::RequestClose(lws* wsi, CloseRequest* closeRequest, const uint16_t code, const std::string& reason) {
+    if (closeRequest->requested) {
+        return;
+    }
+    closeRequest->requested = true;
+    closeRequest->code = code;
+    closeRequest->reason = reason;
+    lws_callback_on_writable(wsi);  // the close itself happens in the WRITEABLE callback
+}
+
+bool ScTransport::ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest) {
+    if (!closeRequest.requested) {
+        return false;
+    }
+    lws_close_reason(wsi, static_cast<lws_close_status>(closeRequest.code),
+                     reinterpret_cast<unsigned char*>(const_cast<char*>(closeRequest.reason.data())),
+                     closeRequest.reason.size());
+    return true;
+}
+
+bool ScTransport::EnqueueFrame(lws* wsi, std::deque<std::vector<uint8_t>>* txQueue, CloseRequest* closeRequest,
+                               const std::string& label, const uint8_t* data, const uint16_t len) {
+    if (closeRequest->requested) {
+        return false;  // already closing - nothing more goes out on this connection
+    }
+    if (txQueue->size() >= kMaxTxQueueFrames) {
+        // The peer has stopped reading (issue #16). Give up on it rather than
+        // buffer without limit; its close is reported to the stack like any other.
+        ++m_txQueueOverflows;
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "SC transmit queue full: %zu frames waiting for %s - closing the connection (1008)",
+            txQueue->size(), label.c_str());
+        txQueue->clear();
+        RequestClose(wsi, closeRequest, LWS_CLOSE_STATUS_POLICY_VIOLATION, "transmit queue full");
+        return false;
+    }
+    std::vector<uint8_t> framed(static_cast<std::size_t>(LWS_PRE) + len);
+    if (len > 0) {
+        std::memcpy(framed.data() + LWS_PRE, data, len);
+    }
+    txQueue->push_back(std::move(framed));
+    lws_callback_on_writable(wsi);
+    return true;
 }
 
 ScTransport::PeerConnection* ScTransport::FindPeerByWsi(lws* wsi) {
@@ -1125,13 +1232,9 @@ bool ScTransport::Send(const std::string& connStr, const uint8_t* data, uint16_t
         if (peer == nullptr) {
             return false;
         }
-        std::vector<uint8_t> framed(static_cast<std::size_t>(LWS_PRE) + len);
-        if (len > 0) {
-            std::memcpy(framed.data() + LWS_PRE, data, len);
-        }
-        peer->txQueue.push_back(std::move(framed));
-        lws_callback_on_writable(peer->wsi);
-        return true;
+        AuditSentFrame(peer, data, len);
+        return EnqueueFrame(peer->wsi, &peer->txQueue, &peer->closeRequest,
+                            "\"" + peer->connectionString + "\" (" + peer->peerAddress + ")", data, len);
     }
 
     // Case 2: an outbound connector connection, keyed by the URI Connect()
@@ -1140,13 +1243,8 @@ bool ScTransport::Send(const std::string& connStr, const uint8_t* data, uint16_t
     // treated as unknown - matching the header's "unknown/closed" contract.
     auto clientIt = m_clients.find(connStr);
     if (clientIt != m_clients.end() && clientIt->second.wsi != nullptr) {
-        std::vector<uint8_t> framed(static_cast<std::size_t>(LWS_PRE) + len);
-        if (len > 0) {
-            std::memcpy(framed.data() + LWS_PRE, data, len);
-        }
-        clientIt->second.txQueue.push_back(std::move(framed));
-        lws_callback_on_writable(clientIt->second.wsi);
-        return true;
+        ClientConnection& conn = clientIt->second;
+        return EnqueueFrame(conn.wsi, &conn.txQueue, &conn.closeRequest, "hub \"" + conn.uri + "\"", data, len);
     }
 
     return false;  // unknown/closed peer - caller (the router) returns 0 to the stack
@@ -1187,8 +1285,62 @@ ScTransportMetrics ScTransport::GetMetrics() const {
     m.rxBytes = m_rxBytes;
     m.txMessages = m_txMessages;
     m.txBytes = m_txBytes;
+    m.txQueueOverflows = m_txQueueOverflows;
     m.currentPeerCount = m_peers.size();
     return m;
+}
+
+std::vector<ScPeerInfo> ScTransport::GetPeers() const {
+    std::map<uint64_t, ScPeerInfo> byId;  // oldest connection first
+    for (const auto& kv : m_peers) {
+        const PeerConnection& peer = kv.second;
+        ScPeerInfo info;
+        info.connectionString = peer.connectionString;
+        info.address = peer.peerAddress;
+        info.certificateSubject = peer.certificateSubject;
+        info.vmac = peer.vmac;
+        info.uuid = peer.uuid;
+        info.accepted = peer.accepted;
+        byId[peer.clientId] = info;
+    }
+    std::vector<ScPeerInfo> peers;
+    for (const auto& kv : byId) {
+        peers.push_back(kv.second);
+    }
+    return peers;
+}
+
+void ScTransport::AuditReceivedFrame(PeerConnection* peer, const std::vector<uint8_t>& frame) {
+    if (frame.empty() || frame[0] != kBvlcConnectRequest) {
+        return;
+    }
+    const std::size_t offset = BvlcPayloadOffset(frame.data(), frame.size());
+    if (offset == 0 || frame.size() < offset + 6 + 16) {
+        return;  // malformed - the stack will refuse it; nothing to record
+    }
+    peer->vmac = HexBytes(&frame[offset], 6, ":");
+    peer->uuid = FormatUuid(&frame[offset + 6]);
+}
+
+void ScTransport::AuditSentFrame(PeerConnection* peer, const uint8_t* data, const uint16_t len) {
+    if (len == 0 || peer->accepted || peer->uuid.empty()) {
+        return;  // only the answer to a recorded Connect-Request is of interest
+    }
+    if (data[0] == kBvlcConnectAccept) {
+        peer->accepted = true;
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+            "SC audit: peer \"%s\" (%s) is BACnet/SC device VMAC %s, UUID %s, certificate \"%s\" - connected",
+            peer->connectionString.c_str(), peer->peerAddress.c_str(), peer->vmac.c_str(), peer->uuid.c_str(),
+            peer->certificateSubject.c_str());
+    } else if (data[0] == kBvlcResult) {
+        // A BVLC-Result to a peer that hasn't been accepted is the stack
+        // refusing its Connect-Request (duplicate VMAC, hub full, ...).
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "SC audit: peer \"%s\" (%s) - BACnet/SC device VMAC %s, UUID %s, certificate \"%s\" - "
+            "Connect-Request refused by the hub (duplicate VMAC, or the hub is full?)",
+            peer->connectionString.c_str(), peer->peerAddress.c_str(), peer->vmac.c_str(), peer->uuid.c_str(),
+            peer->certificateSubject.c_str());
+    }
 }
 
 bool ScTransport::PopStatusEvent(ScStatusEvent* outEvent) {
@@ -1226,7 +1378,6 @@ bool ScTransport::FlushOneQueuedFrame(lws* wsi, std::deque<std::vector<uint8_t>>
 }
 
 int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void* in, std::size_t len) {
-    (void)user;
     const lws_callback_reasons reason = static_cast<lws_callback_reasons>(reasonInt);
 
     switch (reason) {
@@ -1237,23 +1388,67 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             // socket" - there is no PeerConnection/connection string yet, and
             // won't be one if this rejects). This is the earliest, cheapest
             // point this transport can gate a flood of connection attempts -
-            // see ScTransport::SetMaxConnectionAttemptsPerSecond's header
+            // see ScTransport::SetConnectionRateLimits' header
             // comment for why this is a separate control from
             // sc-max-hub-connections. Returning non-zero here makes lws hang
             // up immediately, before sending or receiving anything - no TLS
             // handshake CPU/memory is spent on a rejected attempt.
-            if (!AllowNewConnectionAttempt()) {
+            // `user` is lws's struct lws_filter_network_conn_args here - the
+            // only place the new peer's address is available this early (wsi
+            // is still the listening socket; see PeerAddressPort()).
+            const lws_filter_network_conn_args* args = static_cast<const lws_filter_network_conn_args*>(user);
+            const std::string address = (args != nullptr) ? AddressFromSockaddr(args->cli_addr) : std::string("?");
+            const char* limitHit = "";
+            if (!AllowNewConnectionAttempt(address, &limitHit)) {
                 ++m_rateLimitRejections;
-                // Item 2: no PeerConnection/connection string exists yet at
-                // this point in the lifecycle (this callback's own comment
-                // above) - PeerAddressPort(wsi) is the ONLY peer identity
-                // available here, verified callable this early against the
-                // raw accept() socket (see that function's own comment).
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                    "SC rate limit: rejecting new connection attempt from %s on %s - more than %u attempt(s)/sec "
-                    "(rejected before TLS handshake; see --sc-rate-limit)",
-                    PeerAddressPort(wsi).c_str(), m_listenUri.c_str(), (unsigned)m_maxConnAttemptsPerSecond);
+                    "SC rate limit: refusing a new connection from %s on %s - %s limit of %u attempt(s)/sec "
+                    "reached (refused before the TLS handshake; see --sc-rate-limit%s)",
+                    address.c_str(), m_listenUri.c_str(), limitHit,
+                    (unsigned)(std::strcmp(limitHit, "total") == 0 ? m_totalRateLimit : m_perAddressRateLimit),
+                    std::strcmp(limitHit, "total") == 0 ? "-total" : "");
                 return -1;
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS:
+            // The listener's SSL_CTX (in `user`), as lws creates it - load the
+            // CRL (issue #15). Non-zero fails the context: fail closed.
+            return LoadRevocationList(static_cast<SSL_CTX*>(user), m_tls.crlPath, "listener") ? 0 : 1;
+
+        case LWS_CALLBACK_HTTP_CONFIRM_UPGRADE: {
+            // The WebSocket upgrade request has arrived but lws hasn't matched
+            // its subprotocol yet (lws 4.5.8 lib/roles/http/server/server.c).
+            // An unknown subprotocol would make lws drop the TCP connection
+            // without a response (issue #27), so refuse it here with a real
+            // HTTP 400 instead. Returning 1 tells lws we sent the response.
+            // No subprotocol at all, ours, or dc.bsc.bacnet.org carry on to
+            // ESTABLISHED, which closes the last two cases with a WebSocket
+            // close frame and a reason.
+            char requested[256] = {0};
+            lws_hdr_copy(wsi, requested, static_cast<int>(sizeof(requested)), WSI_TOKEN_PROTOCOL);
+            if (requested[0] != '\0' && !SubprotocolListContains(requested, m_acceptSubprotocol) &&
+                !SubprotocolListContains(requested, "dc.bsc.bacnet.org")) {
+                const std::string peerAddress = PeerAddressPort(wsi);
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                    "BACnet/SC: refusing a WebSocket upgrade from %s - it asked for subprotocol(s) \"%s\", "
+                    "this hub speaks \"%s\" (HTTP 400)", peerAddress.c_str(), requested, m_acceptSubprotocol.c_str());
+                // Written by hand rather than with lws_return_http_status(): at
+                // this point lws hasn't recorded the request's HTTP version, so
+                // that helper answers "HTTP/1.0", which WebSocket clients
+                // (RFC 6455 needs HTTP/1.1) reject as an invalid response.
+                const std::string body = "unsupported WebSocket subprotocol; this BACnet/SC hub accepts \"" +
+                                         m_acceptSubprotocol + "\"\n";
+                const std::string response = "HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n"
+                                             "content-length: " + std::to_string(body.size()) +
+                                             "\r\nconnection: close\r\n\r\n" + body;
+                std::vector<unsigned char> buffer(static_cast<std::size_t>(LWS_PRE) + response.size());
+                std::memcpy(buffer.data() + LWS_PRE, response.data(), response.size());
+                if (lws_write(wsi, buffer.data() + LWS_PRE, response.size(), LWS_WRITE_HTTP_HEADERS) < 0) {
+                    return -1;
+                }
+                return 1;  // we answered; lws completes (and closes) the transaction
             }
             break;
         }
@@ -1264,12 +1459,10 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             // lws's own negotiation. This callback only fires for a request
             // lws itself already bound to one of THIS transport's registered
             // protocols (no subprotocol requested at all, "hub.bsc.bacnet.org"
-            // itself, or - as of github.com/chipkin/BACnetProfileExample-B-
-            // SCHUB-CPP#8's fix - the explicitly-registered "dc.bsc.bacnet.org"
-            // - see m_protocols[1]'s comment in StartListening()); an
-            // ARBITRARY unrecognised subprotocol name never reaches here at
-            // all (lws drops it earlier, at the raw TCP level - see the same
-            // comment for why that specific gap is not fixable from here).
+            // itself, or the explicitly-registered "dc.bsc.bacnet.org" - see
+            // m_protocols[1]'s comment in StartListening()); an unrecognised
+            // subprotocol name was already refused with HTTP 400 at
+            // LWS_CALLBACK_HTTP_CONFIRM_UPGRADE above.
             char requested[256] = {0};
             lws_hdr_copy(wsi, requested, static_cast<int>(sizeof(requested)), WSI_TOKEN_PROTOCOL);
             if (!SubprotocolListContains(requested, m_acceptSubprotocol)) {
@@ -1292,33 +1485,28 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
 
             // Mint the accepted-peer connection string (plan fact 2, verified
             // against BACnetDataLinkSC::DoesConfiguredUriMatch): "<acceptUri>|client=<N>".
-            const std::string connStr = m_listenUri + "|client=" + std::to_string(m_nextClientId++);
+            const uint64_t clientId = m_nextClientId++;
+            const std::string connStr = m_listenUri + "|client=" + std::to_string(clientId);
             PeerConnection& peer = m_peers[wsi];
             peer.wsi = wsi;
+            peer.clientId = clientId;
             peer.connectionString = connStr;
-            peer.peerAddress = PeerAddressPort(wsi);  // Item 2 - captured once here, reused at CLOSED below
+            peer.peerAddress = PeerAddressPort(wsi);  // captured once here, reused at CLOSED below
+            peer.certificateSubject = PeerCertificateSubject(wsi);
             m_connStringToWsi[connStr] = wsi;
             ++m_totalConnects;
             printf("BACnet/SC: accepted WebSocket connection - peer=\"%s\" from %s\n",
                    connStr.c_str(), peer.peerAddress.c_str());
-            // Audit trail (Task 1): the accepted-peer connection string
-            // ("<acceptUri>|client=N") is the identity this transport layer
-            // actually has at this point - it is the SAME identifier the
-            // stack will use as this peer's BACnet/SC source address for the
-            // rest of the connection's life (plan fact 2). A BACnet/SC VMAC/
-            // UUID is NOT available here: that identity is only established
-            // once the stack completes its own Connect-Request/Accept
-            // exchange over this socket (ordinary RX data, handled below,
-            // processed by the stack - not visible to this transport) - see
-            // ScStatusEvent's header comment and issue #21 for this documented
-            // boundary. CASExampleHelper::Log already prefixes every line
-            // with a UTC timestamp (common/CASExampleLog.cpp), which is the
-            // "<UTC timestamp>" this audit line needs - not duplicated here.
-            // Item 2 adds the actual source IP:port alongside the connection
-            // string - previously this line only ever had the connection
-            // string identity, never the real remote address.
+            // Audit trail (issue #21). The connection string only means "the
+            // Nth socket this run", so the audit line also names the TLS
+            // certificate the peer presented. Its BACnet/SC identity - VMAC
+            // and device UUID - arrives in its Connect-Request right after
+            // this; AuditReceivedFrame()/AuditSentFrame() log it when the
+            // stack accepts (or refuses) that request. CASExampleHelper::Log
+            // prefixes every line with a UTC timestamp.
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-                "SC audit: peer \"%s\" connected from %s", connStr.c_str(), peer.peerAddress.c_str());
+                "SC audit: peer \"%s\" connected from %s, certificate \"%s\"", connStr.c_str(),
+                peer.peerAddress.c_str(), peer.certificateSubject.c_str());
             // Deliberately NOT queuing a Connected(2) status event here - see
             // ScStatusEvent's doc comment and plan open risk #7: an accepted
             // socket is not yet a BACnet/SC "connection" until the stack's own
@@ -1332,9 +1520,13 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             if (peer == nullptr) {
                 break;
             }
+            const uint64_t framesBefore = m_rxMessages;
             if (HandleIncomingFragment(wsi, in, len, peer->connectionString, m_listenUri,
                                        &peer->rxAssembly, &peer->rxOverflow)) {
                 return -1;
+            }
+            if (m_rxMessages != framesBefore && !peer->accepted) {
+                AuditReceivedFrame(peer, m_rxQueue.back().data);  // a complete frame - its Connect-Request?
             }
             break;
         }
@@ -1343,6 +1535,9 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             PeerConnection* peer = FindPeerByWsi(wsi);
             if (peer == nullptr) {
                 break;
+            }
+            if (ApplyRequestedClose(wsi, peer->closeRequest)) {
+                return -1;  // Disconnect() or a full transmit queue asked for this close
             }
             if (FlushOneQueuedFrame(wsi, &peer->txQueue, "\"" + peer->connectionString + "\"")) {
                 return -1;
@@ -1383,8 +1578,11 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 // own comment) rather than re-querying lws here - by CLOSED the
                 // underlying socket may already be torn down.
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-                    "SC audit: peer \"%s\" (%s) disconnected (closeCode=%u)",
-                    peer->connectionString.c_str(), peer->peerAddress.c_str(), (unsigned)peer->lastCloseCode);
+                    "SC audit: peer \"%s\" (%s) disconnected (closeCode=%u) - BACnet/SC device VMAC %s, "
+                    "UUID %s, certificate \"%s\"",
+                    peer->connectionString.c_str(), peer->peerAddress.c_str(), (unsigned)peer->lastCloseCode,
+                    peer->vmac.empty() ? "?" : peer->vmac.c_str(), peer->uuid.empty() ? "?" : peer->uuid.c_str(),
+                    peer->certificateSubject.c_str());
                 m_connStringToWsi.erase(peer->connectionString);
                 m_peers.erase(wsi);
             }
@@ -1442,8 +1640,14 @@ bool ScTransport::HandleIncomingFragment(lws* wsi, const void* in, std::size_t l
 }
 
 int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void* in, std::size_t len) {
-    (void)user;
     const lws_callback_reasons reason = static_cast<lws_callback_reasons>(reasonInt);
+    if (reason == LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS) {
+        // The connector's SSL_CTX (in `user`), as lws creates it, on a fake
+        // wsi with only the context set - so handled before the per-connection
+        // lookup below. Load the CRL so the hub we dial is checked too.
+        LoadRevocationList(static_cast<SSL_CTX*>(user), m_tls.crlPath, "connector");
+        return 0;
+    }
     // Every reason below fires on a wsi lws created from THIS connection's own
     // Connect() call, which set ccinfo.opaque_user_data = &conn (a stable
     // reference into m_clients - see the header's comment on that map) - so
@@ -1463,7 +1667,9 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
             // rather than a bare IP, or when failover has multiple A
             // records).
             conn->peerAddress = PeerAddressPort(wsi);
-            printf("BACnet/SC: connected to hub \"%s\" (%s)\n", conn->uri.c_str(), conn->peerAddress.c_str());
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                "SC audit: connected to hub \"%s\" (%s), certificate \"%s\"", conn->uri.c_str(),
+                conn->peerAddress.c_str(), PeerCertificateSubject(wsi).c_str());
             ScStatusEvent evt;
             evt.uri = conn->uri;
             evt.status = 2;  // WebsocketStatus_Connected (plan fact 3)
@@ -1526,6 +1732,9 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
         case LWS_CALLBACK_CLIENT_WRITEABLE: {
             if (conn == nullptr) {
                 break;
+            }
+            if (ApplyRequestedClose(wsi, conn->closeRequest)) {
+                return -1;
             }
             if (FlushOneQueuedFrame(wsi, &conn->txQueue, "hub \"" + conn->uri + "\"")) {
                 return -1;

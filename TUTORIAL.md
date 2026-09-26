@@ -38,20 +38,21 @@ variable's compile-time default in `main.cpp`; the `DeviceCommunicationControl`
 callback then rejects a mismatch with `password-failure` instead of accepting
 any request. There is **no** `--dcc-password` command-line flag, because a
 command-line argument is visible in process listings and shell history (see
-README.md "Configuration file"). If you set a
+docs/manual.md "Configuration file"). If you set a
 non-empty `dcc-password`, restrict the config file's own permissions
-(`icacls`/`chmod 600` - see README.md) - the example warns, but does not
-refuse to start, if it looks group/world-readable. The same value also gates
-the `POST /certs/<slot>` certificate-upload HTTP endpoint - see README.md
-"Certificate upload endpoint".
+(`icacls`/`chmod 600` - see the manual) - the example warns, but does not
+refuse to start, if it looks group/world-readable. The `POST /certs/<slot>`
+certificate-upload HTTP endpoint has its own secret, `http-upload-token` -
+see docs/manual.md "Status page and HTTP endpoints".
 
 **Use a config file instead of repeating CLI flags** - `--config <path>` (see
-`config.h`/`config.cpp` and README.md's "Configuration file") reads
+`config.h`/`config.cpp` and the manual's "Configuration file") reads
 `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`,
-`sc-failover-uri`, `dcc-password`, `http-port`, and `sc-max-hub-connections`
-from a small `key = value` text file. It only ever supplies a DEFAULT: any of
-those flags given directly on the command line still wins (except
-`dcc-password`, which has no CLI form at all). Useful for a lab rig that
+`sc-failover-uri`, `dcc-password`, `http-upload-token`, `http-port`, and
+`sc-max-hub-connections` (see `example.conf` for the full list) from a small
+`key = value` text file. It only ever supplies a DEFAULT: any of those flags
+given directly on the command line still wins (except `dcc-password` and
+`http-upload-token`, which have no CLI form at all). Useful for a lab rig that
 always runs with the same non-default settings (a fixed `--sc-port`, a
 non-default `--deviceID`, ...) without retyping them every run -
 `example.conf` is a ready-to-copy template.
@@ -61,9 +62,9 @@ uptime/connection/RX-TX snapshot on stdout, or `curl
 http://127.0.0.1:8080/health` (no auth needed; `--http-port` to change the
 port) for the same data as JSON. `POST http://127.0.0.1:<http-port>/certs/<slot>`
 uploads a replacement certificate/CSR (bearer-token auth using
-`dcc-password`, disabled entirely if that is unset) - see README.md
-"Health/metrics HTTP endpoint" and "Certificate upload endpoint" for the full
-contract, including what is deliberately NOT hardened about the upload path.
+`http-upload-token`, disabled entirely if that is unset) - see the manual's
+"Status page and HTTP endpoints" (docs/manual.md) for the full contract:
+authentication, validation and rate limiting of the upload path.
 
 **Limit how many BACnet/SC nodes the hub accepts** - `--sc-max-hub-connections
 <n>` (or the config file's `sc-max-hub-connections` key), default 4. This is
@@ -85,7 +86,7 @@ ReadProperty already uses.
 ### Implement the BACnet/SC transport for real
 
 Both transport roles are real, compiled, and verified against real peers -
-see [README.md "What the hub does"](README.md#what-the-hub-does)
+see [the manual, "What the hub does"](docs/manual.md#1-what-the-hub-does)
 for what's implemented and `sc_transport/README.md` for the wire-level
 contract. This section is the "how it works, and how to take it further" a
 reader who wants to productionize the pattern needs - not a build-it-yourself
@@ -123,6 +124,11 @@ does not repeat it.
 
 #### Certificates: what this example does, and what a real deployment needs instead
 
+For the operator's side - which CA to use, how to get the hub's certificate
+signed, rotation and revocation - see
+[docs/production-certificates.md](docs/production-certificates.md). This
+section is about the code.
+
 `BACnetExampleBSCHUB --generate-certs` generates a throwaway **lab CA**, signs
 a hub certificate and one certificate per connecting device with it, and
 writes them under `certs/` (gitignored). This is **lab testing only**. Turning this into a real
@@ -141,7 +147,7 @@ deployment's certificate story needs, at minimum:
    BACnet/SC issuing CA.
 2. **A certificate rotation strategy.** A client can replace the hub's
    certificate and add a second issuer over BACnet (clause 19.8.3 - see
-   README.md "Managing certificates over BACnet"); the hub validates the new
+   docs/manual.md "Managing certificates over BACnet"); the hub validates the new
    set and restarts BACnet/SC without restarting the process.
    What this example does **not** implement: automatic renewal before
    expiry, key-pair regeneration (`GENERATE_CSR_FILE`, see point 4 below), or
@@ -261,7 +267,7 @@ if (!BACnetStack_AddObject(g_deviceInstance, OBJECT_TYPE_ANALOG_INPUT, ANALOG_IN
 //    GetPropertyEnumerated:  AI/2 + Units -> *value = ENGINEERING_UNITS_DEGREES_CELSIUS;
 ```
 
-Then re-run the README's Verify steps **against Analog Input 2**, not just Analog
+Then re-run AGENTS.md's "How to verify a change" steps **against Analog Input 2**, not just Analog
 Input 1 — read every required property and **diff it against Analog Input 1**.
 Any property that comes back `"undefined"`, `no-units`, or `0` where object 1
 returns something real is a step you missed. Because the failure is silent (see
@@ -367,7 +373,7 @@ not in `accepted`, comes out as a ⚠ row - that is a defect, not a feature.
 | Symptom | Cause / fix |
 |---------|-------------|
 | On start-up the app prints a wall of red `Error:` lines but the device works | **Expected — this is not your bug.** Two benign sources, both from the stack's own debug logging: (1) the device receives its **own** broadcast I-Am and logs a decode cascade (*"Services is not supported service=[0]"* … *"Failed to process the incoming NPDU"*) — any BACnet/IP device that listens for broadcasts hears itself; (2) a one-time *"UUID has not been set..."* notice can appear from the stack's own BACnet/SC datalink bring-up before `BACnetStack_SetBACnetSCUuid` runs. On a healthy start-up roughly half the output is these lines. |
-| No BACnet/SC node ever connects | The transport is real now, so this is worth debugging rather than assuming. Check: does `certs/` exist (`BACnetExampleBSCHUB --generate-certs` if not)? Does the peer trust the SAME CA (`certs/issuer-certificate.pem`) this hub's certificate was signed by? Is the peer using the `hub.bsc.bacnet.org` subprotocol and TLS 1.3? `tests/sc/hub_listener_test.py` isolates each of these. See [README.md "Troubleshooting"](README.md#troubleshooting) and `sc_transport/README.md`. |
+| No BACnet/SC node ever connects | The transport is real now, so this is worth debugging rather than assuming. Check: does `certs/` exist (`BACnetExampleBSCHUB --generate-certs` if not)? Does the peer trust the SAME CA (`certs/issuer-certificate.pem`) this hub's certificate was signed by? Is the peer using the `hub.bsc.bacnet.org` subprotocol and TLS 1.3? `tests/sc/hub_listener_test.py` isolates each of these. See [the manual, "Troubleshooting"](docs/manual.md#10-troubleshooting) and `sc_transport/README.md`. |
 | CMake error: *"CAS BACnet Stack adapter not found under: ..."* | Submodules not initialized. Run `git submodule update --init --recursive` (or pass `-D CAS_STACK_DIR=...`). |
 | `CASBACnetStackDLL.h: No such file or directory` | Same - submodules not checked out. |
 | Windows: *"No CMAKE_CXX_COMPILER could be found"* | Install Visual Studio with the "Desktop development with C++" workload, then re-run from a fresh terminal. |

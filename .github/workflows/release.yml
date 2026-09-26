@@ -31,6 +31,7 @@ permissions:
   # an ID token. Only the tag build of the Windows leg requests one (see "Code signing").
   id-token: write
   # SC-TRANSPORT:END
+  packages: write  # the vcpkg NuGet binary cache on GitHub Packages (issue #17)
 
 jobs:
   build:
@@ -128,6 +129,37 @@ jobs:
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
           mkdir -p vcpkg-binary-cache
           echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+
+      # A binary cache that doesn't expire (issue #17): actions/cache above is
+      # evicted after 7 days unused, and this workflow only runs on pull requests
+      # and tags, so a cold OpenSSL/libwebsockets build was the usual case. This
+      # adds this repository owner's GitHub Packages NuGet feed as a second
+      # vcpkg binary source, using the workflow's own GITHUB_TOKEN (packages:
+      # write, above). Pull requests read from it; pushes (tags) and manual
+      # runs also write to it. If the feed can't be set up - a pull request from
+      # a fork, whose token can't read this owner's packages - the step is
+      # skipped and the files cache above still works.
+      - name: vcpkg binary cache on GitHub Packages (NuGet)
+        continue-on-error: true
+        shell: bash
+        env:
+          FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          FEED_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEED_MODE: ${{ github.event_name == 'pull_request' && 'read' || 'readwrite' }}
+        run: |
+          set -e
+          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
+          run_nuget() {
+            if [ "${{ runner.os }}" = "Windows" ]; then "$nuget" "$@"; else mono "$nuget" "$@"; fi
+          }
+          if [ "${{ runner.os }}" != "Windows" ] && ! command -v mono > /dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq mono-complete > /dev/null
+          fi
+          run_nuget sources add -Source "$FEED_URL" -StorePasswordInClearText -Name GitHubPackages \
+            -UserName "${{ github.repository_owner }}" -Password "$FEED_TOKEN"
+          run_nuget setapikey "$FEED_TOKEN" -Source "$FEED_URL"
+          echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite;nuget,${FEED_URL},${FEED_MODE}" >> "$GITHUB_ENV"
+          echo "vcpkg binary cache: files + GitHub Packages NuGet (${FEED_MODE})"
           # x64-windows-static matches this repo's own CMakeLists.txt Windows default (kept in
           # sync with the CAS BACnet Stack adapter's static-runtime default); x64-linux is
           # vcpkg's own default triplet there, so nothing needs to be forced on Linux.
@@ -298,6 +330,51 @@ jobs:
           curl -sf http://127.0.0.1:8080/ | grep -q "Version $version" || { echo "FAIL: GET / did not show Version $version"; exit 1; }
           curl -sf http://127.0.0.1:8080/health | grep -q '"uptime_seconds"'
 
+      - name: ReadPropertyMultiple (DS-RPM-B)
+        run: python tests/sc/rpm_test.py --target 127.0.0.1 --target-port 47822
+
+      - name: HTTP endpoints - upload disabled without http-upload-token
+        run: python tests/sc/http_test.py --http-port 8080 --cert-dir certs
+
+      # A second instance with an upload token, a device name, network numbers
+      # and a log file (issue #33): the HTTP test exercises upload auth,
+      # validation and rate limiting; the log file must hold the start-up lines.
+      - name: HTTP upload, device name, network numbers and log file
+        shell: bash
+        run: |
+          printf 'http-upload-token = ci-upload-token\ndevice-name = CI Hub 7\nip-network-number = 11\nsc-network-number = 12\nlog-file = ci-hub.log\nlog-max-size-mb = 1\n' > ci-http.conf
+          "${{ matrix.exe }}" --config ci-http.conf --port 47831 --sc-port 47832 --http-port 18084 --sc-cert-dir certs > ci-http.out 2>&1 &
+          pid=$!
+          for i in $(seq 1 50); do
+            curl -sf http://127.0.0.1:18084/health > /dev/null && break
+            sleep 0.2
+          done
+          rc=0
+          python tests/sc/http_test.py --http-port 18084 --token ci-upload-token --cert-dir certs --device-name "CI Hub 7" || rc=1
+          grep -q "ready" ci-hub.log || { echo "FAIL: ci-hub.log does not have the start-up lines"; rc=1; }
+          kill "$pid" 2>/dev/null || true
+          [ "$rc" -eq 0 ] || { cat ci-http.out; cat ci-hub.log; exit 1; }
+
+      # The hub CONNECTOR role against tests/sc/fake_hub_server.py (V4).
+      - name: BACnet/SC connector against a fake hub
+        shell: bash
+        run: |
+          python -u tests/sc/fake_hub_server.py --port 47833 --cert-dir certs --max-seconds 30 > fake-hub.log 2>&1 &
+          fake=$!
+          sleep 2
+          "${{ matrix.exe }}" --port 47834 --sc-port 47835 --http-port 18085 --sc-cert-dir certs \
+            --sc-hub-uri wss://127.0.0.1:47833/ > connector.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 100); do
+            grep -q "Connect-Accept sent" fake-hub.log && grep -q "SC audit: connected to hub" connector.log && break
+            sleep 0.2
+          done
+          rc=0
+          grep -q "Connect-Accept sent" fake-hub.log || { echo "FAIL: the fake hub never answered a Connect-Request"; rc=1; }
+          grep -q "SC audit: connected to hub" connector.log || { echo "FAIL: the connector never connected"; rc=1; }
+          kill "$pid" "$fake" 2>/dev/null || true
+          [ "$rc" -eq 0 ] || { cat fake-hub.log; cat connector.log; exit 1; }
+
       # The clause 19.8.3 certificate procedures over BACnet (add issuer, rejected
       # activation, replace operational certificate). Runs a SECOND instance on its
       # own certificate sets, because the test rewrites the hub's certificates.
@@ -308,7 +385,25 @@ jobs:
           "${{ matrix.exe }}" --sc-max-hub-connections 5 > limit.log 2>&1 || rc=$?
           cat limit.log
           [ "$rc" -ne 0 ] || { echo "FAIL: --sc-max-hub-connections 5 did not exit with an error"; exit 1; }
-          grep -q "sales@chipkin.com" limit.log || { echo "FAIL: limit error does not name sales@chipkin.com"; exit 1; }
+          grep -q "support@chipkin.com" limit.log || { echo "FAIL: limit error does not name support@chipkin.com"; exit 1; }
+
+      - name: BACnet/SC only - --bacnet-ip off opens no UDP port, BACnet/SC still works
+        shell: bash
+        run: |
+          "${{ matrix.exe }}" --bacnet-ip off --port 47826 --sc-port 47827 --http-port 18082 --sc-cert-dir certs > sc-only.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" sc-only.log && break
+            sleep 0.2
+          done
+          rc=0
+          grep -q "BACnet/IP is OFF" sc-only.log || { echo "FAIL: no 'BACnet/IP is OFF' line"; rc=1; }
+          # The UDP port must be free: nothing bound it.
+          python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('0.0.0.0', 47826)); print('UDP 47826 is free')" || { echo "FAIL: UDP 47826 is bound"; rc=1; }
+          curl -sf http://127.0.0.1:18082/health | grep -q '"bacnet_ip_enabled":false' || { echo "FAIL: /health does not report bacnet_ip_enabled false"; rc=1; }
+          python tests/sc/hub_listener_test.py --port 47827 --cert-dir certs || rc=1
+          kill "$pid" 2>/dev/null || true
+          [ "$rc" -eq 0 ] || { cat sc-only.log; exit 1; }
 
       - name: BACnet/SC certificate procedures over BACnet (clause 19.8.3)
         shell: bash
@@ -345,9 +440,46 @@ jobs:
           # SC-TRANSPORT:BEGIN - this example's package also ships the PICS as a PDF and
           # its third-party-dependency notices (libwebsockets, OpenSSL) - no other
           # example in the series has either.
-          cp docs/PICS.pdf dist/ 2>/dev/null || true
+          cp docs/PICS.pdf docs/manual.pdf docs/fact-sheet.pdf dist/ 2>/dev/null || true
           cp THIRD-PARTY-NOTICES.md dist/ 2>/dev/null || true
+          cp docs/production-certificates.md dist/ 2>/dev/null || true
+          cp SECURITY.md docs/SUPPORT.md dist/ 2>/dev/null || true
+          # Software bill of materials (issue #32): this example, the CAS BACnet
+          # Stack and every vcpkg library in the executable, with versions and
+          # licences. One per platform (the vcpkg libraries differ).
+          python tools/make-sbom.py --build-dir build --out "dist/sbom-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.cdx.json"
+          cp example.conf dist/
           # SC-TRANSPORT:END
+
+      # SC-TRANSPORT:BEGIN - installers (issue #34)
+      # The installer wraps the executable that "Sign executable with Azure Artifact
+      # Signing" signed on a tag build; the installer itself is not signed yet.
+      - name: Windows installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path main.cpp -Pattern 'APP_VERSION = "([0-9.]+)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Q "/DAppVersion=$version" "/DSourceDir=$PWD\dist" "/DOutputDir=$PWD\dist" packaging\windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - name: Linux archive and .deb package
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
+          stage="BACnetSCHub-$version-linux-x64"
+          mkdir -p "$stage"
+          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/LICENSE dist/example.conf "$stage/" 2>/dev/null || true
+          cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/bacnet-schub-hub.service "$stage/"
+          chmod +x "$stage/install.sh" "$stage/uninstall.sh" "$stage/BACnetExampleBSCHUB"
+          tar -czf "dist/$stage.tar.gz" "$stage"
+          sh packaging/linux/build-deb.sh "$version" "$stage" dist
+          dpkg-deb --info "dist/bacnet-schub-hub_${version}_amd64.deb"
+          ls -l dist
+      # SC-TRANSPORT:END
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

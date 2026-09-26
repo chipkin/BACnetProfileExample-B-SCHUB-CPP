@@ -18,7 +18,8 @@ Per docs/bacnet-sc-transport-plan.md's "Verification" section:
        - no client certificate -> the TLS handshake itself is refused
          (mutual TLS is required - LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT),
        - TLS 1.2 -> refused (the listener only offers TLS 1.3),
-       - a wrong subprotocol name -> the WebSocket upgrade is rejected,
+       - a wrong subprotocol name -> the WebSocket upgrade is refused with
+         HTTP 400 (not a dropped connection),
        - a text frame on an otherwise-good connection -> the server closes
          with WebSocket close code 1003 (Unacceptable Opcode) - BACnet/SC is
          binary-framed only.
@@ -216,8 +217,13 @@ async def v1_wrong_subprotocol(uri: str, cert_dir: Path):
                    f"negotiated={ws.subprotocol!r} (connection stayed open - should have been rejected)")
             return ok
     except Exception as exc:
-        record("V1 negative: wrong subprotocol -> rejected", True, f"{type(exc).__name__}: {exc}")
-        return True
+        # The hub answers an unknown subprotocol with HTTP 400 (issue #27),
+        # not a dropped TCP connection - check for that status specifically.
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        ok = status == 400
+        record("V1 negative: wrong subprotocol -> HTTP 400", ok, f"{type(exc).__name__}: {exc}")
+        return ok
 
 
 async def v1_text_frame_closes_1003(uri: str, cert_dir: Path):

@@ -1,0 +1,46 @@
+# systemd unit for the BACnet/SC hub (BACnetExampleBSCHUB).
+#
+# Installed by packaging/linux/install.sh or the .deb package to
+# /etc/systemd/system/bacnet-schub-hub.service. Then:
+#
+#   sudo systemctl enable --now bacnet-schub-hub   # start now and on boot
+#   systemctl status bacnet-schub-hub
+#   journalctl -u bacnet-schub-hub -f               # the hub's log
+#
+# Settings live in /etc/bacnet-schub/hub.conf (see example.conf for every key);
+# certificates in /etc/bacnet-schub/certs. The hub also keeps its own rotating
+# log in /var/log/bacnet-schub/hub.log (log-file in hub.conf).
+
+[Unit]
+Description=BACnet/SC Hub (Chipkin B-SCHUB example)
+Documentation=https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bacnethub
+Group=bacnethub
+WorkingDirectory=/etc/bacnet-schub
+ExecStart=/opt/bacnet-schub/BACnetExampleBSCHUB --config /etc/bacnet-schub/hub.conf
+# SIGTERM stops the hub cleanly (the same as pressing 'q').
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=5
+# No console: keys can't be read, and output goes to the journal.
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+# Hardening. The hub needs to read its certificates, write its log and the
+# certificates it receives over BACnet, and bind its ports (all above 1024 by
+# default).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/bacnet-schub /var/log/bacnet-schub
+
+[Install]
+WantedBy=multi-user.target

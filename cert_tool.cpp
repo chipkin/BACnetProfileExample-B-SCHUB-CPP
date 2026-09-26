@@ -441,7 +441,7 @@ issuer-certificate.pem                                            PUBLIC
 
 bacnetsc.config                                                   PUBLIC
     The device's BACnet/SC connection settings, ready to import into the
-    Chipkin BACnet Explorer: role "device", the hub's primary URI, the three
+    CAS BACnet Explorer: role "device", the hub's primary URI, the three
     PEM files above (by file name, so keep them in the same folder) and
     hub-certificate validation turned on. The URI is the one the hub had
     when the certificates were made - this computer's IPv4 address and
@@ -465,7 +465,7 @@ HOW TO USE THESE FILES
 2. Give each device that will connect to the hub its own clients/<label>/
    folder.
 
-   Chipkin BACnet Explorer: import clients/<label>/bacnetsc.config. It
+   CAS BACnet Explorer: import clients/<label>/bacnetsc.config. It
    already names the hub URI and the three PEM files in the same folder.
 
    Any other BACnet/SC device:
@@ -537,9 +537,10 @@ issuer-certificate.pem         PUBLIC   The certificate authority that signed th
 
 bacnetsc.config                PUBLIC   This device's BACnet/SC connection settings: hub URI
                                         %HUBURI% and the three files above.
-                                        Import it into the Chipkin BACnet Explorer.
+                                        Import it into the CAS BACnet Explorer.
 
-To connect from the Chipkin BACnet Explorer: import bacnetsc.config from this folder
+To connect from the CAS BACnet Explorer (https://store.chipkin.com/products/tools/cas-bacnet-explorer):
+import bacnetsc.config from this folder
 (keep the .pem files next to it).
 From any other BACnet/SC device: install the operational certificate and key as its
 operational certificate, install issuer-certificate.pem as its issuer certificate,
@@ -584,7 +585,7 @@ std::string XmlEscape(const std::string& s) {
 
 // bacnetsc.config for one client folder: the BACnet/SC connection settings
 // (this hub's URI and the folder's three PEM files, referenced by name) in the
-// XML format the Chipkin BACnet Explorer imports. Role "device" = a BACnet/SC
+// XML format the CAS BACnet Explorer imports. Role "device" = a BACnet/SC
 // node that connects to a hub; ValidateHubCertificate makes it check the
 // hub's certificate against issuer-certificate.pem.
 std::string BacnetScConfig(const std::string& hubUri) {
