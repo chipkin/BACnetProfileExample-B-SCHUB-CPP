@@ -31,7 +31,10 @@ new stack pin, re-verify every one of these against `submodules/cas-bacnet-stack
 
 1. **Subprotocol is `hub.bsc.bacnet.org`** (135-2024 AB.7.1) - not
    `hub.bacnet.org`, which some other example code in this series' history
-   used and which is wrong.
+   used and which is wrong. A request for any other subprotocol is refused
+   with HTTP 400 at `LWS_CALLBACK_HTTP_CONFIRM_UPGRADE`, before lws would
+   drop it without a response (#27); `dc.bsc.bacnet.org` is closed with its
+   own "not supported" reason.
 2. **Accepted inbound connections are identified by a connection string this
    app mints**: `<configured accept URI>|client=<unique suffix>`
    (`BACnetDataLinkSC.cpp`'s `DoesConfiguredUriMatch`). There is no
@@ -46,7 +49,9 @@ new stack pin, re-verify every one of these against `submodules/cas-bacnet-stack
    and is wrong (cas-bacnet-stack#3094).
 4. **`SendMessageForPort` must return exactly `messageLength`** on success, 0
    if the socket is unknown/closed - not a boolean "did it work" flag
-   (cas-bacnet-stack#2226).
+   (cas-bacnet-stack#2226). The frame is queued, and each connection's queue
+   holds at most 64 frames (`kMaxTxQueueFrames`): a peer that stops reading
+   is closed with 1008 and a log line, and `Send()` returns false (#16).
 5. **Callbacks dispatch by `networkPortInstance`**, not `networkType`. Inbound
    SC frames report the real SC Network Port instance (2 in this example).
 6. **Never call `BACnetStack_*` from inside a stack callback.** `Service()`
@@ -66,13 +71,20 @@ new stack pin, re-verify every one of these against `submodules/cas-bacnet-stack
    `lws_context` created with `LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT` tears
    down OpenSSL process-wide, and the next `lws_create_context` crashes
    (#13). `ScTransport::Configure()` creates a lifetime context that is
-   never destroyed, so listener and client contexts can be recreated safely.
+   never destroyed, so listener and client contexts can be recreated safely -
+   including after a failed `lws_create_context` (a busy port, a certificate
+   that doesn't parse yet): the listener retries every 5 seconds and recovers
+   once the cause is fixed, without a restart (#28).
 
 ## Certificate policy
 
-This transport performs **CA-chain validation only**, at the TLS layer
-(OpenSSL, via libwebsockets `ssl_ca_filepath`/`client_ssl_ca_filepath`): no
-CRL, no UUID-in-SAN binding to a specific BACnet/SC device identity, and the
+This transport performs **CA-chain validation**, at the TLS layer
+(OpenSSL, via libwebsockets `ssl_ca_filepath`/`client_ssl_ca_filepath`), and
+**revocation checking** when `ScTlsFiles::crlPath` names an existing file: the
+`LWS_CALLBACK_OPENSSL_LOAD_EXTRA_{SERVER,CLIENT}_VERIFY_CERTS` callbacks load
+its CRLs into each new TLS context's store and set `X509_V_FLAG_CRL_CHECK`
+(fail closed: no CRL for the peer's issuer, or an expired one, refuses the
+peer; an unparsable file stops the context). No UUID-in-SAN binding to a specific BACnet/SC device identity, and the
 connector half passes `LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK` - BACnet/SC
 certificates identify *devices*, not DNS hosts, so there is nothing meaningful
 to hostname-check against; the CA chain is still fully verified. See
@@ -80,7 +92,7 @@ to hostname-check against; the CA chain is still fully verified. See
 what productionizing this further (a real CA, certificate rotation, an
 identity-binding policy) looks like. The stack has no certificate-validation
 callback (it was never called and has been removed), so any stricter policy -
-revocation (#15), identity binding - belongs here, in the TLS layer.
+revocation, identity binding - belongs here, in the TLS layer.
 
 ## Testing
 

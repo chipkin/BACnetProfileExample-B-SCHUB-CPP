@@ -337,6 +337,57 @@ void DiscardStaged() {
     g_staged.clear();
 }
 
+bool StageWholeFile(uint32_t fileInstance, const std::string& bytes, uint32_t* errorCode) {
+    int32_t ackFileStart = 0;
+    return Resize(fileInstance, 0, errorCode) &&
+           Write(fileInstance, 0, reinterpret_cast<const uint8_t*>(bytes.data()), (uint32_t)bytes.size(),
+                 &ackFileStart, errorCode);
+}
+
+bool InstallCertificateSigningRequest(uint32_t fileInstance, const std::string& pem, std::string* reason) {
+    const auto path = g_layout.paths.find(fileInstance);
+    if (path == g_layout.paths.end()) {
+        *reason = "not a certificate File object";
+        return false;
+    }
+    BIO* bio = BIO_new_mem_buf(pem.data(), (int)pem.size());
+    X509_REQ* request = PEM_read_bio_X509_REQ(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (request == NULL) {
+        ERR_clear_error();
+        *reason = "not a PEM certificate signing request";
+        return false;
+    }
+    bool ok = true;
+    EVP_PKEY* requestKey = X509_REQ_get0_pubkey(request);
+    if (requestKey == NULL || X509_REQ_verify(request, requestKey) != 1) {
+        *reason = "the certificate signing request's signature doesn't verify";
+        ok = false;
+    }
+    if (ok) {
+        // It must be for this hub's own key, or a certificate signed from it
+        // could never be installed (ValidateStaged would refuse it).
+        std::string keyPem;
+        EVP_PKEY* key = nullptr;
+        if (ReadDisk(g_layout.privateKeyPath, &keyPem)) {
+            BIO* keyBio = BIO_new_mem_buf(keyPem.data(), (int)keyPem.size());
+            key = PEM_read_bio_PrivateKey(keyBio, NULL, NULL, NULL);
+            BIO_free(keyBio);
+        }
+        if (key == nullptr) {
+            *reason = "could not read this hub's private key \"" + g_layout.privateKeyPath + "\"";
+            ok = false;
+        } else if (EVP_PKEY_eq(requestKey, key) != 1) {
+            *reason = "the certificate signing request is not for this hub's private key";
+            ok = false;
+        }
+        EVP_PKEY_free(key);
+    }
+    X509_REQ_free(request);
+    ERR_clear_error();
+    return ok && AtomicWriteFileToDisk(path->second, pem, reason);
+}
+
 bool WriteTrustedIssuerBundle(const std::string& bundlePath, std::string* reason) {
     std::string bundle;
     std::set<std::string> seen;

@@ -64,6 +64,27 @@ static bool ParseConfigUint(const std::string& field, const std::string& value,
     return true;
 }
 
+// Parses a config-file on/off value ("true"/"false", "on"/"off", "yes"/"no",
+// "1"/"0", any case), WARNING (not failing) on anything else.
+static bool ParseConfigBool(const std::string& field, const std::string& value, bool* outValue) {
+    std::string lower;
+    for (const char c : value) {
+        lower += (char)tolower((unsigned char)c);
+    }
+    if (lower == "true" || lower == "on" || lower == "yes" || lower == "1") {
+        *outValue = true;
+        return true;
+    }
+    if (lower == "false" || lower == "off" || lower == "no" || lower == "0") {
+        *outValue = false;
+        return true;
+    }
+    CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                          "config file: ignoring \"%s = %s\" (want true or false).",
+                          field.c_str(), value.c_str());
+    return false;
+}
+
 #if defined(_WIN32)
 // Best-effort check: true if the file's DACL grants access to a principal
 // OTHER than well-known "trusted owner" SIDs (BUILTIN\Administrators,
@@ -71,7 +92,7 @@ static bool ParseConfigUint(const std::string& field, const std::string& value,
 // on a platform with no single mode-bit to check. Deliberately NOT a full
 // security audit: it does not resolve nested/domain group membership, does
 // not distinguish read from write/full access, and does not walk ACEs
-// inherited from a parent directory - see README.md "Configuration file" for
+// inherited from a parent directory - see docs/manual.md "Configuration file" for
 // why a best-effort warning (not enforcement) is this tutorial's goal, not a
 // hardened permissions check.
 static bool WindowsFileHasBroadAccess(const std::string& path) {
@@ -180,6 +201,36 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
                 outConfig->port = (uint16_t)numeric;
                 outConfig->hasPort = true;
             }
+        } else if (key == "device-name") {
+            outConfig->deviceName = value;
+            outConfig->hasDeviceName = !value.empty();
+        } else if (key == "ip-network-number" || key == "sc-network-number") {
+            if (ParseConfigUint(key, value, 1, 65534, &numeric)) {
+                if (key == "ip-network-number") {
+                    outConfig->ipNetworkNumber = (uint16_t)numeric;
+                    outConfig->hasIpNetworkNumber = true;
+                } else {
+                    outConfig->scNetworkNumber = (uint16_t)numeric;
+                    outConfig->hasScNetworkNumber = true;
+                }
+            }
+        } else if (key == "log-file") {
+            outConfig->logFile = value;
+            outConfig->hasLogFile = !value.empty();
+        } else if (key == "log-max-size-mb") {
+            if (ParseConfigUint(key, value, 1, 4096, &numeric)) {
+                outConfig->logMaxSizeMb = numeric;
+                outConfig->hasLogMaxSizeMb = true;
+            }
+        } else if (key == "log-max-files") {
+            if (ParseConfigUint(key, value, 0, 100, &numeric)) {
+                outConfig->logMaxFiles = numeric;
+                outConfig->hasLogMaxFiles = true;
+            }
+        } else if (key == "bacnet-ip") {
+            if (ParseConfigBool(key, value, &outConfig->bacnetIp)) {
+                outConfig->hasBacnetIp = true;
+            }
         } else if (key == "sc-port") {
             if (ParseConfigUint(key, value, 1, 65535, &numeric)) {
                 outConfig->scPort = (uint16_t)numeric;
@@ -197,6 +248,9 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
         } else if (key == "dcc-password") {
             outConfig->dccPassword = value;
             outConfig->hasDccPassword = true;
+        } else if (key == "http-upload-token") {
+            outConfig->httpUploadToken = value;
+            outConfig->hasHttpUploadToken = true;
         } else if (key == "http-port") {
             if (ParseConfigUint(key, value, 1, 65535, &numeric)) {
                 outConfig->httpPort = (uint16_t)numeric;
@@ -205,6 +259,16 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
         } else if (key == "http-bind") {
             outConfig->httpBind = value;
             outConfig->hasHttpBind = true;
+        } else if (key == "http-tls") {
+            if (ParseConfigBool(key, value, &outConfig->httpTls)) {
+                outConfig->hasHttpTls = true;
+            }
+        } else if (key == "http-tls-cert") {
+            outConfig->httpTlsCert = value;
+            outConfig->hasHttpTlsCert = true;
+        } else if (key == "http-tls-key") {
+            outConfig->httpTlsKey = value;
+            outConfig->hasHttpTlsKey = true;
         } else if (key == "sc-max-hub-connections") {
             if (ParseConfigUint(key, value, 1, 65535, &numeric)) {
                 outConfig->scMaxHubConnections = (uint16_t)numeric;
@@ -217,6 +281,15 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
                 outConfig->scRateLimit = (uint16_t)numeric;
                 outConfig->hasScRateLimit = true;
             }
+        } else if (key == "sc-rate-limit-total") {
+            if (ParseConfigUint(key, value, 0, 65535, &numeric)) {
+                outConfig->scRateLimitTotal = (uint16_t)numeric;
+                outConfig->hasScRateLimitTotal = true;
+            }
+        } else if (key == "sc-accept-hub-without-hello") {
+            if (ParseConfigBool(key, value, &outConfig->scAcceptHubWithoutHello)) {
+                outConfig->hasScAcceptHubWithoutHello = true;
+            }
         } else {
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                                   "config file %s:%d: ignoring unrecognised key \"%s\".",
@@ -224,25 +297,30 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
         }
     }
 
-    // Secrets handling (Task 1): dcc-password is the only secret-shaped key
-    // this config file format currently has (every other key - device-id,
-    // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, http-port,
-    // sc-max-hub-connections, sc-rate-limit - is either non-sensitive or, for
-    // the URIs, a network endpoint rather than a credential). Warn - do not
-    // refuse to start - if the file looks readable by more than its
-    // owner/Administrators, so an operator who copied a config file with the
-    // wrong permissions finds out from the log instead of from an incident.
-    // See ConfigFileHasBroadPermissions()'s own comment for what this check
-    // does and does not catch, and README.md "Configuration file" for the
+    // Secrets handling: dcc-password and http-upload-token are the secret keys
+    // (every other key is either non-sensitive or, for the URIs, a network
+    // endpoint rather than a credential). Warn - do not refuse to start - if
+    // the file looks readable by more than its owner/Administrators, so an
+    // operator who copied a config file with the wrong permissions finds out
+    // from the log instead of from an incident. See
+    // ConfigFileHasBroadPermissions()'s own comment for what this check does
+    // and does not catch, and docs/manual.md "Configuration file" for the
     // icacls/chmod remediation this warning points at.
-    if (outConfig->hasDccPassword && !outConfig->dccPassword.empty() &&
-        ConfigFileHasBroadPermissions(path)) {
+    const bool hasSecret = (outConfig->hasDccPassword && !outConfig->dccPassword.empty()) ||
+                           (outConfig->hasHttpUploadToken && !outConfig->httpUploadToken.empty());
+    if (hasSecret && ConfigFileHasBroadPermissions(path)) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "config file \"%s\" sets a non-empty dcc-password and appears readable by more than "
+            "config file \"%s\" sets a password or token and appears readable by more than "
             "its owner/Administrators. Restrict its permissions: Windows - "
             "\"icacls %s /inheritance:r /grant:r %%USERNAME%%:F\"; Linux/macOS - \"chmod 600 %s\". "
-            "See README.md \"Configuration file\".",
+            "See docs/manual.md \"Configuration file\".",
             path.c_str(), path.c_str(), path.c_str());
+    }
+    if (outConfig->hasDccPassword && outConfig->hasHttpUploadToken && !outConfig->dccPassword.empty() &&
+        outConfig->dccPassword == outConfig->httpUploadToken) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "config file \"%s\": http-upload-token is the same as dcc-password. Use a different "
+            "secret for each.", path.c_str());
     }
     return true;
 }

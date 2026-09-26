@@ -98,6 +98,7 @@ endif()
 # Resolved via the vcpkg toolchain set up above (VCPKG_ROOT / CMAKE_TOOLCHAIN_FILE).
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(Threads REQUIRED)  # log_file.cpp's copy thread
 
 # --- The CAS BACnet Stack, via its CMake adapter target ---------------------
 # CAS_BACNET_STACK_LINK is the adapter's own cache variable (SOURCE/STATIC/DLL,
@@ -127,6 +128,8 @@ add_executable(BACnetExampleBSCHUB
     config.cpp
     cert_tool.cpp
     cert_store.cpp
+    log_file.cpp
+    service.cpp
     ${SC_TRANSPORT_SOURCES}
     ${COMMON_SOURCES})
 
@@ -138,7 +141,8 @@ target_link_libraries(BACnetExampleBSCHUB PRIVATE
     CASBACnetStack::Adapter
     websockets
     OpenSSL::SSL
-    OpenSSL::Crypto)
+    OpenSSL::Crypto
+    Threads::Threads)
 
 # --- Warnings on OUR sources only -------------------------------------------
 # Apply strict warnings to the example + helper sources, but NOT to the bundled
@@ -149,7 +153,7 @@ if(MSVC)
 else()
     set(EXAMPLE_WARNINGS "-Wall;-Wextra")
 endif()
-set_source_files_properties(main.cpp config.cpp cert_tool.cpp cert_store.cpp ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
+set_source_files_properties(main.cpp config.cpp cert_tool.cpp cert_store.cpp log_file.cpp service.cpp ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
     PROPERTIES COMPILE_OPTIONS "${EXAMPLE_WARNINGS}")
 
 # --- Platform sockets --------------------------------------------------------

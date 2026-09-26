@@ -84,6 +84,17 @@ bool CommitStaged(std::string* reason);
 // Throws away the staged writes.
 void DiscardStaged();
 
+// Stages `bytes` as the whole new content of a writable certificate File
+// object - the same as WriteProperty File_Size = 0 followed by one
+// AtomicWriteFile. Used by the HTTP upload (issue #25), which then validates
+// and commits the set exactly like ReinitializeDevice does.
+bool StageWholeFile(uint32_t fileInstance, const std::string& bytes, uint32_t* errorCode);
+
+// Replaces the Certificate Signing Request file (read-only over BACnet) after
+// checking that `pem` is one PEM certificate request, correctly self-signed,
+// for this hub's private key. Written atomically. False with a reason if not.
+bool InstallCertificateSigningRequest(uint32_t fileInstance, const std::string& pem, std::string* reason);
+
 // Writes a PEM bundle of every issuer certificate (both Issuer_Certificate_Files
 // slots, duplicates removed) to `bundlePath`, for TLS to trust. Returns false
 // if there is no issuer certificate at all.

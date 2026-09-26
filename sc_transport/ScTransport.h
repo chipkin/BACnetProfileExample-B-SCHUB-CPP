@@ -83,6 +83,14 @@ struct ScTlsFiles {
     std::string caCertPath;    // ca.crt - validates the PEER's certificate
     std::string certPath;      // this device's own operational certificate
     std::string keyPath;       // this device's own private key (never shared)
+    // Optional certificate revocation list(s), PEM (issue #15). When this file
+    // exists, every TLS context loads it and checks the peer's certificate
+    // against it (X509_V_FLAG_CRL_CHECK): a revoked certificate is refused,
+    // and so is a certificate whose issuer has no CRL in the file, or whose
+    // CRL has expired - revocation checking fails closed. A file that exists
+    // but holds no parsable CRL stops the listener from starting (logged)
+    // until it is fixed. Empty or missing = no revocation checking.
+    std::string crlPath;
 };
 
 // One reassembled BACnet/SC BVLC message, plus who it came from/is addressed
@@ -142,13 +150,34 @@ struct ScStatusEvent {
 struct ScTransportMetrics {
     uint64_t totalConnects = 0;       // listener half: peers accepted (LWS_CALLBACK_ESTABLISHED) since start
     uint64_t totalDisconnects = 0;    // listener half: peers closed (LWS_CALLBACK_CLOSED) since start
-    uint64_t rateLimitRejections = 0; // connection attempts rejected by AllowNewConnectionAttempt() since start
+    uint64_t rateLimitRejections = 0; // connection attempts refused by either rate limit since start
     uint64_t rxMessages = 0;
     uint64_t rxBytes = 0;
     uint64_t txMessages = 0;
     uint64_t txBytes = 0;
+    uint64_t txQueueOverflows = 0;    // connections closed because their transmit queue was full (both halves)
     size_t currentPeerCount = 0;      // live accepted peers right now (listener half)
 };
+
+// One accepted BACnet/SC peer, for the status page and the audit trail
+// (issue #21). The device's VMAC and UUID come from its Connect-Request, the
+// first BVLC-SC message on the socket; certificateSubject is the subject of
+// the certificate it presented in the TLS handshake.
+struct ScPeerInfo {
+    std::string connectionString;    // "<acceptUri>|client=N"
+    std::string address;             // "ip:port"
+    std::string certificateSubject;  // e.g. "O=Example Site, CN=AHU-3 controller"
+    std::string vmac;                // "02:00:00:00:00:07", or "" before its Connect-Request
+    std::string uuid;                // "8-4-4-4-12" hex, or "" before its Connect-Request
+    bool accepted = false;           // the stack answered its Connect-Request with Connect-Accept
+};
+
+// The most frames Send() queues for one connection before it gives up on that
+// peer (issue #16). The stack hands every frame to SendMessageForPort and has
+// no backpressure signal, so a peer that stops reading would otherwise make
+// its queue grow without limit. 64 frames is far more than a healthy peer
+// ever has waiting (each is at most 1600 bytes, so about 100 KiB per peer).
+const std::size_t kMaxTxQueueFrames = 64;
 
 class ScTransport {
 public:
@@ -162,24 +191,28 @@ public:
     void Configure(const ScTlsFiles& tls, const std::string& acceptSubprotocol);
 
     // Bounds how fast the LISTENER half accepts new inbound connection
-    // ATTEMPTS - a token bucket refilling at `perSecond` tokens/second, burst
-    // capacity `perSecond` (i.e. an idle listener can absorb a burst up to
-    // the configured rate before it starts rejecting, then settles back to
-    // steady-state `perSecond`/sec - see AllowNewConnectionAttempt() in the
-    // .cpp). This is deliberately independent of - and enforced BEFORE - the
-    // stack's own sc-max-hub-connections check (main.cpp's
-    // g_scMaxHubConnections): that one bounds CONCURRENT connections at the
-    // BACnet/SC protocol level, after a full TLS handshake; this one bounds
-    // the RATE of new attempts at the raw-socket level, gated in
+    // ATTEMPTS (issue #20). Two token buckets, both checked in
     // HandleServerCallback's LWS_CALLBACK_FILTER_NETWORK_CONNECTION case -
-    // before TLS negotiation even starts, so a rejected attempt costs this
-    // process almost nothing. 0 means "no limit" (the pre-existing,
-    // unbounded behaviour). Safe to call before or after Configure()/
-    // StartListening(); takes effect on the next FILTER_NETWORK_CONNECTION
-    // callback. Connector-role (outbound) connections are NOT rate-limited -
-    // this device controls when IT dials out, so there is no "someone else
-    // hammering us" case to guard against on that half.
-    void SetMaxConnectionAttemptsPerSecond(uint32_t perSecond);
+    // before the TLS handshake starts, so a refused attempt costs almost
+    // nothing:
+    //
+    //   perAddressPerSecond - one bucket PER SOURCE IP ADDRESS. A flooding
+    //                         host drains only its own bucket, so it can't
+    //                         starve well-behaved devices reconnecting from
+    //                         other addresses. The table of addresses is
+    //                         bounded (kMaxTrackedAddresses) and ages out:
+    //                         an address whose bucket has refilled is
+    //                         forgotten when room is needed.
+    //   totalPerSecond      - one bucket for the whole listener, a ceiling on
+    //                         a flood from many addresses at once.
+    //
+    // Each bucket refills at its rate and holds at most one second's worth
+    // (so an idle listener absorbs a short burst, then settles to the rate).
+    // 0 turns that limit off. This is separate from - and enforced before -
+    // the stack's sc-max-hub-connections check, which bounds CONCURRENT
+    // connections after a full handshake. Outbound (connector) connections
+    // are not rate-limited: this device decides when it dials out.
+    void SetConnectionRateLimits(uint32_t perAddressPerSecond, uint32_t totalPerSecond);
 
     // --- Listener (server) half - real in this phase ---------------------
 
@@ -204,8 +237,8 @@ public:
     bool IsListening() const;
 
     // Rebuilds the TLS contexts so they load the certificate/key/CA files
-    // again - called after new certificates were activated over BACnet
-    // (main.cpp section 2d-ii). The listener is torn down and restarted on the
+    // (and the CRL) again - called after new certificates were activated over
+    // BACnet (main.cpp section 2d-ii), and when the CRL file changes. The listener is torn down and restarted on the
     // same URI: every accepted peer is disconnected (reported to the stack as
     // Disconnected, like any close) and reconnects under the new certificates.
     // Every outbound hub connection is closed; the stack's own retry timer
@@ -218,6 +251,10 @@ public:
     // to call every tick (the 'health' keypress) or on every HTTP GET
     // /health request (Task 3).
     ScTransportMetrics GetMetrics() const;
+
+    // The accepted peers right now (listener half), oldest first - see
+    // ScPeerInfo. Used by the status page.
+    std::vector<ScPeerInfo> GetPeers() const;
 
     // --- Connector (client) half - real in this phase ---------------------
 
@@ -256,6 +293,10 @@ public:
     // immediately (0 bytes queued) if connStr names no live peer/connection -
     // ScTransportRouter's SendMessageForPort callback returns 0 to the stack
     // in that case, per CASBACnetStackDLL.h's SendMessageForPort contract.
+    // Also returns false, and closes the connection (logged, close code 1008),
+    // when that peer already has kMaxTxQueueFrames frames waiting - a peer
+    // that has stopped reading. The close is reported to the stack like any
+    // other, and the stack's own reconnect logic takes it from there.
     bool Send(const std::string& connStr, const uint8_t* data, uint16_t len);
 
     // Pumps every live lws_context non-blockingly (Phase 1 spike mechanism
@@ -284,6 +325,15 @@ public:
     int HandleClientCallback(lws* wsi, int reason, void* user, void* in, std::size_t len);
 
 private:
+    // A close this class asked for. lws only closes a connection when one of
+    // its callbacks returns -1, so Disconnect() and a full transmit queue set
+    // this and ask for a WRITEABLE callback, which sends the close frame.
+    struct CloseRequest {
+        bool requested = false;
+        uint16_t code = 0;       // WebSocket close status, e.g. 1000 normal, 1008 policy violation
+        std::string reason;
+    };
+
     struct PeerConnection {
         lws* wsi = nullptr;
         std::string connectionString;     // "<acceptUri>|client=N"
@@ -294,6 +344,12 @@ private:
         bool rxOverflow = false;           // true once rxAssembly exceeded the 1600B ceiling
         std::deque<std::vector<uint8_t>> txQueue;  // pending frames, each padded with LWS_PRE
         uint16_t lastCloseCode = 0;        // from LWS_CALLBACK_WS_PEER_INITIATED_CLOSE, if any
+        CloseRequest closeRequest;         // set by Disconnect()/a full txQueue; acted on when writable
+        uint64_t clientId = 0;             // the N in "|client=N" - orders GetPeers()
+        std::string certificateSubject;    // the peer's TLS certificate subject (issue #21)
+        std::string vmac;                  // from its Connect-Request (issue #21)
+        std::string uuid;
+        bool accepted = false;             // the stack sent it a Connect-Accept
     };
 
     // One outbound (connector-role) connection: its own dedicated lws_context
@@ -312,18 +368,18 @@ private:
         bool rxOverflow = false;
         std::deque<std::vector<uint8_t>> txQueue;
         uint16_t lastCloseCode = 0;
+        CloseRequest closeRequest;
     };
 
     void LogListenFailureOnce(const std::string& reason);
     void DestroyListenerContext();
     PeerConnection* FindPeerByWsi(lws* wsi);
 
-    // Refills the token bucket by elapsed time, then consumes one token if
-    // available. Returns true (attempt allowed) when rate-limiting is
-    // disabled (m_maxConnAttemptsPerSecond == 0) or a token was available;
-    // false (attempt must be rejected) otherwise. See
-    // SetMaxConnectionAttemptsPerSecond's comment above for the algorithm.
-    bool AllowNewConnectionAttempt();
+    // Takes one token from `address`'s bucket and from the listener-wide
+    // bucket. Returns false (the attempt must be refused) if either is empty;
+    // *limitHit then says which ("per-address" or "total"). See
+    // SetConnectionRateLimits().
+    bool AllowNewConnectionAttempt(const std::string& address, const char** limitHit);
 
     // Builds m_clientProtocols on first use (every ClientConnection's
     // lws_context shares this one read-only table - lws only requires it stay
@@ -364,6 +420,27 @@ private:
     // false otherwise (including the "queue was already empty" no-op case).
     bool FlushOneQueuedFrame(lws* wsi, std::deque<std::vector<uint8_t>>* txQueue, const std::string& label);
 
+    // Queues one frame for a connection, or - if kMaxTxQueueFrames are already
+    // waiting - drops its queue and asks for the connection to be closed
+    // (issue #16). Returns false in that case. Shared by both halves.
+    bool EnqueueFrame(lws* wsi, std::deque<std::vector<uint8_t>>* txQueue, CloseRequest* closeRequest,
+                      const std::string& label, const uint8_t* data, uint16_t len);
+
+    // Audit trail (issue #21): records the VMAC/UUID from an accepted peer's
+    // Connect-Request, and logs once the stack answers it with Connect-Accept
+    // (or refuses it). Called with every complete frame received from, or
+    // sent to, that peer; ignores everything except those three messages.
+    void AuditReceivedFrame(PeerConnection* peer, const std::vector<uint8_t>& frame);
+    void AuditSentFrame(PeerConnection* peer, const uint8_t* data, uint16_t len);
+
+    // Asks lws for a WRITEABLE callback that closes the connection with
+    // `code`/`reason` (see CloseRequest). A no-op if a close is already pending.
+    static void RequestClose(lws* wsi, CloseRequest* closeRequest, uint16_t code, const std::string& reason);
+
+    // Called at the top of each WRITEABLE callback: if a close was requested,
+    // sets lws's close reason and returns true - the caller then returns -1.
+    static bool ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest);
+
     ScTlsFiles m_tls;
     std::string m_acceptSubprotocol;
     bool m_configured = false;
@@ -393,33 +470,25 @@ private:
 
     bool m_loggedListenFailure = false;  // avoid spamming retry logs every Tick
 
-    // Permanent, process-lifetime latches (listener and connector sides
-    // separately): once lws_create_context() has failed once for a role, it
-    // is never called again for that role. See the comment at the top of
-    // ScTransport.cpp (just above FileReadable()) for the full story of why
-    // this is a permanent latch rather than a retry cooldown - a cooldown
-    // was tried first and empirically disproved (the crash reproduces even
-    // with a multi-second gap between attempts, so this isn't a rate issue).
-    bool m_haveAttemptedListenCreateContext = false;
-    bool m_haveAttemptedConnectCreateContext = false;
-    // Both separate from m_loggedListenFailure/the connector's own bare
-    // fprintf calls: once m_haveAttempted*CreateContext latches true, the
-    // "refusing to retry" branch is reached on EVERY subsequent call (the
-    // stack retries every Tick) - without a dedicated one-shot flag here,
-    // that message would spam forever instead of printing once. Deliberately
-    // NOT reusing m_loggedListenFailure for the listener's message: that flag
-    // already latches true from the ORIGINAL failure's own log line, which
-    // would silently suppress this distinct, later message if reused.
-    bool m_loggedListenCreateContextRefusal = false;
-    bool m_loggedConnectCreateContextRefusal = false;
+    // When lws_create_context() last failed for the listener; StartListening()
+    // waits a few seconds before trying again (see ScTransport.cpp).
+    std::chrono::steady_clock::time_point m_lastListenCreateFailure;
 
-    // Rate-limit token bucket state (listener half only) - see
-    // SetMaxConnectionAttemptsPerSecond()/AllowNewConnectionAttempt() above.
-    // 0 = disabled (the default, matching this class's pre-existing
-    // unbounded behaviour until main.cpp opts in).
-    uint32_t m_maxConnAttemptsPerSecond = 0;
-    double m_rateLimitTokens = 0.0;
-    std::chrono::steady_clock::time_point m_rateLimitLastRefill;
+    // Rate-limit state (listener half only) - see SetConnectionRateLimits().
+    // A rate of 0 means that limit is off (the default until main.cpp sets it).
+    struct TokenBucket {
+        double tokens = 0.0;
+        std::chrono::steady_clock::time_point lastRefill;
+    };
+    // The most source addresses tracked at once. When the table is full, the
+    // addresses whose buckets have refilled (idle for a second or more) are
+    // dropped; if none has, a new address is checked against the total limit
+    // only, so the table itself can't be used to exhaust memory.
+    static const std::size_t kMaxTrackedAddresses = 1024;
+    uint32_t m_perAddressRateLimit = 0;
+    uint32_t m_totalRateLimit = 0;
+    TokenBucket m_totalBucket;
+    std::map<std::string, TokenBucket> m_addressBuckets;
 
     // Cumulative metrics counters (Task 2/3, this batch) - see
     // ScTransportMetrics' comment for what each one means and when it is
@@ -433,6 +502,7 @@ private:
     uint64_t m_rxBytes = 0;
     uint64_t m_txMessages = 0;
     uint64_t m_txBytes = 0;
+    uint64_t m_txQueueOverflows = 0;
 };
 
 }  // namespace CASSc

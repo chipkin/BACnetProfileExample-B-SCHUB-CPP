@@ -147,3 +147,31 @@ python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 47819 \
 ```
 
 It **rewrites the hub's certificate files** - use a throwaway set.
+
+## `http_test.py` (the HTTP endpoints)
+
+The status page, `/health`, `/metrics`, and `POST /certs/<slot>`: missing and
+wrong tokens (401), a malformed certificate (400, file unchanged), a valid
+upload (200), a CSR-slot upload that isn't a request (400) and the per-client
+rate limit (429, run last).
+
+```
+BACnetExampleBSCHUB --generate-certs 1
+printf 'http-upload-token = test-token-123
+' > http-test.conf
+BACnetExampleBSCHUB --config http-test.conf --http-port 18080
+# in a separate terminal:
+python tests/sc/http_test.py --http-port 18080 --token test-token-123 --cert-dir certs
+```
+
+Without `--token` it only checks that the upload endpoint is disabled (503).
+Exit code 0 = every check passed.
+
+## CI
+
+`.github/workflows/release.yml` runs every script here on Windows and Linux
+for each pull request: `hub_listener_test.py` (normally and with
+`--bacnet-ip off`), `file_object_test.py`, `rpm_test.py`, `http_test.py`
+(upload disabled, then enabled with a token, device name, network numbers and
+a log file), `fake_hub_server.py` against the connector, and
+`cert_procedure_test.py`, plus the connection-limit refusal.

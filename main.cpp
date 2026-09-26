@@ -107,9 +107,9 @@
 // check in sc_transport/ScTransport's TLS contexts is the device's certificate
 // policy.
 //
-// This device's certificate policy is CA-chain validation only, performed by
-// the TLS library (OpenSSL, via libwebsockets) at handshake time: no CRL, no
-// UUID-in-SAN binding, and the connector skips hostname checking
+// This device's certificate policy is CA-chain validation, performed by the
+// TLS library (OpenSSL, via libwebsockets) at handshake time, plus revocation
+// checking when a CRL is installed (issue #15): no UUID-in-SAN binding, and the connector skips hostname checking
 // (LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK - SC certificates identify BACnet/SC
 // devices, not DNS hosts, so there is no hostname to check against; the CA
 // chain is still verified). See TUTORIAL.md for what productionizing this
@@ -129,6 +129,8 @@
 #include "config.h" // --config <path> support (Task 2) - see config.h
 #include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
 #include "cert_store.h" // certificate File object contents + clause 19.8.3 staging - see cert_store.h
+#include "log_file.h"   // --log-file: console output also to a rotating file - see log_file.h
+#include "service.h"    // Windows service / SIGTERM handling - see service.h
 
 // Unlike sc_transport/ScTransport.h (which forward-declares lws types
 // specifically to avoid this), main.cpp already needs the real
@@ -157,7 +159,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.2.0";
+static const char* APP_VERSION = "1.3.0";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -180,13 +182,23 @@ static const uint32_t VENDOR_IDENTIFIER = 389;
 // The Device object's Object_Name.
 //
 // THIS IS THE ONE THAT WILL BITE YOU. Object_Name must be unique across the
-// whole BACnet internetwork, and here it is a COMPILE-TIME constant. The device
-// instance is runtime-configurable via --deviceID, so it is easy to ship two
-// units, configure their instances correctly, and still have BOTH announce
-// Object_Name "Chipkin Example B-SCHUB" - a spec violation, and a hard BTL failure. In a real
-// product Object_Name must be per-unit configurable too: derive it from a serial
-// number, DIP switches, a config file, or add a --deviceName argument.
-static const char* DEVICE_NAME = "Chipkin Example B-SCHUB";
+// whole BACnet internetwork. The device instance is configurable with
+// --deviceID, so it is easy to ship two units, configure their instances
+// correctly, and still have BOTH announce the same Object_Name - a spec
+// violation, and a hard BTL failure. So the name is configurable too:
+// --device-name / config-file device-name (issue #33). DEVICE_NAME_DEFAULT is
+// only what an unconfigured unit calls itself.
+static const char* DEVICE_NAME_DEFAULT = "Chipkin Example B-SCHUB";
+static std::string g_deviceName = DEVICE_NAME_DEFAULT;
+
+// Each Network Port's Network_Number (1..65534) - --ip-network-number /
+// --sc-network-number or the config file's ip-network-number /
+// sc-network-number (issue #33). 0 = not configured: the port reports 0 with
+// Network_Number_Quality "unknown". When set, it is reported with quality
+// "configured". This device isn't a router, so the number is informational -
+// it records which BACnet network each port is on.
+static uint16_t g_ipNetworkNumber = 0;
+static uint16_t g_scNetworkNumber = 0;
 
 // Where this example lives - shown in the Device's Description and on the
 // HTTP status page. Change both to your own product's pages.
@@ -211,16 +223,19 @@ static const char* MODEL_NAME = "CAS BACnet Stack Example - B-SCHUB";
 // pass, Task 1) - there is deliberately NO "--dcc-password <string>" CLI flag
 // (common/CASExampleHelper::ParseDccPasswordArg still EXISTS in common/ 2.6.0+
 // for any other example that wants a CLI flag; this repo simply stopped
-// calling it for that purpose - see README.md "Configuration file" for why a
+// calling it for that purpose - see docs/manual.md "Configuration file" for why a
 // CLI argument is a real exposure a config-file key is not: it is visible in
 // process listings/shell history on every platform). Not a compile-time
 // constant, so it is NOT `static const` like the rest of this identity block;
 // see main()'s config-file-loading block, which points this at
 // fileConfig.dccPassword's storage (a local that lives for the rest of
-// main()) when the key is present. This same value doubles as the bearer
-// token POST /certs/<slot> (Task 4) requires - see g_httpServer's Configure
-// call below.
+// main()) when the key is present. POST /certs/<slot> has its own secret,
+// http-upload-token (g_httpUploadToken) - see issue #23.
 static const char* g_dccPassword = "";  // default: "" = no password required
+
+// POST /certs/<slot>'s bearer token (config file "http-upload-token" only, for
+// the same process-listing reason as dcc-password). Empty = upload disabled.
+static std::string g_httpUploadToken;
 
 // Application_Software_Version (12) is just APP_VERSION - one source of
 // truth, so it can never drift from what --version/the startup banner
@@ -247,6 +262,14 @@ static const uint32_t ANALOG_INPUT_INSTANCE = 1;       // "Bronze"
 // active so this example stays discoverable over plain BACnet/IP regardless of
 // the BACnet/SC transport outcome (see the file header note above).
 static const uint32_t NETWORK_PORT_INSTANCE = 1;       // "BACnet IP"
+
+// --bacnet-ip on|off / config-file bacnet-ip (issue #35). On by default. Off
+// makes this a BACnet/SC-only device, for sites that want no unencrypted
+// BACnet traffic: no UDP socket is opened, Network Port 1 is not created (so
+// it is not in Object_List), and every service - Who-Is/I-Am included - is
+// reachable only over BACnet/SC. If BACnet/SC then isn't listening (missing
+// certificates, say), the device is unreachable over BACnet: main() warns.
+static bool g_bacnetIpEnabled = true;
 static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 
 // Network Port 2 - the BACnet/SC port, hosting the hub function (NM-SCH-B).
@@ -274,34 +297,44 @@ static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "BACnet SC"
 // Connect-Request that follows).
 static const uint16_t SC_MAX_HUB_CONNECTIONS_LIMIT = 4;
 static const uint16_t SC_MAX_HUB_CONNECTIONS_DEFAULT = SC_MAX_HUB_CONNECTIONS_LIMIT;
-static const char* const SALES_EMAIL = "sales@chipkin.com";
+static const char* const SUPPORT_EMAIL = "support@chipkin.com";
 
 // The runtime value actually passed to BACnetStack_SetBACnetSCHubFunctionConfig -
 // see main()'s CLI-parsing block (--sc-max-hub-connections / config-file
 // sc-max-hub-connections; CLI > config file > SC_MAX_HUB_CONNECTIONS_DEFAULT).
 static uint16_t g_scMaxHubConnections = SC_MAX_HUB_CONNECTIONS_DEFAULT;
 
-// The hub function's max NEW inbound connection ATTEMPTS/second (this batch's
-// Task 2) - distinct from SC_MAX_HUB_CONNECTIONS_DEFAULT above, which bounds
-// CONCURRENT connections at the BACnet/SC protocol level. This one bounds
-// how fast an attacker (or a misbehaving/flapping peer) can make the hub
-// spend raw-socket/TLS resources, enforced by
-// sc_transport/ScTransport::AllowNewConnectionAttempt() at
-// LWS_CALLBACK_FILTER_NETWORK_CONNECTION - before the TLS handshake even
-// starts (see that method's comment). 10/sec is a generous default: a real
-// reconnect storm from this example's own handful of demo peers is nowhere
-// near this rate (BACnetSCCli.exe's own reconnect backoff is on the order of
-// seconds, not sub-100ms), so this default only bites under an actual flood,
-// never normal reconnect churn. Runtime-configurable the same way as
-// SC_MAX_HUB_CONNECTIONS_DEFAULT above - see g_scRateLimit and
-// ParseScRateLimitArg() below.
+// How fast the hub-function listener accepts NEW inbound connection ATTEMPTS,
+// enforced by sc_transport/ScTransport before the TLS handshake starts (see
+// ScTransport::SetConnectionRateLimits). Distinct from
+// SC_MAX_HUB_CONNECTIONS_DEFAULT above, which bounds CONCURRENT connections.
+//   SC_RATE_LIMIT_DEFAULT       - attempts/second from any ONE source address
+//                                 (--sc-rate-limit), so one flooding host
+//                                 can't starve devices on other addresses.
+//   SC_RATE_LIMIT_TOTAL_DEFAULT - attempts/second for the whole listener
+//                                 (--sc-rate-limit-total), a ceiling on a
+//                                 flood from many addresses.
+// Both are generous: a device's own reconnect back-off is seconds, not
+// milliseconds, so they only bite under a real flood. 0 turns a limit off.
 static const uint16_t SC_RATE_LIMIT_DEFAULT = 10;
+static const uint16_t SC_RATE_LIMIT_TOTAL_DEFAULT = 50;
 
-// The runtime value actually passed to
-// ScTransport::SetMaxConnectionAttemptsPerSecond() - see main()'s
-// CLI-parsing block (--sc-rate-limit / config-file sc-rate-limit; CLI >
-// config file > SC_RATE_LIMIT_DEFAULT). 0 means "no limit".
+// The runtime values (CLI > config file > the defaults above) - see main().
 static uint16_t g_scRateLimit = SC_RATE_LIMIT_DEFAULT;
+static uint16_t g_scRateLimitTotal = SC_RATE_LIMIT_TOTAL_DEFAULT;
+
+// BACnet/SC interoperability relaxation (issue #19), OFF by default. When on,
+// main() calls BACnetStack_SetBACnetSCCompatibilityFlags with
+// SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO, the stack's one defined
+// compatibility flag: the hub CONNECTOR (--sc-hub-uri) then accepts a
+// Connect-Accept that omits the Hello destination option, which 135-2024 AB.2.2
+// makes mandatory - some older hubs leave it out. It is a deliberate deviation
+// from the standard, so leave it off unless such a hub needs it.
+// It does NOT relax the hub FUNCTION: a device that connects to this hub with a
+// Connect-Request without Hello is still refused - the stack has no switch for
+// that (see docs/manual.md "BACnet/SC compatibility").
+static const uint8_t SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO = 0x01;
+static bool g_scAcceptHubWithoutHello = false;
 
 // The 4 read-only File objects Network Port 2's SC certificate properties point at - see
 // BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
@@ -358,6 +391,22 @@ static const uint32_t ERROR_CODE_INVALID_CONFIGURATION_DATA = 46;
 // the main loop then reloads the TLS contexts (see ScTransport::ReloadCredentials).
 static bool g_scReloadCredentialsRequested = false;
 
+// The certificate revocation list file (issue #15) - optional, see
+// ScTlsFiles::crlPath. The main loop checks it every few seconds and reloads
+// TLS when it appears, changes or disappears, so installing a new CRL takes
+// effect without a restart.
+static std::string g_scCrlPath;
+
+// A cheap fingerprint of the CRL file: its size and modification time, or ""
+// when it doesn't exist.
+static std::string FileFingerprint(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        return std::string();
+    }
+    return std::to_string((long long)st.st_size) + "@" + std::to_string((long long)st.st_mtime);
+}
+
 // The file TLS trusts peers against: every issuer certificate from both
 // Issuer_Certificate_Files slots (CertStore::WriteTrustedIssuerBundle), so a
 // newly added issuer is trusted alongside the existing one.
@@ -393,6 +442,13 @@ static uint16_t g_httpPort = 8080;
 // an explicit opt-in this example warns loudly about, every run, rather than
 // a setting with no consequence.
 static std::string g_httpBindAddress = "127.0.0.1";
+// --http-tls / config-file http-tls: serve the HTTP endpoints over HTTPS
+// (issue #22) with g_httpTlsCert/g_httpTlsKey - by default the hub's own
+// operational certificate and private key from --sc-cert-dir. Off by default,
+// like the loopback-only bind: on 127.0.0.1 nothing travels over a network.
+static bool g_httpTls = false;
+static std::string g_httpTlsCert;  // --http-tls-cert; "" = the operational certificate
+static std::string g_httpTlsKey;   // --http-tls-key; "" = the hub's private key
 static CASSc::HttpServer g_httpServer;
 
 // Process start time (steady clock - immune to wall-clock adjustments),
@@ -858,7 +914,7 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
     // (deliberately not a colour - see the file header note).
     if (propertyIdentifier == PROPERTY_IDENTIFIER_OBJECT_NAME) {
         if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
-            return ReturnCharacterString(DEVICE_NAME, value, valueElementCount, maxElementCount, encodingType);
+            return ReturnCharacterString(g_deviceName.c_str(), value, valueElementCount, maxElementCount, encodingType);
         }
         if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
             return ReturnCharacterString("Bronze", value, valueElementCount, maxElementCount, encodingType);
@@ -921,6 +977,18 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
 // Even if this callback accepts it, the stack rejects the request with
 // service-request-denied - the standard now expects "disable-initiation" (2).
 // -----------------------------------------------------------------------------
+// Password check shared by DeviceCommunicationControl and ReinitializeDevice.
+// dcc-password (config file only - see docs/manual.md "Configuration file") guards
+// both: "" means no password is required. Compared in constant time
+// (CASSc::SecretsEqual - issue #23).
+static bool PasswordMatches(const char* password, const size_t passwordLength) {
+    if (g_dccPassword[0] == '\0') {
+        return true;
+    }
+    const std::string presented = (password != NULL) ? std::string(password, passwordLength) : std::string();
+    return CASSc::SecretsEqual(presented, g_dccPassword);
+}
+
 bool DeviceCommunicationControl(const uint32_t deviceInstance, const uint8_t enableDisable,
                                 const char* password, const uint8_t passwordLength,
                                 const bool useTimeDuration, const uint16_t timeDuration,
@@ -930,23 +998,11 @@ bool DeviceCommunicationControl(const uint32_t deviceInstance, const uint8_t ena
         return false;
     }
 
-    const size_t requiredLength = strlen(g_dccPassword);
-    if (requiredLength > 0) {
-        bool matches = (password != NULL) && (passwordLength == requiredLength);
-        if (matches) {
-            for (size_t i = 0; i < requiredLength; ++i) {
-                if (password[i] != g_dccPassword[i]) {
-                    matches = false;
-                    break;
-                }
-            }
-        }
-        if (!matches) {
-            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                                  "DeviceCommunicationControl: REJECTED (password failure)");
-            *errorCode = ERROR_CODE_PASSWORD_FAILURE;
-            return false;
-        }
+    if (!PasswordMatches(password, passwordLength)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "DeviceCommunicationControl: REJECTED (password failure)");
+        *errorCode = ERROR_CODE_PASSWORD_FAILURE;
+        return false;
     }
 
     const char* action = (enableDisable == DCC_ENABLE) ? "enable (resume communication)" :
@@ -1149,18 +1205,6 @@ bool SetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t ob
     return true;
 }
 
-// Password check shared by DeviceCommunicationControl and ReinitializeDevice.
-// dcc-password (config file only - see README.md "Configuration file") guards
-// both: "" means no password is required.
-static bool PasswordMatches(const char* password, const size_t passwordLength) {
-    const size_t requiredLength = strlen(g_dccPassword);
-    if (requiredLength == 0) {
-        return true;
-    }
-    return password != NULL && passwordLength == requiredLength &&
-           memcmp(password, g_dccPassword, requiredLength) == 0;
-}
-
 // ReinitializeDevice. This hub only supports the two states the certificate
 // procedures use: ACTIVATE_CHANGES and WARMSTART both apply staged certificate
 // writes. The stack calls this BEFORE it activates its own pending Network Port
@@ -1229,30 +1273,74 @@ bool ReinitializeDevice(const uint32_t deviceInstance, const uint32_t reinitiali
 // scheme.
 // -----------------------------------------------------------------------------
 
-// Maps a cert-upload slot name (POST /certs/<slot>) to the relative filename
-// under --sc-cert-dir it overwrites - the SAME mapping ScCertFileRelativePath
-// (2a-i) already uses for the read-only File objects, just addressed by a
-// short slot name instead of a File object instance (an HTTP client has no
-// reason to know this device's internal object-instance numbering). Returns
-// false for an unrecognised slot.
+// Maps a cert-upload slot name (POST /certs/<slot>) to its File object instance
+// - an HTTP client has no reason to know this device's object numbering.
+// Returns 0 for an unrecognised slot.
+static uint32_t CertUploadSlotInstance(const std::string& slot) {
+    if (slot == "operational") return FILE_OPERATIONAL_CERT_INSTANCE;
+    if (slot == "csr") return FILE_CSR_INSTANCE;
+    if (slot == "issuer1") return FILE_ISSUER_CERT_1_INSTANCE;
+    if (slot == "issuer2") return FILE_ISSUER_CERT_2_INSTANCE;
+    return 0;
+}
+
+// HttpServer's slot check: known slot -> the file it replaces (for its logs).
 static bool ResolveCertUploadSlot(const std::string& slot, std::string* outRelativeFilename) {
-    uint32_t fileInstance;
-    if (slot == "operational") {
-        fileInstance = FILE_OPERATIONAL_CERT_INSTANCE;
-    } else if (slot == "csr") {
-        fileInstance = FILE_CSR_INSTANCE;
-    } else if (slot == "issuer1") {
-        fileInstance = FILE_ISSUER_CERT_1_INSTANCE;
-    } else if (slot == "issuer2") {
-        fileInstance = FILE_ISSUER_CERT_2_INSTANCE;
-    } else {
-        return false;
-    }
-    *outRelativeFilename = ScCertFileRelativePath(fileInstance);
+    const uint32_t fileInstance = CertUploadSlotInstance(slot);
+    *outRelativeFilename = fileInstance != 0 ? ScCertFileRelativePath(fileInstance) : std::string();
     return !outRelativeFilename->empty();
 }
 
-// Formats a byte count of elapsed steady-clock time as "NdNNhNNmNNs" (only
+// Installs a POST /certs/<slot> upload (issue #25) the same way a certificate
+// written over BACnet is activated (section 2d-ii): stage it in CertStore,
+// ValidateStaged() the resulting set, and only then commit it and reload TLS.
+// So an upload that doesn't parse, or that would leave the hub unable to run
+// BACnet/SC (a certificate for another key, one that doesn't chain to an
+// issuer, no issuer left), is refused and nothing on disk changes. The CSR
+// slot is checked to be a valid request for this hub's key. Returns the HTTP
+// status for HttpServer to answer with.
+static int ApplyCertUpload(const std::string& slot, const std::string& body, std::string* message) {
+    const uint32_t fileInstance = CertUploadSlotInstance(slot);
+    if (fileInstance == FILE_CSR_INSTANCE) {
+        if (!CertStore::InstallCertificateSigningRequest(fileInstance, body, message)) {
+            return 400;
+        }
+        *message = "certificate signing request replaced";
+        return 200;
+    }
+    if (CertStore::HasStagedChanges()) {
+        // Don't mix an upload into a BACnet certificate procedure in progress.
+        *message = "a certificate change made over BACnet is waiting for ReinitializeDevice ACTIVATE_CHANGES; "
+                   "activate it (or restart the hub to drop it) first";
+        return 409;
+    }
+    uint32_t errorCode = 0;
+    if (!CertStore::StageWholeFile(fileInstance, body, &errorCode)) {
+        CertStore::DiscardStaged();
+        *message = "could not stage the file (BACnet error code " + std::to_string(errorCode) + ")";
+        return 400;
+    }
+    std::string reason;
+    if (!CertStore::ValidateStaged(&reason)) {
+        CertStore::DiscardStaged();
+        *message = reason;
+        return 400;
+    }
+    if (!CertStore::CommitStaged(&reason)) {
+        CertStore::DiscardStaged();
+        *message = "could not save it: " + reason;
+        return 500;
+    }
+    if (!CertStore::WriteTrustedIssuerBundle(g_scTrustedIssuersPath, &reason)) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Error,
+                              "could not refresh \"%s\": %s", g_scTrustedIssuersPath.c_str(), reason.c_str());
+    }
+    g_scReloadCredentialsRequested = true;  // the main loop reloads BACnet/SC TLS
+    *message = "validated and saved; reloading BACnet/SC TLS";
+    return 200;
+}
+
+// Formats a byte count of elapsed steady-clock time// Formats a byte count of elapsed steady-clock time as "NdNNhNNmNNs" (only
 // the units actually needed - no leading "0d0h" for a device that has been up
 // 5 minutes). Shared by the 'm' keypress (plain text) and the HTTP JSON body
 // (as both a human string and a raw seconds count, so a monitoring scraper
@@ -1302,14 +1390,16 @@ static std::string BuildMetricsJson() {
         "\"sc_rx_messages\":%llu,"
         "\"sc_rx_bytes\":%llu,"
         "\"sc_tx_messages\":%llu,"
-        "\"sc_tx_bytes\":%llu"
+        "\"sc_tx_bytes\":%llu,"
+        "\"sc_tx_queue_overflows\":%llu"
         "}",
         (unsigned long long)uptime, FormatUptime(uptime).c_str(),
         m.currentPeerCount, (unsigned)g_scMaxHubConnections,
         (unsigned long long)m.totalConnects, (unsigned long long)m.totalDisconnects,
         (unsigned long long)m.rateLimitRejections,
         (unsigned long long)m.rxMessages, (unsigned long long)m.rxBytes,
-        (unsigned long long)m.txMessages, (unsigned long long)m.txBytes);
+        (unsigned long long)m.txMessages, (unsigned long long)m.txBytes,
+        (unsigned long long)m.txQueueOverflows);
     return std::string(buf);
 }
 
@@ -1326,12 +1416,13 @@ static std::string BuildHealthJson(bool* healthy) {
         "\"status\":\"%s\","
         "\"version\":\"%s\","
         "\"uptime_seconds\":%llu,"
+        "\"bacnet_ip_enabled\":%s,"
         "\"sc_hub_function_listening\":%s,"
         "\"sc_hub_connections_current\":%zu,"
         "\"staged_certificate_changes\":%s"
         "}",
         listening ? "ok" : "degraded", APP_VERSION, (unsigned long long)UptimeSeconds(),
-        listening ? "true" : "false", g_scTransport.GetMetrics().currentPeerCount,
+        g_bacnetIpEnabled ? "true" : "false", listening ? "true" : "false", g_scTransport.GetMetrics().currentPeerCount,
         CertStore::HasStagedChanges() ? "true" : "false");
     return std::string(buf);
 }
@@ -1370,12 +1461,19 @@ static std::string BuildStatusPage() {
         {"Example", std::string(APP_NAME) + " v" + APP_VERSION},
         {"CAS BACnet Stack", g_firmwareRevision},
         {"Common helper (common/)", CASExampleHelper::COMMON_VERSION},
-        {"Device", std::string(DEVICE_NAME) + " (instance " + num(g_deviceInstance) + ")"},
+        {"Device", g_deviceName + " (instance " + num(g_deviceInstance) + ")"},
     };
     const Row sc[] = {
-        {"Health", healthy ? std::string("ok") : std::string("degraded - the BACnet/SC hub function is not listening")},
+        {"Health", healthy ? std::string("ok")
+                           : g_bacnetIpEnabled ? std::string("degraded - the BACnet/SC hub function is not listening")
+                                               : std::string("degraded - BACnet/SC is not listening and BACnet/IP "
+                                                             "is off: unreachable over BACnet")},
+        {"BACnet/IP", g_bacnetIpEnabled ? "on, UDP port " + std::to_string(g_bacnetIpUdpPort)
+                                        : std::string("off (BACnet/SC only)")},
         {"Hub function (listener)", g_scTransport.IsListening() ? "listening on " + g_scTransport.ListenUri() : "not listening"},
         {"Hub connector", g_scHubUri.empty() ? std::string("off") : "dialing " + g_scHubUri},
+        {"Certificate revocation list", FileFingerprint(g_scCrlPath).empty()
+            ? std::string("none (revocation not checked)") : g_scCrlPath},
         {"Staged certificate changes", CertStore::HasStagedChanges()
             ? std::string("yes - applied on ReinitializeDevice ACTIVATE_CHANGES") : std::string("none")},
     };
@@ -1387,6 +1485,7 @@ static std::string BuildStatusPage() {
         {"Rate-limit rejections", num(m.rateLimitRejections)},
         {"RX", num(m.rxMessages) + " messages, " + num(m.rxBytes) + " bytes"},
         {"TX", num(m.txMessages) + " messages, " + num(m.txBytes) + " bytes"},
+        {"Closed with a full transmit queue", num(m.txQueueOverflows)},
     };
 
     std::string html;
@@ -1402,7 +1501,7 @@ static std::string BuildStatusPage() {
             "@media (prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}"
             "p.sub,td:first-child{color:#9198a1}td{border-color:#3d444d}pre{background:#161b22}a{color:#4493f8}}"
             "</style></head><body>\n";
-    html += "<h1>" + HtmlEscape(DEVICE_NAME) + "</h1><p class=\"sub\">Version " + HtmlEscape(APP_VERSION) +
+    html += "<h1>" + HtmlEscape(g_deviceName) + "</h1><p class=\"sub\">Version " + HtmlEscape(APP_VERSION) +
             " &middot; BACnet/SC hub &middot; refreshes every 5 s</p>\n";
     auto table = [&html](const char* title, const Row* rows, size_t count) {
         html += std::string("<h2>") + title + "</h2><table>";
@@ -1414,6 +1513,24 @@ static std::string BuildStatusPage() {
     table("Version", version, sizeof(version) / sizeof(version[0]));
     table("BACnet/SC", sc, sizeof(sc) / sizeof(sc[0]));
     table("Health and metrics", metrics, sizeof(metrics) / sizeof(metrics[0]));
+
+    // Connected devices (issue #21): who each accepted socket is - its
+    // address, the certificate it presented, and its BACnet/SC VMAC and UUID.
+    const std::vector<CASSc::ScPeerInfo> peers = g_scTransport.GetPeers();
+    html += "<h2>Connected devices</h2>";
+    if (peers.empty()) {
+        html += "<p class=\"sub\">None.</p>\n";
+    } else {
+        html += "<table>";
+        for (const CASSc::ScPeerInfo& peer : peers) {
+            const std::string identity = peer.uuid.empty()
+                ? std::string("waiting for its Connect-Request")
+                : "VMAC " + peer.vmac + ", UUID " + peer.uuid + (peer.accepted ? "" : " (not accepted)");
+            html += "<tr><td>" + HtmlEscape(peer.address) + "</td><td>" + HtmlEscape(peer.certificateSubject) +
+                    "<br>" + HtmlEscape(identity) + "</td></tr>";
+        }
+        html += "</table>\n";
+    }
     html += "<h2>Endpoints</h2><table>"
             "<tr><td><a href=\"/health\">/health</a></td><td>Is the hub working? JSON; HTTP 200 when ok, "
             "503 when degraded.</td></tr>"
@@ -1445,6 +1562,7 @@ static void PrintHealthSnapshot() {
            (unsigned long long)m.rxMessages, (unsigned long long)m.rxBytes);
     printf("BACnet/SC TX: %llu message(s), %llu byte(s)\n",
            (unsigned long long)m.txMessages, (unsigned long long)m.txBytes);
+    printf("BACnet/SC transmit-queue-full closes: %llu\n", (unsigned long long)m.txQueueOverflows);
     printf("------------------------------------------------------------------------\n");
 }
 
@@ -1565,7 +1683,7 @@ static void CheckScMaxHubConnectionsLimit(const uint16_t requested, const char* 
              "\n"
              "################################################################################\n"
              "\n",
-             (unsigned)requested, source, (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT, SALES_EMAIL,
+             (unsigned)requested, source, (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT, SUPPORT_EMAIL,
              (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT);
     fputs(banner, stdout);
     fflush(stdout);
@@ -1574,21 +1692,19 @@ static void CheckScMaxHubConnectionsLimit(const uint16_t requested, const char* 
     exit(1);
 }
 
-// Parse "--sc-rate-limit <n>" (0..65535; 0 = no limit); returns defaultValue
-// if not given/invalid. Same pattern as ParseScMaxHubConnectionsArg above
-// (Task 2), except 0 is a valid, meaningful value here (see g_scRateLimit's
-// comment) so the lower bound check is ">= 0" (i.e. no lower bound at all)
-// rather than "> 0".
-static uint16_t ParseScRateLimitArg(const int argc, char** argv, const uint16_t defaultValue) {
+// Parse "<flagName> <n>" (0..65535; 0 = no limit) for --sc-rate-limit and
+// --sc-rate-limit-total; returns defaultValue if not given/invalid. Same
+// pattern as ParseScMaxHubConnectionsArg above, except 0 is a valid value.
+static uint16_t ParseScRateLimitArg(const int argc, char** argv, const char* flagName, const uint16_t defaultValue) {
     for (int i = 1; i + 1 < argc; ++i) {
-        if (strcmp(argv[i], "--sc-rate-limit") == 0) {
+        if (strcmp(argv[i], flagName) == 0) {
             char* end = NULL;
             const long value = strtol(argv[i + 1], &end, 10);
             if (end != argv[i + 1] && *end == '\0' && value >= 0 && value <= 65535) {
                 return (uint16_t)value;
             }
-            printf("Warning: ignoring invalid --sc-rate-limit \"%s\" (want 0..65535); using %u.\n",
-                   argv[i + 1], (unsigned)defaultValue);
+            printf("Warning: ignoring invalid %s \"%s\" (want 0..65535); using %u.\n",
+                   flagName, argv[i + 1], (unsigned)defaultValue);
         }
     }
     return defaultValue;
@@ -1663,6 +1779,24 @@ static bool ParseOptionalCountArg(const int argc, char** argv, const char* flagN
     return false;
 }
 
+// Parse "<flagName> <n>" with n in minValue..maxValue; returns defaultValue if
+// the flag is not given, or (with a warning) if its value is out of range.
+static uint32_t ParseUIntArg(const int argc, char** argv, const char* flagName, const uint32_t minValue,
+                             const uint32_t maxValue, const uint32_t defaultValue) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], flagName) == 0) {
+            char* end = NULL;
+            const unsigned long value = strtoul(argv[i + 1], &end, 10);
+            if (end != argv[i + 1] && *end == '\0' && value >= minValue && value <= maxValue) {
+                return (uint32_t)value;
+            }
+            printf("Warning: ignoring invalid %s \"%s\" (want %u..%u).\n", flagName, argv[i + 1],
+                   (unsigned)minValue, (unsigned)maxValue);
+        }
+    }
+    return defaultValue;
+}
+
 static bool HasFlag(const int argc, char** argv, const char* flagName) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], flagName) == 0) {
@@ -1672,7 +1806,9 @@ static bool HasFlag(const int argc, char** argv, const char* flagName) {
     return false;
 }
 
-int main(int argc, char** argv) {
+// The hub itself. main() (at the end of this file) runs it directly, or as a
+// Windows service - see service.h.
+static int RunHub(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -1699,7 +1835,7 @@ int main(int argc, char** argv) {
     // --- Command line + version --------------------------------------------
     // showDccPasswordCliOption=false (common/ 2.7.0) - this example does NOT
     // accept --dcc-password on the command line (Task 1: config-file only,
-    // see g_dccPassword's own comment and README.md "Configuration file").
+    // see g_dccPassword's own comment and docs/manual.md "Configuration file").
     if (CASExampleHelper::HandleHelpAndVersionArgs(argc, argv, APP_NAME, APP_VERSION,
                                                    /*showDccPasswordCliOption*/ false)) {
         // common/'s --help handler cannot know about this example's BACnet/SC
@@ -1708,6 +1844,21 @@ int main(int argc, char** argv) {
         // handles and which should stay just a version string).
         for (int i = 1; i < argc; ++i) {
             if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "/?") == 0) {
+                printf("\nDevice and logging:\n");
+                printf("  --device-name <name>\n");
+                printf("                      The Device's Object_Name - must be unique on the BACnet\n");
+                printf("                      internetwork. Default \"%s\".\n", DEVICE_NAME_DEFAULT);
+                printf("  --ip-network-number <n>, --sc-network-number <n>\n");
+                printf("                      Network_Number (1..65534) of Network Port 1 (BACnet/IP) /\n");
+                printf("                      2 (BACnet/SC), reported as configured. Default: not set.\n");
+                printf("  --log-file <path>   Also write all console output to this file, rotating it.\n");
+                printf("  --log-max-size-mb <n>\n");
+                printf("                      Rotate the log file at this size. Default 10.\n");
+                printf("  --log-max-files <n> Old log files kept (<path>.1 ... <path>.n). Default 5.\n");
+                printf("\nBACnet/IP:\n");
+                printf("  --bacnet-ip <on|off>\n");
+                printf("                      off = BACnet/SC only: no UDP socket and no Network Port 1;\n");
+                printf("                      the device is reachable only over BACnet/SC. Default on.\n");
                 printf("\nBACnet/SC options (NM-SCH-B hub function):\n");
                 printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 47819.\n");
                 printf("  --sc-cert-dir <dir> Directory holding operational-certificate.pem,\n");
@@ -1726,14 +1877,20 @@ int main(int argc, char** argv) {
                        (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT);
                 printf("                      Default %u. This example is limited to %u for evaluation and\n",
                        (unsigned)SC_MAX_HUB_CONNECTIONS_DEFAULT, (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT);
-                printf("                      testing; for production, contact %s.\n", SALES_EMAIL);
+                printf("                      testing; for production, contact %s.\n", SUPPORT_EMAIL);
                 printf("  --sc-rate-limit <n>\n");
-                printf("                      Max NEW inbound BACnet/SC connection ATTEMPTS/second the\n");
-                printf("                      listener accepts before rejecting the excess (before the TLS\n");
-                printf("                      handshake - enforced by this example's transport, not the\n");
-                printf("                      stack). Distinct from --sc-max-hub-connections, which bounds\n");
-                printf("                      CONCURRENT connections, not the rate of new attempts. 0 = no\n");
-                printf("                      limit. Default 10.\n");
+                printf("                      Max NEW BACnet/SC connection attempts/second from any one\n");
+                printf("                      source address. Excess attempts are refused before the TLS\n");
+                printf("                      handshake. 0 = no limit. Default %u.\n", (unsigned)SC_RATE_LIMIT_DEFAULT);
+                printf("  --sc-rate-limit-total <n>\n");
+                printf("                      Max NEW BACnet/SC connection attempts/second for the whole\n");
+                printf("                      listener, all addresses together. 0 = no limit. Default %u.\n",
+                       (unsigned)SC_RATE_LIMIT_TOTAL_DEFAULT);
+                printf("  --sc-accept-hub-without-hello\n");
+                printf("                      Compatibility, off by default: let the hub connector\n");
+                printf("                      (--sc-hub-uri) accept a hub whose Connect-Accept omits\n");
+                printf("                      the Hello option the standard requires. Deviates from\n");
+                printf("                      ANSI/ASHRAE 135 - see docs/manual.md \"BACnet/SC compatibility\".\n");
                 printf("\nLab certificates (LAB TESTING ONLY - written to --sc-cert-dir, then exits):\n");
                 printf("  --generate-certs [n]\n");
                 printf("                      Create a fresh set of PEM files named after the Network\n");
@@ -1756,7 +1913,7 @@ int main(int argc, char** argv) {
                 printf("                      also listed in <sc-cert-dir>/certificates.txt.\n");
                 printf("  --cert-hub-uri <wss://host:port/>\n");
                 printf("                      Primary hub URI written into each client's bacnetsc.config\n");
-                printf("                      (Chipkin BACnet Explorer import file). Default: this\n");
+                printf("                      (CAS BACnet Explorer import file). Default: this\n");
                 printf("                      machine's IPv4 address and --sc-port.\n");
                 printf("  --force             With --generate-certs: delete the old set first.\n");
                 printf("\nHTTP health/metrics + certificate upload (Tasks 3/4):\n");
@@ -1765,24 +1922,35 @@ int main(int argc, char** argv) {
                 printf("                      POST /certs/<slot> HTTP endpoints. Default 8080.\n");
                 printf("                      GET /health and GET /metrics need no authentication.\n");
                 printf("                      POST /certs/<slot> (slot: operational, csr, issuer1, issuer2)\n");
-                printf("                      requires \"Authorization: Bearer <dcc-password>\" and is\n");
-                printf("                      DISABLED ENTIRELY if dcc-password is not set - see\n");
-                printf("                      README.md \"Certificate upload endpoint\".\n");
+                printf("                      requires \"Authorization: Bearer <http-upload-token>\" and\n");
+                printf("                      is DISABLED ENTIRELY if http-upload-token is not set - see\n");
+                printf("                      docs/manual.md \"Uploading a certificate\".\n");
                 printf("  --http-bind <addr>  Interface the HTTP endpoints above bind to. Default\n");
                 printf("                      127.0.0.1 (loopback only). Binding anywhere else (e.g.\n");
                 printf("                      0.0.0.0, or a LAN address) is a real security tradeoff -\n");
-                printf("                      this listener has NO TLS, and GET /health, GET /metrics have\n");
-                printf("                      NO authentication at all - see README.md \"Health/metrics\n");
-                printf("                      HTTP endpoint\" before setting this to anything else.\n");
+                printf("                      GET /, /health and /metrics have NO authentication, and\n");
+                printf("                      without --http-tls it is plain HTTP - see README.md\n");
+                printf("                      \"Security\" before setting this to anything else.\n");
+                printf("  --http-tls          Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
+                printf("                      hub's operational-certificate.pem and private-key.pem\n");
+                printf("                      unless --http-tls-cert/--http-tls-key say otherwise.\n");
+                printf("  --http-tls-cert <file>, --http-tls-key <file>\n");
+                printf("                      Certificate (PEM, may include its chain) and key for --http-tls.\n");
+                printf("\nRunning as a service (see the manual):\n");
+                printf("  --install-service   Windows: install the \"BACnetSCHub\" service (start on boot,\n");
+                printf("                      restart on failure) running with the --config given here.\n");
+                printf("                      Needs an Administrator prompt.\n");
+                printf("  --uninstall-service Windows: stop and remove the service.\n");
+                printf("                      Linux: use packaging/linux/bacnet-schub-hub.service. SIGTERM\n");
+                printf("                      and SIGINT stop the hub cleanly.\n");
                 printf("\nConfig file:\n");
-                printf("  --config <path>     Read defaults for device-id, port, sc-port, sc-cert-dir,\n");
-                printf("                      sc-hub-uri, sc-failover-uri, dcc-password, http-port,\n");
-                printf("                      http-bind, sc-max-hub-connections and sc-rate-limit from a\n");
-                printf("                      \"key = value\" file (see example.conf and README.md\n");
-                printf("                      \"Configuration file\"). Any of those flags given on the\n");
-                printf("                      command line still wins over the config file - EXCEPT\n");
-                printf("                      dcc-password, which has NO command-line flag at all (Task 1:\n");
-                printf("                      see README.md \"Secrets handling\").\n");
+                printf("  --config <path>     Read settings from a \"key = value\" file. The settings\n");
+                printf("                      above have keys of the same name without \"--\" (--deviceID\n");
+                printf("                      is device-id; example.conf lists them all). An option on the\n");
+                printf("                      command line still wins over the file. dcc-password and\n");
+                printf("                      http-upload-token can ONLY be set in the file, so they\n");
+                printf("                      never show in process listings - see docs/manual.md\n");
+                printf("                      \"Configuration file\".\n");
                 break;
             }
         }
@@ -1806,8 +1974,51 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --- Log file (issue #33) - first, so everything after it is captured ---
+    {
+        std::string logFile = ParseStringArg(argc, argv, "--log-file");
+        if (logFile.empty() && fileConfig.hasLogFile) {
+            logFile = fileConfig.logFile;
+        }
+        if (!logFile.empty()) {
+            const uint32_t maxSizeMb = ParseUIntArg(argc, argv, "--log-max-size-mb", 1, 4096,
+                fileConfig.hasLogMaxSizeMb ? fileConfig.logMaxSizeMb : 10);
+            const uint32_t maxFiles = ParseUIntArg(argc, argv, "--log-max-files", 0, 100,
+                fileConfig.hasLogMaxFiles ? fileConfig.logMaxFiles : 5);
+            if (LogFile::Start(logFile, (uint64_t)maxSizeMb * 1024 * 1024, maxFiles)) {
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                                      "logging to \"%s\" too (rotated at %u MB, %u old file(s) kept)",
+                                      logFile.c_str(), maxSizeMb, maxFiles);
+            }
+        }
+    }
+
     const uint16_t port = CASExampleHelper::ParsePortArg(
         argc, argv, fileConfig.hasPort ? fileConfig.port : 47808);
+    {
+        const std::string deviceName = ParseStringArg(argc, argv, "--device-name");
+        if (!deviceName.empty()) {
+            g_deviceName = deviceName;  // CLI wins
+        } else if (fileConfig.hasDeviceName) {
+            g_deviceName = fileConfig.deviceName;
+        }
+        g_ipNetworkNumber = (uint16_t)ParseUIntArg(argc, argv, "--ip-network-number", 1, 65534,
+            fileConfig.hasIpNetworkNumber ? fileConfig.ipNetworkNumber : 0);
+        g_scNetworkNumber = (uint16_t)ParseUIntArg(argc, argv, "--sc-network-number", 1, 65534,
+            fileConfig.hasScNetworkNumber ? fileConfig.scNetworkNumber : 0);
+    }
+    {
+        g_bacnetIpEnabled = fileConfig.hasBacnetIp ? fileConfig.bacnetIp : true;
+        const std::string bacnetIpArg = ParseStringArg(argc, argv, "--bacnet-ip");
+        if (bacnetIpArg == "off" || bacnetIpArg == "false" || bacnetIpArg == "no" || bacnetIpArg == "0") {
+            g_bacnetIpEnabled = false;
+        } else if (bacnetIpArg == "on" || bacnetIpArg == "true" || bacnetIpArg == "yes" || bacnetIpArg == "1") {
+            g_bacnetIpEnabled = true;
+        } else if (!bacnetIpArg.empty()) {
+            fprintf(stderr, "Error: --bacnet-ip expects on or off, got \"%s\".\n", bacnetIpArg.c_str());
+            return 1;
+        }
+    }
     g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(
         argc, argv, fileConfig.hasDeviceId ? fileConfig.deviceId : g_deviceInstance);
     // dcc-password: CONFIG FILE ONLY (Task 1) - no CLI flag exists for it at
@@ -1817,6 +2028,9 @@ int main(int argc, char** argv) {
     // stays valid for the whole run.
     if (fileConfig.hasDccPassword) {
         g_dccPassword = fileConfig.dccPassword.c_str();
+    }
+    if (fileConfig.hasHttpUploadToken) {
+        g_httpUploadToken = fileConfig.httpUploadToken;  // config file only, like dcc-password
     }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
@@ -1886,8 +2100,12 @@ int main(int argc, char** argv) {
         }
         CheckScMaxHubConnectionsLimit(g_scMaxHubConnections, source);
     }
-    g_scRateLimit = ParseScRateLimitArg(
-        argc, argv, fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
+    g_scRateLimit = ParseScRateLimitArg(argc, argv, "--sc-rate-limit",
+        fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
+    g_scRateLimitTotal = ParseScRateLimitArg(argc, argv, "--sc-rate-limit-total",
+        fileConfig.hasScRateLimitTotal ? fileConfig.scRateLimitTotal : SC_RATE_LIMIT_TOTAL_DEFAULT);
+    g_scAcceptHubWithoutHello = HasFlag(argc, argv, "--sc-accept-hub-without-hello") ||
+                                (fileConfig.hasScAcceptHubWithoutHello && fileConfig.scAcceptHubWithoutHello);
     g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
     {
         const std::string httpBindArg = ParseStringArg(argc, argv, "--http-bind");
@@ -1897,6 +2115,15 @@ int main(int argc, char** argv) {
             g_httpBindAddress = fileConfig.httpBind;  // then config file
         }
         // else: g_httpBindAddress keeps its "127.0.0.1" built-in default.
+    }
+    g_httpTls = HasFlag(argc, argv, "--http-tls") || (fileConfig.hasHttpTls && fileConfig.httpTls);
+    g_httpTlsCert = ParseStringArg(argc, argv, "--http-tls-cert");
+    if (g_httpTlsCert.empty() && fileConfig.hasHttpTlsCert) {
+        g_httpTlsCert = fileConfig.httpTlsCert;
+    }
+    g_httpTlsKey = ParseStringArg(argc, argv, "--http-tls-key");
+    if (g_httpTlsKey.empty() && fileConfig.hasHttpTlsKey) {
+        g_httpTlsKey = fileConfig.httpTlsKey;
     }
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
     g_startTime = std::chrono::steady_clock::now();
@@ -1914,16 +2141,23 @@ int main(int argc, char** argv) {
     // SendMessageForPort callbacks (registered below) must be able to reach
     // this socket directly to dispatch between it and BACnet/SC. The BACnet/IP
     // port stays active regardless of the BACnet/SC transport outcome - see
-    // the file header note.
-    if (!g_scRouter.Start(port)) {
-        return 1;
-    }
-
-    g_bacnetIpUdpPort = port;
-    if (!CASExampleHelper::GetLocalIPv4(g_ipAddress, g_ipSubnetMask)) {
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                              "could not read a local IPv4 address; Network Port IP_Address "
-                              "will report 0.0.0.0.");
+    // the file header note - unless --bacnet-ip off asked for BACnet/SC only,
+    // in which case no socket is opened at all (the router then only ever
+    // answers for Network Port 2).
+    if (g_bacnetIpEnabled) {
+        if (!g_scRouter.Start(port)) {
+            return 1;
+        }
+        g_bacnetIpUdpPort = port;
+        if (!CASExampleHelper::GetLocalIPv4(g_ipAddress, g_ipSubnetMask)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                                  "could not read a local IPv4 address; Network Port IP_Address "
+                                  "will report 0.0.0.0.");
+        }
+    } else {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                              "BACnet/IP is OFF (--bacnet-ip off): no UDP socket, no Network Port 1. "
+                              "This device is reachable only over BACnet/SC.");
     }
 
     // --- Configure the BACnet/SC transport -------------------------------------
@@ -1960,12 +2194,12 @@ int main(int argc, char** argv) {
             g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE, CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
         tls.keyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
             g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+        // Optional certificate revocation list (issue #15) - see ScTlsFiles::crlPath.
+        tls.crlPath = g_scCrlPath = g_scCertDir + "/" + CertTool::ISSUER_CRL_FILE;
         g_scTransport.Configure(tls, "hub.bsc.bacnet.org"); // plan fact 1 - NOT "hub.bacnet.org"
-        // Task 2: bound how fast the listener accepts new connection
-        // ATTEMPTS - see g_scRateLimit's comment and
-        // ScTransport::SetMaxConnectionAttemptsPerSecond's header comment for
-        // why this is separate from g_scMaxHubConnections (below).
-        g_scTransport.SetMaxConnectionAttemptsPerSecond(g_scRateLimit);
+        // Bound how fast the listener accepts new connection attempts, per
+        // source address and in total - see g_scRateLimit's comment.
+        g_scTransport.SetConnectionRateLimits(g_scRateLimit, g_scRateLimitTotal);
     }
 
     // --- Register callbacks ---------------------------------------------------
@@ -2065,12 +2299,13 @@ int main(int argc, char** argv) {
     }
 
     // --- Add Network Port 1 (BACnet/IP, "BACnet IP") -------------------------
-    if (!BACnetStack_AddNetworkPortObject(
+    // Not with --bacnet-ip off: a BACnet/SC-only device has no BACnet/IP port.
+    if (g_bacnetIpEnabled && !BACnetStack_AddNetworkPortObject(
             g_deviceInstance, NETWORK_PORT_INSTANCE,
             NETWORK_PORT_NETWORK_TYPE_IPV4,
             NETWORK_PORT_PROTOCOL_LEVEL_BACNET_APPLICATION,
-            0,  // networkNumber: not configured
-            NETWORK_NUMBER_QUALITY_UNKNOWN,
+            g_ipNetworkNumber,  // 0 = not configured (--ip-network-number)
+            g_ipNetworkNumber != 0 ? NETWORK_NUMBER_QUALITY_CONFIGURED : NETWORK_NUMBER_QUALITY_UNKNOWN,
             NETWORK_PORT_REFERENCE_PORT_NONE)) {
         printf("Error: Failed to add Network Port 1 (BACnet IP).\n");
         return 1;
@@ -2084,7 +2319,8 @@ int main(int argc, char** argv) {
             g_deviceInstance, SC_NETWORK_PORT_INSTANCE,
             NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT,
             NETWORK_PORT_PROTOCOL_LEVEL_BACNET_APPLICATION,
-            0, NETWORK_NUMBER_QUALITY_UNKNOWN,
+            g_scNetworkNumber,  // 0 = not configured (--sc-network-number)
+            g_scNetworkNumber != 0 ? NETWORK_NUMBER_QUALITY_CONFIGURED : NETWORK_NUMBER_QUALITY_UNKNOWN,
             NETWORK_PORT_REFERENCE_PORT_NONE)) {
         printf("Error: Failed to add Network Port 2 (BACnet SC, BACnet/SC).\n");
         return 1;
@@ -2112,6 +2348,18 @@ int main(int argc, char** argv) {
                                                   true, g_scMaxHubConnections)) {
         printf("Error: Failed to enable the BACnet/SC hub function.\n");
         return 1;
+    }
+
+    // Interoperability relaxation - off by default (see g_scAcceptHubWithoutHello).
+    // Device-wide: the stack applies it to every BACnet/SC data link.
+    if (g_scAcceptHubWithoutHello) {
+        if (!BACnetStack_SetBACnetSCCompatibilityFlags(SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO)) {
+            printf("Error: Failed to set the BACnet/SC compatibility flags.\n");
+            return 1;
+        }
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "BACnet/SC compatibility: the hub connector accepts a Connect-Accept without the Hello "
+            "option (sc-accept-hub-without-hello). This deviates from ANSI/ASHRAE 135 AB.2.2.");
     }
 
     // --- Add the 4 certificate/CSR File objects (phase 4) -------------------
@@ -2231,6 +2479,9 @@ int main(int argc, char** argv) {
             {OBJECT_TYPE_FILE, FILE_ISSUER_CERT_2_INSTANCE},
         };
         for (const auto& o : objects) {
+            if (o.type == OBJECT_TYPE_NETWORK_PORT && o.instance == NETWORK_PORT_INSTANCE && !g_bacnetIpEnabled) {
+                continue;  // Network Port 1 doesn't exist in BACnet/SC-only mode
+            }
             if (!BACnetStack_SetPropertyEnabled(g_deviceInstance, o.type, o.instance,
                                                 PROPERTY_IDENTIFIER_DESCRIPTION, true)) {
                 printf("Error: Failed to enable Description on object type %u instance %u.\n",
@@ -2245,13 +2496,17 @@ int main(int argc, char** argv) {
     // local subnet broadcast - the BACnet/IP Network Port's own network).
     // g_scRouter.SendIAm(), not CASExampleHelper::SendIAm() - the router owns
     // Network Port 1's UDP socket directly (see the "Bind the BACnet/IP
-    // socket" comment above).
-    g_scRouter.SendIAm(g_deviceInstance);
+    // socket" comment above). With BACnet/IP off there is no one to tell yet:
+    // no BACnet/SC device is connected at start-up, and each one that
+    // connects discovers this device with Who-Is.
+    if (g_bacnetIpEnabled) {
+        g_scRouter.SendIAm(g_deviceInstance);
+    }
 
     printf("FYI: Device %u (\"%s\") ready. Vendor ID %u. Press 'h' for help, 'm' for a health/metrics snapshot.\n",
-           g_deviceInstance, DEVICE_NAME, VENDOR_IDENTIFIER);
+           g_deviceInstance, g_deviceName.c_str(), VENDOR_IDENTIFIER);
     printf("FYI: BACnet/SC hub function is CONFIGURED on Network Port %u "
-           "(BACnet SC), accept URI %s. Certificates: %s. See README.md "
+           "(BACnet SC), accept URI %s. Certificates: %s. See docs/manual.md "
            "\"BACnet/SC support\" for how to generate lab test certs.\n",
            SC_NETWORK_PORT_INSTANCE, g_scHubAcceptUri.c_str(), g_scCertDir.c_str());
 
@@ -2263,8 +2518,18 @@ int main(int argc, char** argv) {
         httpConfig.port = g_httpPort;
         httpConfig.bindAddress = g_httpBindAddress;
         httpConfig.certDir = g_scCertDir;
-        httpConfig.bearerToken = g_dccPassword;  // Task 4: empty => upload endpoint disabled entirely
+        if (g_httpTls) {
+            // HTTPS (issue #22): the named certificate/key, or the hub's own.
+            httpConfig.tlsCertPath = !g_httpTlsCert.empty() ? g_httpTlsCert : g_scCertDir + "/" +
+                CertTool::ResolveCertFile(g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE,
+                                          CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
+            httpConfig.tlsKeyPath = !g_httpTlsKey.empty() ? g_httpTlsKey : g_scCertDir + "/" +
+                CertTool::ResolveCertFile(g_scCertDir, CertTool::PRIVATE_KEY_FILE,
+                                          CertTool::LEGACY_PRIVATE_KEY_FILE);
+        }
+        httpConfig.bearerToken = g_httpUploadToken;  // empty => upload endpoint disabled entirely
         httpConfig.resolveCertSlot = ResolveCertUploadSlot;
+        httpConfig.applyCertUpload = ApplyCertUpload;  // validated like a BACnet write - issue #25
         httpConfig.buildHealthJson = BuildHealthJson;
         httpConfig.buildMetricsJson = BuildMetricsJson;
         httpConfig.buildStatusPage = BuildStatusPage;  // GET / - see BuildStatusPage()
@@ -2272,8 +2537,11 @@ int main(int argc, char** argv) {
     }
 
     // --- Run the stack ------------------------------------------------------
+    std::string crlFingerprint = FileFingerprint(g_scCrlPath);
+    std::chrono::steady_clock::time_point lastCrlCheck = std::chrono::steady_clock::now();
+    bool checkedScOnlyReachable = false;  // the --bacnet-ip off warning, once (issue #35)
     bool running = true;
-    while (running) {
+    while (running && !Service::StopRequested()) {  // SIGTERM/SIGINT or a service stop ends the loop
         BACnetStack_Tick();
 
         // Pump the WebSocket/TLS transport non-blockingly, then report any
@@ -2284,19 +2552,52 @@ int main(int argc, char** argv) {
         g_scTransport.Service();
         g_scRouter.DrainStatusEvents();
 
-        // New certificates activated by ReinitializeDevice (section 2d-ii):
-        // rebuild the TLS contexts so they load the new files (the callback
-        // already refreshed the trusted-issuer bundle). The stack restarts
-        // the SC port by itself only when a File object REFERENCE changed,
-        // not the contents, so this is what applies a content-only change.
-        // Peers reconnect under the new certificates.
+        // BACnet/SC-only and BACnet/SC not listening = unreachable over BACnet
+        // (issue #35). Checked once, a few seconds in: the stack starts the
+        // listener on its first Ticks, not during configuration. It keeps
+        // retrying after that, and /health reports degraded.
+        if (!g_bacnetIpEnabled && !checkedScOnlyReachable &&
+            std::chrono::steady_clock::now() - g_startTime >= std::chrono::seconds(3)) {
+            checkedScOnlyReachable = true;
+            if (!g_scTransport.IsListening()) {
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                    "BACnet/IP is off and BACnet/SC is NOT listening (see the certificate messages above) - "
+                    "this device is UNREACHABLE over BACnet until BACnet/SC starts. Fix the certificates in "
+                    "\"%s\" (it retries every 5 s), or run with --bacnet-ip on.", g_scCertDir.c_str());
+            }
+        }
+
+        // A new, changed or removed certificate revocation list (issue #15):
+        // reload TLS so it is used. Restarting the listener drops every
+        // device; each reconnects, and one whose certificate is now revoked
+        // is refused - which is how an open connection from a revoked device
+        // is closed.
+        if (std::chrono::steady_clock::now() - lastCrlCheck >= std::chrono::seconds(5)) {
+            lastCrlCheck = std::chrono::steady_clock::now();
+            const std::string fingerprint = FileFingerprint(g_scCrlPath);
+            if (fingerprint != crlFingerprint) {
+                crlFingerprint = fingerprint;
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                    "SC revocation: \"%s\" %s - reloading BACnet/SC TLS; devices reconnect, revoked ones are refused",
+                    g_scCrlPath.c_str(), fingerprint.empty() ? "removed" : "changed");
+                g_scReloadCredentialsRequested = true;
+            }
+        }
+
+        // New certificates activated by ReinitializeDevice (section 2d-ii), an
+        // HTTP upload, or a CRL change: rebuild the TLS contexts so they load
+        // the new files (the trusted-issuer bundle is already refreshed). The
+        // stack restarts the SC port by itself only when a File object
+        // REFERENCE changed, not the contents, so this is what applies a
+        // content-only change. Peers reconnect under the new certificates.
         if (g_scReloadCredentialsRequested) {
             g_scReloadCredentialsRequested = false;
             g_scTransport.ReloadCredentials();
         }
         g_httpServer.Service(); // Tasks 3/4 - non-blocking, same mechanism as g_scTransport.Service()
 
-        switch (CASExampleHelper::PollKey()) {
+        // No console keys when running as a Windows service (there is no console).
+        switch (Service::IsService() ? CASExampleHelper::KeyCommand::None : CASExampleHelper::PollKey()) {
             case CASExampleHelper::KeyCommand::Help:
                 CASExampleHelper::PrintHelp(APP_NAME, APP_VERSION);
                 break;
@@ -2329,5 +2630,15 @@ int main(int argc, char** argv) {
     CASExampleHelper::RestoreInput();
     g_httpServer.Stop();
     g_scRouter.Shutdown();
+    printf("FYI: stopped.\n");
+    LogFile::Stop();
     return 0;
+}
+
+int main(int argc, char** argv) {
+    int exitCode = 0;
+    if (Service::HandleServiceCommand(argc, argv, &exitCode)) {  // --install-service / --uninstall-service
+        return exitCode;
+    }
+    return Service::Run(argc, argv, RunHub);
 }
