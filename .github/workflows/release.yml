@@ -588,7 +588,9 @@ jobs:
       # Uploading two assets with one name makes the release action fail part-way
       # and leaves a draft release behind (a real tagged release hit this). Flatten the
       # artifacts into one folder with a single copy of each file name, and stop
-      # if two files share a name but differ.
+      # if two files share a name but differ. The Windows runner checks text files out
+      # with CRLF line endings and Linux with LF, so copies that differ only in line
+      # endings count as the same file; the Linux (LF) copy sorts first and is kept.
       - name: Collect release assets (one copy of each file name)
         shell: bash
         run: |
@@ -596,7 +598,8 @@ jobs:
           find artifacts -type f | sort | while read -r f; do
             name=$(basename "$f")
             if [ -e "release/$name" ]; then
-              cmp -s "$f" "release/$name" || { echo "FAIL: two different files are both named $name ($f)"; exit 1; }
+              cmp -s "$f" "release/$name" || cmp -s <(tr -d '\r' < "$f") <(tr -d '\r' < "release/$name") ||
+                { echo "FAIL: two different files are both named $name ($f)"; exit 1; }
             else
               cp "$f" "release/$name"
             fi
