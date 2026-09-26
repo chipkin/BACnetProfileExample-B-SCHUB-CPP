@@ -207,7 +207,9 @@ jobs:
           [ "$mode" = "SOURCE" ] || { echo "FAIL: expected SOURCE, got '$mode'"; exit 1; }
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        # 4 jobs = the hosted runners' cores. A bare --parallel is an unlimited "make -j"
+        # on Linux, which starts every compile at once and runs the runner out of memory.
+        run: cmake --build build --config Release --parallel 4
       # SC-TRANSPORT:BEGIN - Code signing, part 2: sign the executable (Windows, tag builds
       # only; part 1, the Azure login and checks, ran first). Signs before the smoke test
       # and metrics, so the published binary, its metrics and its checksum are all the
