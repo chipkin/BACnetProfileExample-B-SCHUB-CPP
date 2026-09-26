@@ -11,6 +11,12 @@ Open work is tracked in
 
 ### Added
 
+- `--generate-certs` / `--add-client-certs` also write, in each client
+  folder, the files Windows tools such as YABE need: `<label>.pfx`
+  (certificate, key and issuer; empty password, private), the issuer as
+  `issuer-certificate.cer` (DER), and a ready-to-select YABE BACnet/SC
+  channel file, `yabe-bacnetsc.config`
+  ([#38](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/38)).
 - The Windows installer is code-signed like the program, and every release
   download (the Linux archive and `.deb` included) has a signed
   build-provenance attestation: `gh attestation verify <file> --repo

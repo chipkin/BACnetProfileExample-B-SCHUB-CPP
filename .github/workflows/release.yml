@@ -306,6 +306,9 @@ jobs:
       - name: Install BACnet/SC test dependencies
         run: python -m pip install -r tests/sc/requirements.txt
 
+      - name: Client certificate files for Windows tools (.pfx, .cer, YABE config)
+        run: python tests/sc/cert_files_test.py --cert-dir certs
+
       - name: Start the example with BACnet/SC enabled
         shell: bash
         run: |

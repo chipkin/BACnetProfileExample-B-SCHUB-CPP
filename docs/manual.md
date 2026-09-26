@@ -236,7 +236,7 @@ file names follow the Network Port properties that carry them (ANSI/ASHRAE
 | `certificate-signing-request.pem` | CSR for the hub's key (File 2, Certificate_Signing_Request_File). |
 | `issuer-certificate.pem` | The lab CA (File 3, Issuer_Certificate_Files). Every device needs a copy. |
 | `issuer-private-key.pem` | The CA's private key, only used to sign more devices. **Private.** Keep it off the network. |
-| `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem` and `bacnetsc.config`. |
+| `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem`, `bacnetsc.config` (CAS BACnet Explorer), and for Windows tools such as YABE `<label>.pfx` (certificate + key + issuer, empty password, **private**), `issuer-certificate.cer` (DER) and `yabe-bacnetsc.config`. |
 | `certificates.txt` | Every certificate's label, location, serial number, expiry and SHA-256 fingerprint. |
 | `readme.txt` | A walkthrough of the folder, including which files are private. |
 
@@ -399,7 +399,16 @@ For each BACnet/SC device:
    between devices: the hub couldn't tell them apart.
 2. **[CAS BACnet Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer):** import the folder's `bacnetsc.config`. It
    names the hub URI and the folder's three PEM files, so keep them together.
-3. **Any other BACnet/SC device:** install `operational-certificate.pem` and
+3. **YABE (Yet Another BACnet Explorer):** in *Communication Channel* ->
+   *BACnet/Secure Connect*, **Select** the folder's `yabe-bacnetsc.config`,
+   then **Start**. It points at the folder's `<label>.pfx` (certificate,
+   key and issuer, with an empty password - keep it private) and
+   `issuer-certificate.cer` by absolute path, so re-select it if you move
+   the folder. YABE uses Windows' own TLS, which can't make the TLS 1.3
+   connections BACnet/SC requires on Windows 10: use Windows 11 / Server
+   2022 or later
+   ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
+4. **Any other BACnet/SC device:** install `operational-certificate.pem` and
    `private-key.pem` as its operational certificate and key, and
    `issuer-certificate.pem` as its issuer certificate. Set its primary hub URI
    to `wss://<hub address>:47819/`.

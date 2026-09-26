@@ -85,6 +85,7 @@ every pull request.
 | `cert_procedure_test.py` | Certificate management over BACnet: add issuer, rejected activation, replace the hub certificate. |
 | `fake_hub_server.py` | A test hub for the `--sc-hub-uri` connector. |
 | `rpm_test.py` | ReadPropertyMultiple against the Device. |
+| `cert_files_test.py` | The `.pfx`, `.cer` and YABE config `--generate-certs` writes for each device. |
 | `http_test.py` | The status page, `/health`, `/metrics`, and certificate upload auth, validation and rate limiting. |
 
 ## Licensing
