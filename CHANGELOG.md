@@ -7,7 +7,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Open work is tracked in
 [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues).
 
-## [Unreleased]
+## [1.3.0] - 2026-09-26
 
 ### Added
 
@@ -26,24 +26,6 @@ Open work is tracked in
   computer that use Windows' own TLS (such as YABE) can't connect, because
   Windows 10 can't make the TLS 1.3 client connections BACnet/SC requires
   ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
-
-### Changed
-
-- When the hub refuses a BACnet/SC Connect-Request, the audit log gives the
-  CAS BACnet Stack's own reason (from the BVLC-Result NAK it sends, e.g.
-  "Connect messages require the Hello destination option") instead of
-  guessing; `hub_listener_test.py` checks a Connect-Request without Hello
-  gets that NAK
-  ([#40](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/40)).
-- `cert_procedure_test.py` checks `Changes_Pending` is FALSE after
-  ACTIVATE_CHANGES, and reports the start-up `Changes_Pending` = TRUE stack
-  bug as a known issue; the manual documents it
-  ([#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
-
-## [1.3.0] - 2026-09-26
-
-### Added
-
 - The Windows executable is code-signed, and each release includes
   `SHA256SUMS.txt`
   ([#34](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/34)).
@@ -117,6 +99,16 @@ Open work is tracked in
 
 ### Changed
 
+- When the hub refuses a BACnet/SC Connect-Request, the audit log gives the
+  CAS BACnet Stack's own reason (from the BVLC-Result NAK it sends, e.g.
+  "Connect messages require the Hello destination option") instead of
+  guessing; `hub_listener_test.py` checks a Connect-Request without Hello
+  gets that NAK
+  ([#40](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/40)).
+- `cert_procedure_test.py` checks `Changes_Pending` is FALSE after
+  ACTIVATE_CHANGES, and reports the start-up `Changes_Pending` = TRUE stack
+  bug as a known issue; the manual documents it
+  ([#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
 - `POST /certs/<slot>` validates an upload the same way as a certificate
   written over BACnet - a real X.509 parse, and the hub certificate must still
   match its key and chain to an issuer - before anything reaches disk, then
