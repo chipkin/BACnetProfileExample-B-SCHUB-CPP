@@ -11,7 +11,9 @@ It implements the **B-SCHUB** device profile (ANSI/ASHRAE 135 Annex L) and
 is meant both as a working hub and as a starting point for your own product.
 
 - **[Download a prebuilt binary](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases)**
-  (Windows and Linux x64), or [build it yourself](#build).
+  (Windows and Linux x64), or [build it yourself](#build). The Windows
+  executable is code-signed by Chipkin, and each release lists SHA-256
+  checksums in `SHA256SUMS.txt` ([how to check](docs/code-signing.md#checking-a-release)).
 - **[docs/PICS.pdf](docs/PICS.pdf)** - the BACnet Protocol Implementation
   Conformance Statement (also as [Markdown](docs/PICS.md)).
 - **[TUTORIAL.md](TUTORIAL.md)** - how the code works and how to adapt it.
