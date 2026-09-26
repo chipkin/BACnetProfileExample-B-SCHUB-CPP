@@ -1,6 +1,6 @@
 # BACnet/SC Hub (B-SCHUB) - User Manual
 
-**Version 1.3.0** · Chipkin Automation Systems ·
+**Version 1.4.0** · Chipkin Automation Systems ·
 <https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP>
 
 This manual is for people who install, configure and run the hub.
@@ -196,7 +196,7 @@ BACnetExampleBSCHUB
 On Windows the program is `BACnetExampleBSCHUB.exe`. A typical start-up:
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.3.0
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.4.0
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -510,7 +510,7 @@ start-up.
 
 ```
 $ curl -s http://127.0.0.1:8080/health
-{"status":"ok","version":"1.3.0","uptime_seconds":154,"bacnet_ip_enabled":true,"sc_hub_function_listening":true,"sc_hub_connections_current":1,"staged_certificate_changes":false}
+{"status":"ok","version":"1.4.0","uptime_seconds":154,"bacnet_ip_enabled":true,"sc_hub_function_listening":true,"sc_hub_connections_current":1,"staged_certificate_changes":false}
 
 $ curl -s http://127.0.0.1:8080/metrics
 {"uptime_seconds":154,"uptime":"2m 34s","sc_hub_connections_current":1,"sc_hub_connections_max":4,"sc_total_connects":3,"sc_total_disconnects":2,"sc_rate_limit_rejections":0,"sc_rx_messages":12,"sc_rx_bytes":456,"sc_tx_messages":12,"sc_tx_bytes":456,"sc_tx_queue_overflows":0}
@@ -618,7 +618,7 @@ The [PICS](PICS.pdf) lists every property.
 
 ## 12. Version, licensing and support
 
-- **Version**: this manual describes version 1.3.0. What changed in each
+- **Version**: this manual describes version 1.4.0. What changed in each
   release is in [CHANGELOG.md](../CHANGELOG.md); what a version number
   promises is in [SUPPORT.md](SUPPORT.md).
 - **Licensing**: the hub's own source code is public domain (CC0-1.0). It is

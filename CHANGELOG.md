@@ -7,7 +7,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Open work is tracked in
 [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues).
 
-## [Unreleased]
+## [1.4.0] - unreleased
 
 ### Added
 

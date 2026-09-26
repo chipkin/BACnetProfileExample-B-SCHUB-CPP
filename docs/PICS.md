@@ -1,6 +1,6 @@
 # BACnet Protocol Implementation Conformance Statement (PICS)
 
-**Chipkin BACnet/SC Hub (B-SCHUB) example, version 1.3.0**
+**Chipkin BACnet/SC Hub (B-SCHUB) example, version 1.4.0**
 
 Date: 2026-09-26. Source, manual and releases:
 <https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP>.
@@ -18,7 +18,7 @@ Date: 2026-09-26. Source, manual and releases:
 | **Vendor Identifier** | 389 |
 | **Product Name** | CAS BACnet Stack Example - B-SCHUB |
 | **Product Model Number** | CAS BACnet Stack Example - B-SCHUB |
-| **Application Software Version** | 1.3.0 |
+| **Application Software Version** | 1.4.0 |
 | **Firmware Revision** | 6.0.23.0 (the CAS BACnet Stack version) |
 | **BACnet Protocol Version** | 1 |
 | **BACnet Protocol Revision** | 30 |
