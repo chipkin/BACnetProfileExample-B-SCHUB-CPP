@@ -1,6 +1,6 @@
 # BACnet/SC Hub (B-SCHUB) - Fact Sheet
 
-**Chipkin Automation Systems** · Version 1.3.0 ·
+**Chipkin Automation Systems** · Version 1.4.0 ·
 <https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP>
 
 A **BACnet Secure Connect hub** built on the
