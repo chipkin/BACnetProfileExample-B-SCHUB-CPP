@@ -323,18 +323,23 @@ static const uint16_t SC_RATE_LIMIT_TOTAL_DEFAULT = 50;
 static uint16_t g_scRateLimit = SC_RATE_LIMIT_DEFAULT;
 static uint16_t g_scRateLimitTotal = SC_RATE_LIMIT_TOTAL_DEFAULT;
 
-// BACnet/SC interoperability relaxation (issue #19), OFF by default. When on,
-// main() calls BACnetStack_SetBACnetSCCompatibilityFlags with
-// SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO, the stack's one defined
-// compatibility flag: the hub CONNECTOR (--sc-hub-uri) then accepts a
-// Connect-Accept that omits the Hello destination option, which 135-2024 AB.2.2
-// makes mandatory - some older hubs leave it out. It is a deliberate deviation
-// from the standard, so leave it off unless such a hub needs it.
-// It does NOT relax the hub FUNCTION: a device that connects to this hub with a
-// Connect-Request without Hello is still refused - the stack has no switch for
-// that (see docs/manual.md "BACnet/SC compatibility").
+// BACnet/SC interoperability relaxations, both OFF by default. 135-2024
+// AB.2.2 makes the Hello destination option mandatory on Connect-Request and
+// Connect-Accept; some implementations leave it out. main() ORs the chosen bits
+// into BACnetStack_SetBACnetSCCompatibilityFlags (device-wide):
+//   SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO (0x01, issue #19,
+//     --sc-accept-hub-without-hello): the hub CONNECTOR (--sc-hub-uri) accepts
+//     a Connect-Accept without Hello from the hub it dials.
+//   SC_COMPATIBILITY_ACCEPT_CONNECT_REQUEST_WITHOUT_HELLO (0x02, issue #40,
+//     cas-bacnet-stack#3097, --sc-accept-device-without-hello): the hub
+//     FUNCTION accepts a device's Connect-Request without Hello - what YABE
+//     sends. The device's Hello capabilities are recorded as 0.
+// Each is a deliberate deviation from the standard: leave them off unless a
+// specific peer needs one (see docs/manual.md "BACnet/SC compatibility").
 static const uint8_t SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO = 0x01;
+static const uint8_t SC_COMPATIBILITY_ACCEPT_CONNECT_REQUEST_WITHOUT_HELLO = 0x02;
 static bool g_scAcceptHubWithoutHello = false;
+static bool g_scAcceptDeviceWithoutHello = false;
 
 // The 4 read-only File objects Network Port 2's SC certificate properties point at - see
 // BACnetStack_SetBACnetSCCertificateFileObjects's call in main() and RegisterCallbackReadFile
@@ -1929,6 +1934,10 @@ static int RunHub(int argc, char** argv) {
                 printf("                      (--sc-hub-uri) accept a hub whose Connect-Accept omits\n");
                 printf("                      the Hello option the standard requires. Deviates from\n");
                 printf("                      ANSI/ASHRAE 135 - see docs/manual.md \"BACnet/SC compatibility\".\n");
+                printf("  --sc-accept-device-without-hello\n");
+                printf("                      Compatibility, off by default: accept a device whose\n");
+                printf("                      Connect-Request omits the Hello option (e.g. YABE).\n");
+                printf("                      Deviates from ANSI/ASHRAE 135 - see the manual as above.\n");
                 printf("\nLab certificates (LAB TESTING ONLY - written to --sc-cert-dir, then exits):\n");
                 printf("  --generate-certs [n]\n");
                 printf("                      Create a fresh set of PEM files named after the Network\n");
@@ -2144,6 +2153,8 @@ static int RunHub(int argc, char** argv) {
         fileConfig.hasScRateLimitTotal ? fileConfig.scRateLimitTotal : SC_RATE_LIMIT_TOTAL_DEFAULT);
     g_scAcceptHubWithoutHello = HasFlag(argc, argv, "--sc-accept-hub-without-hello") ||
                                 (fileConfig.hasScAcceptHubWithoutHello && fileConfig.scAcceptHubWithoutHello);
+    g_scAcceptDeviceWithoutHello = HasFlag(argc, argv, "--sc-accept-device-without-hello") ||
+                                   (fileConfig.hasScAcceptDeviceWithoutHello && fileConfig.scAcceptDeviceWithoutHello);
     g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
     {
         const std::string httpBindArg = ParseStringArg(argc, argv, "--http-bind");
@@ -2389,16 +2400,27 @@ static int RunHub(int argc, char** argv) {
         return 1;
     }
 
-    // Interoperability relaxation - off by default (see g_scAcceptHubWithoutHello).
-    // Device-wide: the stack applies it to every BACnet/SC data link.
-    if (g_scAcceptHubWithoutHello) {
-        if (!BACnetStack_SetBACnetSCCompatibilityFlags(SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO)) {
-            printf("Error: Failed to set the BACnet/SC compatibility flags.\n");
+    // Interoperability relaxations - off by default (see g_scAcceptHubWithoutHello).
+    // Device-wide: the stack applies the flags to every BACnet/SC data link.
+    {
+        uint8_t compatibilityFlags = 0;
+        if (g_scAcceptHubWithoutHello) {
+            compatibilityFlags |= SC_COMPATIBILITY_ACCEPT_CONNECT_ACCEPT_WITHOUT_HELLO;
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                "BACnet/SC compatibility: the hub connector accepts a Connect-Accept without the Hello "
+                "option (sc-accept-hub-without-hello). This deviates from ANSI/ASHRAE 135 AB.2.2.");
+        }
+        if (g_scAcceptDeviceWithoutHello) {
+            compatibilityFlags |= SC_COMPATIBILITY_ACCEPT_CONNECT_REQUEST_WITHOUT_HELLO;
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                "BACnet/SC compatibility: the hub accepts a device's Connect-Request without the Hello "
+                "option (sc-accept-device-without-hello), e.g. from YABE. This deviates from ANSI/ASHRAE "
+                "135 AB.2.2.");
+        }
+        if (compatibilityFlags != 0 && !BACnetStack_SetBACnetSCCompatibilityFlags(compatibilityFlags)) {
+            printf("Error: Failed to set the BACnet/SC compatibility flags (0x%02x).\n", compatibilityFlags);
             return 1;
         }
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "BACnet/SC compatibility: the hub connector accepts a Connect-Accept without the Hello "
-            "option (sc-accept-hub-without-hello). This deviates from ANSI/ASHRAE 135 AB.2.2.");
     }
 
     // --- Add the 4 certificate/CSR File objects (phase 4) -------------------

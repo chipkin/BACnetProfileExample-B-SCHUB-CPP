@@ -7,6 +7,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Open work is tracked in
 [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues).
 
+## [Unreleased]
+
+### Added
+
+- `--sc-accept-device-without-hello` (config: `sc-accept-device-without-hello`),
+  off by default: the hub accepts a device whose Connect-Request omits the
+  Hello destination option, such as YABE (issue #40). Uses the CAS BACnet
+  Stack's new compatibility flag 0x02 (cas-bacnet-stack#3097); it combines with
+  `--sc-accept-hub-without-hello` (0x01). The hub logs a warning at start-up
+  while it is on.
+
 ## [1.3.0] - 2026-09-26
 
 ### Added

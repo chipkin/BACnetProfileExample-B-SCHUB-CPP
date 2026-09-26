@@ -308,6 +308,7 @@ BACnetExampleBSCHUB [options]
 | `--sc-rate-limit <n>` | `10` | Maximum new BACnet/SC connection attempts per second from any one source address (0 = no limit). Excess attempts are refused before the TLS handshake. |
 | `--sc-rate-limit-total <n>` | `50` | Maximum new BACnet/SC connection attempts per second for the whole listener (0 = no limit). |
 | `--sc-accept-hub-without-hello` | off | Compatibility: let `--sc-hub-uri` connect to a hub that omits the Hello option. See [BACnet/SC compatibility](#bacnetsc-compatibility). |
+| `--sc-accept-device-without-hello` | off | Compatibility: accept a device whose Connect-Request omits the Hello option, such as YABE. See [BACnet/SC compatibility](#bacnetsc-compatibility). |
 | `--http-port <n>` | `8080` | Status page and HTTP endpoints. |
 | `--http-bind <addr>` | `127.0.0.1` | Interface for the HTTP listener. See [Security](#9-security) before changing it. |
 | `--http-tls` | off | Serve the HTTP endpoints over HTTPS. |
@@ -330,7 +331,8 @@ BACnetExampleBSCHUB [options]
 `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`,
 `http-upload-token`, `http-port`, `http-bind`, `http-tls`, `http-tls-cert`,
 `http-tls-key`, `sc-max-hub-connections`, `sc-rate-limit`,
-`sc-rate-limit-total` and `sc-accept-hub-without-hello`. On/off keys take
+`sc-rate-limit-total`, `sc-accept-hub-without-hello` and
+`sc-accept-device-without-hello`. On/off keys take
 `true`/`false` (or `on`/`off`, `yes`/`no`, `1`/`0`). A command-line option
 always wins over the config file. An unknown key or bad value is logged and
 skipped.
@@ -384,9 +386,15 @@ Hello and treats the other hub as having no optional capabilities. Turn it on
 only for a hub that needs it; the hub logs a warning at start-up while it is
 on.
 
-It does **not** change what this hub accepts from devices. A device that
-connects to this hub with a Connect-Request without Hello (some YABE versions
-do) is still refused: the CAS BACnet Stack has no setting for that yet.
+`--sc-accept-device-without-hello` (config: `sc-accept-device-without-hello =
+true`) does the same for **devices** connecting to this hub: it accepts a
+Connect-Request without Hello, which YABE sends, and records the device as
+having no optional capabilities. Without it, such a device is refused and the
+hub logs `Connect-Request refused by the hub: "Connect messages require the
+Hello destination option"`. Turn it on only while a device like that needs to
+connect; the hub logs a warning at start-up while it is on.
+
+The two settings are independent; either, both or neither can be on.
 
 ### Connection limit
 

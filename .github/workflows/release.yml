@@ -347,6 +347,25 @@ jobs:
           grep "Connect-Request refused by the hub" sc-smoke.log
           grep -q 'Connect-Request refused by the hub: "' sc-smoke.log || { echo "FAIL: no reason in the refusal log line"; exit 1; }
 
+      # With sc-accept-device-without-hello (config file, stack flag 0x02) the same
+      # no-Hello Connect-Request - what YABE sends - must be accepted (issue #40).
+      - name: Connect-Request without Hello accepted with sc-accept-device-without-hello
+        shell: bash
+        run: |
+          printf 'sc-accept-device-without-hello = true\n' > ci-nohello.conf
+          "${{ matrix.exe }}" --config ci-nohello.conf --port 47835 --sc-port 47836 --http-port 18085 --sc-cert-dir certs > ci-nohello.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" ci-nohello.log && break
+            sleep 0.2
+          done
+          rc=0
+          python tests/sc/hub_listener_test.py --port 47836 --cert-dir certs --expect-no-hello-accepted || rc=1
+          grep -q "sc-accept-device-without-hello" ci-nohello.log || { echo "FAIL: no compatibility warning at start-up"; rc=1; }
+          kill $pid 2>/dev/null || true
+          [ $rc = 0 ] || cat ci-nohello.log
+          exit $rc
+
       - name: BACnet/SC File objects test (V6)
         run: python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47822 --cert-dir certs
 

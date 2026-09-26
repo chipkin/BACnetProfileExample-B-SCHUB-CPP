@@ -290,6 +290,10 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
             if (ParseConfigBool(key, value, &outConfig->scAcceptHubWithoutHello)) {
                 outConfig->hasScAcceptHubWithoutHello = true;
             }
+        } else if (key == "sc-accept-device-without-hello") {
+            if (ParseConfigBool(key, value, &outConfig->scAcceptDeviceWithoutHello)) {
+                outConfig->hasScAcceptDeviceWithoutHello = true;
+            }
         } else {
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                                   "config file %s:%d: ignoring unrecognised key \"%s\".",

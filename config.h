@@ -152,6 +152,11 @@ struct ExampleConfig {
     // main.cpp's g_scAcceptHubWithoutHello.
     bool hasScAcceptHubWithoutHello = false;
     bool scAcceptHubWithoutHello = false;
+
+    // sc-accept-device-without-hello: true/false. See main.cpp's
+    // g_scAcceptDeviceWithoutHello.
+    bool hasScAcceptDeviceWithoutHello = false;
+    bool scAcceptDeviceWithoutHello = false;
 };
 
 // Parses "--config <path>" out of argv (same "take the next argument
@@ -165,7 +170,7 @@ std::string ParseConfigPathArg(int argc, char** argv);
 // "key=value" with no spaces is also accepted). Recognised keys: device-id,
 // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, dcc-password,
 // http-port, http-bind, sc-max-hub-connections, sc-rate-limit, sc-rate-limit-total,
-// sc-accept-hub-without-hello, http-upload-token, http-tls, http-tls-cert, http-tls-key,
+// sc-accept-hub-without-hello, sc-accept-device-without-hello, http-upload-token, http-tls, http-tls-cert, http-tls-key,
 // bacnet-ip, device-name, ip-network-number, sc-network-number, log-file,
 // log-max-size-mb, log-max-files.
 // An unrecognised key or an

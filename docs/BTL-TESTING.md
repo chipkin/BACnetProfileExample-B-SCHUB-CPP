@@ -66,7 +66,8 @@ These are known and documented; record how the test plan treats each one:
   nothing written (cas-bacnet-stack#2866,
   [#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
 - A device's Connect-Request without the Hello option is refused (strict
-  AB.2.2); `--sc-accept-hub-without-hello` only relaxes the connector.
+  AB.2.2) unless `--sc-accept-device-without-hello` is on; test with both
+  compatibility settings off.
 - At most 4 BACnet/SC connections (an evaluation limit of this example).
 
 ## Results
