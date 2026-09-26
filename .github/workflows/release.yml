@@ -27,11 +27,21 @@ on:
 
 permissions:
   contents: write
+  # SC-TRANSPORT:BEGIN - Windows code signing: azure/login uses GitHub OIDC, which needs
+  # an ID token. Only the tag build of the Windows leg requests one (see "Code signing").
+  id-token: write
+  # SC-TRANSPORT:END
 
 jobs:
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # SC-TRANSPORT:BEGIN - code signing. The Windows leg of a vX.Y.Z tag build runs in the
+    # "release" environment, which the Azure federated credential trusts (subject
+    # repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release). Every other
+    # run (PRs, Linux) gets no environment and never signs.
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') && matrix.os == 'windows-2022') && 'release' || '' }}
+    # SC-TRANSPORT:END
     strategy:
       fail-fast: false
       matrix:
@@ -114,6 +124,81 @@ jobs:
 
       - name: Build
         run: cmake --build build --config Release
+      # SC-TRANSPORT:BEGIN - Code signing (Windows, tag builds only). Same pattern as
+      # chipkin-modbus-explorer: Azure Artifact Signing through GitHub OIDC, no certificate
+      # or password stored in GitHub. Signs the executable before the smoke test and
+      # metrics, so the published binary, its metrics and its checksum are all the signed
+      # one. A tag build fails here if signing isn't configured - no unsigned releases.
+      - name: Azure login (OIDC)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Validate signing configuration inputs exist
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AS_ENDPOINT: ${{ vars.AS_ENDPOINT }}
+          AS_ACCOUNT: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
+          AS_PROFILE: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AS_ENDPOINT)) { throw "Missing repo variable AS_ENDPOINT" }
+          if ([string]::IsNullOrWhiteSpace($env:AS_ACCOUNT)) { throw "Missing repo variable AS_SIGNING_ACCOUNT_NAME" }
+          if ([string]::IsNullOrWhiteSpace($env:AS_PROFILE)) { throw "Missing repo variable AS_CERTIFICATE_PROFILE_NAME" }
+          Write-Host "Signing endpoint: $env:AS_ENDPOINT"
+          Write-Host "Signing account:  $env:AS_ACCOUNT"
+          Write-Host "Cert profile:     $env:AS_PROFILE"
+
+      - name: Sign executable with Azure Artifact Signing
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AS_ENDPOINT }}
+          signing-account-name: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
+          files: |
+            ${{ github.workspace }}\${{ matrix.exe }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signature
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXE_PATH: ${{ github.workspace }}\${{ matrix.exe }}
+        run: |
+          if (-not (Test-Path -LiteralPath $env:EXE_PATH)) { throw "Executable does not exist: $env:EXE_PATH" }
+
+          $searchRoots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\bin",
+            "${env:ProgramFiles(x86)}\Windows Kits\11\bin"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
+          $signtool = $null
+          foreach ($root in $searchRoots) {
+            $candidate = Get-ChildItem -Path $root -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if ($candidate) {
+              $signtool = $candidate.FullName
+              break
+            }
+          }
+
+          if (-not $signtool) {
+            throw "signtool.exe not found under Windows Kits SDK paths."
+          }
+
+          Write-Host "Using signtool: $signtool"
+          & $signtool verify /pa /v "$env:EXE_PATH"
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE)" }
+      # SC-TRANSPORT:END
 
       - name: Smoke test + metrics (starts, binds, stays up; measures time to 'ready')
         shell: bash
@@ -284,6 +369,15 @@ jobs:
             fi
           done
           ls -l release
+      # SC-TRANSPORT:BEGIN - SHA-256 checksums of every release asset, so a download can be
+      # checked (sha256sum -c SHA256SUMS.txt, or Get-FileHash on Windows).
+      - name: Checksums
+        shell: bash
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      # SC-TRANSPORT:END
       - uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}

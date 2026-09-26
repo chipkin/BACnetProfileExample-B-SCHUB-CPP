@@ -224,6 +224,10 @@ There are no unit tests; verification is behavioural:
 Bump `APP_VERSION` in `main.cpp` (and the version in README.md and
 docs/PICS.md), add an entry to [CHANGELOG.md](CHANGELOG.md), then tag
 `vX.Y.Z`. The GitHub Actions workflow builds and publishes the release.
+The Windows executable is signed with Azure Artifact Signing on tag builds
+only, and the release gets `SHA256SUMS.txt`; see
+[docs/code-signing.md](docs/code-signing.md). A tag build fails if signing
+isn't configured - don't work around that by skipping the signing steps.
 
 ## License
 

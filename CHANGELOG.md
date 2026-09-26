@@ -24,6 +24,9 @@ Open work is tracked in
   reports connection and traffic counters.
 - Every BACnet object has a Description saying what it is for.
 - PICS as a PDF (`docs/PICS.pdf`), included in the release packages.
+- The Windows executable is code-signed, and each release includes
+  `SHA256SUMS.txt`
+  ([#34](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/34)).
 
 ### Changed
 
