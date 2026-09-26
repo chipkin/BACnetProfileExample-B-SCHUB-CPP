@@ -77,7 +77,7 @@ namespace CASSc {
 // PEM file paths for one TLS identity: this device's own operational
 // certificate + private key, plus the CA bundle used to validate the peer.
 // The listener requires all three (mutual TLS - AB requires a conformant SC
-// node to present a client certificate); see scripts/generate-test-certs.cmake
+// node to present a client certificate); see BACnetExampleBSCHUB --generate-certs
 // for how a lab set of these is produced.
 struct ScTlsFiles {
     std::string caCertPath;    // ca.crt - validates the PEER's certificate

@@ -59,7 +59,7 @@ const std::size_t kMaxIngressBytes = 1600;
 // A first fix (this same commit's history) only refused to retry for ONE
 // specific, provable failure cause - a confirmed cert/key mismatch, detected
 // via LogCertificateDiagnostics()'s own X509_check_private_key() check -
-// on the theory that the reproduced segfault (TODO.md item 15) was caused by
+// on the theory that the reproduced segfault (issue #13) was caused by
 // calling lws_create_context() a second time too QUICKLY (the stack's own
 // per-Tick retry contract calls StartListening()/Connect() again roughly
 // every 30-40ms when failing). A follow-up code review correctly pointed out
@@ -81,7 +81,7 @@ const std::size_t kMaxIngressBytes = 1600;
 // after a partial/failed prior initialisation is a well-known source of
 // corruption in libraries that expect global init to run exactly once per
 // process - consistent with what was observed, though not confirmed with a
-// debugger (see TODO.md item 15's own honest caveat about the true root
+// debugger (see issue #13's own honest caveat about the true root
 // cause remaining unconfirmed).
 //
 // Given that, a permanent latch is the only fix actually supported by what
@@ -89,7 +89,7 @@ const std::size_t kMaxIngressBytes = 1600;
 // briefly held by another process at startup) no longer self-recovers -
 // this process must be restarted once lws_create_context has failed once,
 // for either role. That is a real regression in retry robustness, accepted
-// deliberately in exchange for not crashing - see TODO.md item 15 and
+// deliberately in exchange for not crashing - see issue #13 and
 // CHANGELOG.md for this tradeoff stated plainly, not buried in a comment
 // only a maintainer reading this file would find.
 
@@ -405,7 +405,7 @@ void LogOneCertificate(const std::string& label, X509* cert) {
 // is broken - both files parsed fine as PEM, and X509_check_private_key()
 // definitively says they don't match - which the caller (StartListening()/
 // Connect()) now treats as fatal, refusing to call lws_create_context() at
-// all (TODO.md item 15): repeatedly calling lws_create_context with a
+// all (issue #13): repeatedly calling lws_create_context with a
 // mismatched cert/key across this class's own retry loop (the stack retries
 // StartListening()/Connect() every Tick per its own contract - see the
 // header comment on each) was found, via direct reproduction, to eventually
@@ -606,7 +606,7 @@ ScTransport::~ScTransport() {
 // such context alive. Confirmed with a stand-alone probe against this
 // project's vcpkg libwebsockets + OpenSSL 3: after lws_context_destroy(),
 // PEM_read_bio_X509 fails, and the next lws_create_context() crashes with an
-// access violation. That is the root cause of TODO.md item 15's "retrying
+// access violation. That is the root cause of issue #13's "retrying
 // lws_create_context crashes", and it broke any listener restart - the stack
 // stopping and restarting the SC port, or a certificate reload
 // (ReloadCredentials()).
@@ -729,7 +729,7 @@ bool ScTransport::StartListening(const std::string& uri) {
     // above ARE readable (this diagnoses a file that exists but is WRONG -
     // expired, mismatched key, unparseable - not a replacement for the
     // missing-file check above). A confirmed cert/key mismatch is fatal here
-    // (TODO.md item 15) - see LogCertificateDiagnostics's own comment for why
+    // (issue #13) - see LogCertificateDiagnostics's own comment for why
     // this refuses to reach lws_create_context at all in that one case,
     // rather than letting the stack's own per-Tick retry call this again
     // with the same known-bad pair.
@@ -737,7 +737,7 @@ bool ScTransport::StartListening(const std::string& uri) {
         LogListenFailureOnce(
             "refusing to start listening on " + uri + ": certificate/private key mismatch (see the "
             "\"DOES NOT MATCH\" line above) - repeatedly retrying lws_create_context with a known-bad "
-            "cert/key pair was found to eventually crash this process (TODO.md item 15). Fix the cert/key "
+            "cert/key pair was found to eventually crash this process (issue #13). Fix the cert/key "
             "pair under --sc-cert-dir and restart.");
         return false;
     }
@@ -774,8 +774,7 @@ bool ScTransport::StartListening(const std::string& uri) {
     // binary's own log. There is no general fix for an ARBITRARY unrecognised
     // subprotocol name without bypassing lws's own WS-role upgrade handling
     // entirely (a much larger change than this issue calls for) - see
-    // TODO.md's own entry for this, added alongside this fix rather than
-    // silently leaving the gap undocumented.
+    // issue #27.
     //
     // What IS fixable, and what this fix actually does: "dc.bsc.bacnet.org"
     // (135-2020 AB.7.1's direct-connect subprotocol) is not an arbitrary
@@ -832,8 +831,8 @@ bool ScTransport::StartListening(const std::string& uri) {
             m_loggedListenCreateContextRefusal = true;
             fprintf(stderr,
                     "BACnet/SC: refusing to retry lws_create_context for %s - it already failed once "
-                    "this run, and retrying it was found to eventually crash this process (TODO.md "
-                    "item 15). Restart the process to try again.\n",
+                    "this run, and retrying it was found to eventually crash this process (issue #13). "
+                    "Restart the process to try again.\n",
                     uri.c_str());
         }
         return false;
@@ -961,7 +960,7 @@ bool ScTransport::Connect(const std::string& uri) {
     // connector presents the SAME identity cert (this device has one identity
     // regardless of role - see the class header comment), so it is worth
     // diagnosing here too, not only for the listener. Same fatal-on-confirmed-
-    // mismatch handling as StartListening() (TODO.md item 15) - the stack's
+    // mismatch handling as StartListening() (issue #13) - the stack's
     // own retry timer calls Connect() again on failure, so this guards the
     // same repeated-lws_create_context-with-a-known-bad-pair crash on the
     // connector side too.
@@ -969,7 +968,7 @@ bool ScTransport::Connect(const std::string& uri) {
         fprintf(stderr,
                 "BACnet/SC: refusing to Connect(\"%s\"): certificate/private key mismatch (see the "
                 "\"DOES NOT MATCH\" line above) - repeatedly retrying lws_create_context with a known-bad "
-                "cert/key pair was found to eventually crash this process (TODO.md item 15). Fix the "
+                "cert/key pair was found to eventually crash this process (issue #13). Fix the "
                 "cert/key pair under --sc-cert-dir.\n",
                 uri.c_str());
         return false;
@@ -1001,7 +1000,7 @@ bool ScTransport::Connect(const std::string& uri) {
             fprintf(stderr,
                     "BACnet/SC: refusing to retry lws_create_context for Connect(\"%s\") - it already "
                     "failed once this run, and retrying it was found to eventually crash this process "
-                    "(TODO.md item 15). Restart the process to try again.\n",
+                    "(issue #13). Restart the process to try again.\n",
                     uri.c_str());
         }
         return false;
@@ -1311,7 +1310,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             // once the stack completes its own Connect-Request/Accept
             // exchange over this socket (ordinary RX data, handled below,
             // processed by the stack - not visible to this transport) - see
-            // ScStatusEvent's header comment and TODO.md for this documented
+            // ScStatusEvent's header comment and issue #21 for this documented
             // boundary. CASExampleHelper::Log already prefixes every line
             // with a UTC timestamp (common/CASExampleLog.cpp), which is the
             // "<UTC timestamp>" this audit line needs - not duplicated here.

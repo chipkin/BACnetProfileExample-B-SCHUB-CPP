@@ -69,10 +69,14 @@ namespace CASSc {
 // -> filename mapping (ScCertFileRelativePath) - single source of truth.
 using CertSlotResolver = std::function<bool(const std::string& slot, std::string* outRelativeFilename)>;
 
-// Supplies the JSON body for GET /health and GET /metrics - the SAME data
-// (uptime, connection counts, RX/TX counters) the 'm' keypress prints, built
-// by the same function in main.cpp so the two can never drift apart.
-using HealthJsonBuilder = std::function<std::string()>;
+// GET /health - "is the hub working?". Returns the JSON body and sets
+// *healthy; the server answers 200 when healthy, 503 when not, so a load
+// balancer or uptime monitor can key off the status code alone.
+using HealthJsonBuilder = std::function<std::string(bool* healthy)>;
+
+// GET /metrics - "how much is it doing?": uptime, connection and traffic
+// counters (the same numbers the 'm' keypress prints). Always 200.
+using MetricsJsonBuilder = std::function<std::string()>;
 
 // Supplies the HTML for GET / - a human-readable status page (version numbers
 // plus the same health/metrics data as GET /health and GET /metrics), built in
@@ -92,6 +96,7 @@ struct HttpServerConfig {
                                     // are unaffected either way.
     CertSlotResolver resolveCertSlot;
     HealthJsonBuilder buildHealthJson;
+    MetricsJsonBuilder buildMetricsJson;
     StatusPageBuilder buildStatusPage;
 };
 
@@ -111,7 +116,7 @@ public:
     // it bound to and what that exposes - once per Start() call, not just
     // once ever, so an operator scanning a log cannot miss it even if they
     // start skimming partway through. See README.md "Health/metrics HTTP
-    // endpoint" and TODO.md "Genuinely open items" for the fuller risk
+    // endpoint" and issues #22/#23 for the fuller risk
     // reasoning (still no TLS, still only a bearer-token check on the
     // upload endpoint, not a real auth scheme) that this setting does NOT
     // fix - it only removes the loopback-only guarantee, which was masking

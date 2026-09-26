@@ -55,11 +55,9 @@ this example at least once.
 - **Project:** <https://www.openssl.org/> / <https://github.com/openssl/openssl>
 - **Licence:** Apache License 2.0
 - **Used for:** TLS 1.3 and X.509 certificate handling throughout
-  `sc_transport/ScTransport` (both roles), and by
-  `scripts/generate-test-certs.cmake` (which shells out to the `openssl` CLI,
-  found on `PATH`, under `build/vcpkg_installed/*/tools/openssl`, or a
-  Git-for-Windows install, in that order) to generate the lab-only test
-  certificates under `certs/`.
+  `sc_transport/ScTransport` (both roles), certificate validation for
+  certificates written over BACnet (`cert_store.cpp`), and generating lab
+  certificates (`cert_tool.cpp`, `--generate-certs`).
 - **Licence text:** obtained via vcpkg
   (`build/vcpkg_installed/<triplet>/share/openssl/copyright` after a build),
   or read directly from <https://www.openssl.org/source/license.html> /
@@ -72,6 +70,6 @@ this example at least once.
 
 Not a third-party open-source dependency: it is a separate, commercially
 licensed Chipkin product, referenced as the private git submodule
-`submodules/cas-bacnet-stack`. See [README.md](README.md#requires-the-cas-bacnet-stack-licensed-product)
+`submodules/cas-bacnet-stack`. See [README.md](README.md#licensing)
 for how to obtain a licence. It is not covered by this notice, and its own
 licence terms are not CC0, MIT, or Apache-2.0.

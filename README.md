@@ -1,949 +1,431 @@
-# BACnet B-SCHUB (BACnet/SC Hub) - C++ example
+# BACnet/SC Hub (B-SCHUB) - C++ example
 
-A minimal, copy-paste-friendly example showing how to implement the BACnet
-**B-SCHUB (BACnet Secure Connect Hub)** device profile in C++ using the
+A BACnet Secure Connect (BACnet/SC) hub built on the
 [CAS BACnet Stack](https://store.chipkin.com/services/stacks/bacnet-stack).
-It listens on **BACnet/IP (UDP 47808)**, answers **ReadProperty**, responds to
-**DeviceCommunicationControl**, is discoverable via **Who-Is / I-Am**, and
-configures a **BACnet/SC hub function** Network Port - see
-[BACnet/SC support](#bacnetsc-support-read-this-first) below for exactly what
-that last part does and does not do in this build.
+BACnet/SC devices connect to it over TLS 1.3 WebSockets and it relays their
+BACnet traffic, the way a BACnet/IP broadcast domain does for UDP devices. It
+also keeps a plain BACnet/IP port open, so you can find and manage it with
+any BACnet/IP tool.
 
-**[Download a prebuilt binary](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases)**
-(Windows and Linux x64) - or build it yourself, see [Build](#build) below.
+It implements the **B-SCHUB** device profile (ANSI/ASHRAE 135 Annex L) and
+is meant both as a working hub and as a starting point for your own product.
 
-- **[TUTORIAL.md](TUTORIAL.md)** - how to extend this example (including what
-  a real BACnet/SC transport needs) and how to review it for conformance.
-  Read it when you start turning this into your own device.
-- **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
-  Statement: every object, every property, and who answers it.
+- **[Download a prebuilt binary](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases)**
+  (Windows and Linux x64), or [build it yourself](#build).
+- **[docs/PICS.pdf](docs/PICS.pdf)** - the BACnet Protocol Implementation
+  Conformance Statement (also as [Markdown](docs/PICS.md)).
+- **[TUTORIAL.md](TUTORIAL.md)** - how the code works and how to adapt it.
 
-> **Versions:** this document describes **example v1.1.21**, built and verified
-> against **CAS BACnet Stack 6.0.23** (`issues/runbook` @ `1fbf75d5`), at
-> **Protocol_Revision 24**, with the vendored `common/` helper at **v3.0.0**.
-> Running the example prints all three - if what it prints disagrees with this
-> line, trust the program and check `CHANGELOG.md`. (This line is manually
-> maintained and has drifted from the real version before - see `CHANGELOG.md`
-> for the authoritative, per-release record if in doubt.)
+This manual describes **version 1.2.0**. `BACnetExampleBSCHUB --version`
+prints the version you are running, with the CAS BACnet Stack and `common/`
+helper versions.
 
-## BACnet/SC support: read this first
+## Contents
 
-This example is canonical for **F-SC**. **Both the BACnet/SC protocol and the
-WebSocket/TLS transport underneath it are real and verified against real
-peers** - a real BACnet/SC node connects to this hub, mutually authenticates
-over TLS 1.3, and is discovered/read over BACnet/SC; this example can, in
-turn, dial out to (and be discovered/relayed by) a real BACnet/SC hub. See
-`TODO.md` for the genuine, documented limitations that remain (certificate
-validation callbacks, hostname checking, CRLs - none of them bugs in this
-example; see below).
+- [Quick start](#quick-start)
+- [What the hub does](#what-the-hub-does)
+- [The BACnet device](#the-bacnet-device)
+- [Certificates](#certificates)
+- [Running the hub](#running-the-hub)
+- [Connecting devices](#connecting-devices)
+- [Managing certificates over BACnet](#managing-certificates-over-bacnet)
+- [Status page and HTTP endpoints](#status-page-and-http-endpoints)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [Build](#build)
+- [Testing](#testing)
+- [Licensing](#licensing)
 
-**Architecture:** the CAS BACnet Stack owns the BACnet/SC *protocol* - the
-Hello handshake, the hub/node/direct-connect connection state machines, BVLC
-framing, certificate-object bookkeeping, and every SC-related Network Port
-property. It does **not** own the transport. Verbatim, from the doc comment
-on `BACnetStack_RegisterCallbackInitiateWebsocket` in `CASBACnetStackDLL.h`:
+## Quick start
 
-> "The stack implements no WebSocket or TLS itself."
+```bash
+# 1. Make a lab certificate set: a CA, the hub's certificate, and 3 device
+#    certificates (clients/client-01 .. client-03).
+BACnetExampleBSCHUB --generate-certs
 
-The stack asks the **host application** to actually open, accept, and close raw
-WebSocket(+TLS) connections through four callbacks
-(`RegisterCallbackInitiateWebsocket`, `RegisterCallbackDisconnectWebsocket`,
-`RegisterCallbackSCStartListening`, `RegisterCallbackSCStopListening`) and
-expects real connection status reported back through
-`BACnetStack_SetBACnetSCWebSocketStatus`; certificate validation and CSR
-generation are likewise host callbacks. This example supplies all of that:
-`sc_transport/` (below) for the WebSocket/TLS transport, and 4 read-only File
-objects (see the device tree below) for the certificate/CSR content.
-
-**What this example implements (both roles):**
-
-- `BACnetStack_SetBACnetSCUuid` - the required device-wide SC UUID.
-- A second Network Port object (2, "BACnet SC", `Network_Type = secureConnect
-  (11)`) representing the BACnet/SC data link.
-- `BACnetStack_AddBACnetSCAcceptUri` + `BACnetStack_SetBACnetSCHubFunctionConfig`
-  - configures and **enables** the NM-SCH-B hub function with a `wss://` accept
-  URI and a connection limit.
-- `sc_transport/ScTransport` - a libwebsockets + OpenSSL (via vcpkg) transport:
-  mutual TLS 1.3 only, subprotocol `hub.bsc.bacnet.org` (135-2024 AB.7.1),
-  binary WebSocket framing, the 1497-byte ingress ceiling enforced, connection
-  status queued and only ever reported to the stack from the main loop (never
-  from inside an lws callback - see the class's header comment for why).
-  Implements **both** roles:
-  - **Listener** (hub-function accept role) - `StartListening()`/
-    `StopListening()`. Verified with `tests/sc/hub_listener_test.py` (TLS 1.3
-    + subprotocol negotiation, all required negative cases) and with a real
-    peer (`BACnetSCCli.exe`, `Role=node`) completing Who-Is/I-Am/ReadProperty
-    discovery of this device over BACnet/SC.
-  - **Connector** (hub/node initiate role) - `Connect()`/`Disconnect()`. OFF
-    by default (`--sc-hub-uri` turns it on - see [Command-line
-    options](#command-line-options)); this hub-only example does not need one
-    to answer a node's own requests (the hub function delivers locally). When
-    enabled, verified against `tests/sc/fake_hub_server.py` and against a real
-    hub (`BACnetSCCli.exe`, `Role=hub`), reaching hub-connector state
-    `ConnectedPrimary`.
-- `sc_transport/ScTransportRouter` - dispatches the stack's
-  `ReceiveMessageForPort`/`SendMessageForPort` callbacks between BACnet/IP
-  (Network Port 1) and BACnet/SC (Network Port 2, via `ScTransport`),
-  alternating which datalink is polled first each tick so neither one can
-  starve the other while both are busy.
-- `cert_tool.{h,cpp}` - the `--generate-certs` / `--add-client-certs`
-  certificate generator (OpenSSL, already linked for the SC transport).
-- `scripts/generate-test-certs.cmake` - generates a throwaway lab CA + hub +
-  node certificate set under `certs/` (gitignored; **lab testing only** - see
-  [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real) for
-  what a production certificate story needs).
-- 4 File objects (`Operational Certificate`/`Certificate Signing Request`/`Issuer Certificate Slot 1`/`Issuer Certificate Slot 2`) serving the
-  hub's operational certificate, CSR, and issuer certificates (×2 slots) over
-  AtomicReadFile - **never the private key**, which has no File object at
-  all. The operational and issuer certificates can also be **replaced over
-  BACnet** (clause 19.8.3) - see [Certificate management over
-  BACnet](#certificate-management-over-bacnet). Verified byte-for-byte over BACnet/IP against `certs/operational-certificate.pem`, with the
-  private key confirmed unreachable through any File object instance.
-
-**Known, documented limitations (not bugs in this example) - see
-[`TODO.md`](TODO.md) for the full list:** certificate validation and CSR
-generation are registered callbacks with **zero call sites** in this pinned
-stack build (so they do nothing - this device's actual, and only, certificate
-policy is CA-chain validation performed by OpenSSL/libwebsockets at TLS
-handshake time); the connector skips server hostname checking (SC certificates
-identify devices, not DNS hosts - the CA chain is still verified); no CRL
-support; and the stack's SC ingress path is capped at 1497 bytes, one octet
-short of Annex AB's 1600-octet minimum BVLC size a conformant hub should be
-able to relay.
-
-**The BACnet/IP Network Port (1, "BACnet IP") stays fully active** throughout,
-so this example remains discoverable and testable over plain BACnet/IP
-regardless of BACnet/SC, including while BACnet/SC peers are connected - see
-[Verify](#verify) below.
-
-## What is the B-SCHUB (BACnet/SC Hub) profile?
-
-**B-SCHUB (BACnet Secure Connect Hub)**, defined in Annex L of ANSI/ASHRAE 135,
-is a device that operates a **BACnet/SC hub function**: it accepts
-WebSocket/TLS connections from BACnet/SC **nodes** and relays BACnet traffic
-between them, the SC equivalent of a BACnet/IP broadcast domain. BACnet/SC
-(Secure Connect) is the TLS/WebSocket-based BACnet transport added in ASHRAE
-135-2020 Annex AB, designed to run over ordinary IT infrastructure (corporate
-networks, VPNs, the Internet) with standard transport-layer security, unlike
-BACnet/IP's plain UDP.
-
-A B-SCHUB device answers **ReadProperty**, is discoverable, responds to
-**DeviceCommunicationControl**, and operates the hub function above. It does
-not have to support **WriteProperty**, **alarming / event reporting**,
-**scheduling**, or **trending**. This example implements none of them for its
-data objects; the only writes it accepts are the BACnet/SC certificate
-procedures on its certificate File objects (see [Certificate management over
-BACnet](#certificate-management-over-bacnet)).
-
-**But it is still a full BACnet device.** Even a simple profile must present
-the standard object model - a **Device** object, at least one **Network Port**
-object (every device needs one; this device has two - see below), and its
-objects - and each object must expose all of its **required properties**. The
-CAS BACnet Stack generates most of those automatically (Object_Identifier,
-Object_Type, Status_Flags, Object_List, Protocol_*, ...); this example supplies
-the handful that are application-specific. The result is conformant for
-**Protocol_Revision 24** on the BACnet/IP side; see above for the BACnet/SC
-transport gap. [docs/PICS.md](docs/PICS.md) lists every property and who
-answers it.
-
-## DeviceCommunicationControl
-
-`DeviceCommunicationControl` lets a management station tell a device to go quiet -
-useful to silence a misbehaving or noisy device during commissioning - and later
-to resume. The CAS BACnet Stack runs the actual enable/disable state machine and
-the re-enable timer; this example's callback (`DeviceCommunicationControl` in
-`main.cpp`) validates an optional password and logs what was asked. Note
-(Protocol_Revision >= 20): the plain `disable` value is **deprecated** - even if
-the callback accepts it, the stack rejects the request with
-`service-request-denied`; the standard now expects `disable-initiation`.
-
-The example ships with **no password** by default (accepts any request) - set
-one via the `--config` file's `dcc-password` key (see
-[Secrets handling](#secrets-handling)); there is no CLI flag for it.
-
-## The device this example creates
-
-```
-Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Systems)
-    │
-    ├── Analog Input  1       "Bronze"        Present_Value  21.5    (REAL, degrees Celsius; read-only)
-    ├── Binary Input  1       "Emerald"       Present_Value  inactive  (0 = inactive / 1 = active; read-only)
-    ├── Multi-State Input 1   "Hot Pink"      Present_Value  1       (state, 1..3; read-only)
-    ├── Network Port 1        "BACnet IP"     BACnet/IP - active, discoverable (required on every device)
-    ├── Network Port 2        "BACnet SC"   BACnet/SC hub function - CONFIGURED, transport is real (both roles)
-    ├── File 1                "Operational Certificate"         operational certificate (certs/operational-certificate.pem), read-only
-    ├── File 2                "Certificate Signing Request"     certificate signing request (certs/certificate-signing-request.pem), read-only
-    ├── File 3                "Issuer Certificate Slot 1"       issuer certificate slot 1 (certs/issuer-certificate.pem), read-only
-    └── File 4                "Issuer Certificate Slot 2"       issuer certificate slot 2 (certs/issuer-certificate.pem), read-only
+# 2. Start the hub.
+BACnetExampleBSCHUB
 ```
 
-## What this example supports
+3. Open **<http://127.0.0.1:8080/>** in a browser. The status page shows the
+   version, whether the BACnet/SC hub is listening, and live connection counts.
+4. Give each BACnet/SC device one `certs/clients/<label>/` folder. In the
+   Chipkin BACnet Explorer, import that folder's `bacnetsc.config`.
 
-The example implements exactly the capabilities below - and nothing more, which
-is the point of a profile example. These capabilities satisfy the **B-SCHUB
-(BACnet Secure Connect Hub)** profile; because B-SCHUB's BIBBs are a superset of
-the **B-GENERAL** baseline, a conformant B-SCHUB device necessarily satisfies
-**B-GENERAL** too. That is subsumption, not a second claim: this repository
-still claims exactly one profile.
+On Windows the program is `BACnetExampleBSCHUB.exe`. When built from source
+it's under `build/` (Linux/macOS) or `build\Release\` (Windows).
 
-### BIBBs (BACnet Interoperability Building Blocks)
+## What the hub does
 
-| BIBB | Description | Supported |
-|------|-------------|:---------:|
-| DS-RP-B | Data Sharing - ReadProperty - B | ✅ |
-| DS-RPM-B | Data Sharing - ReadPropertyMultiple - B | ✅ |
-| DM-DDB-B | Device Management - Dynamic Device Binding - B | ✅ |
-| DM-DOB-B | Device Management - Dynamic Object Binding - B | ✅ |
-| DM-DCC-B | Device Management - DeviceCommunicationControl - B | ✅ |
-| NM-SCH-B | Network - Secure Connect Hub Function - B | ✅ configured AND transported (both hub-function/listener and connector roles are real - see above) |
+- **BACnet/SC hub function** (BIBB NM-SCH-B) on Network Port 2: listens on
+  `wss://0.0.0.0:47819/` (TLS 1.3, mutual certificate authentication,
+  WebSocket subprotocol `hub.bsc.bacnet.org`) and relays traffic between the
+  connected devices (up to 4 at a time - see [Connection
+  limit](#connection-limit)), including this hub's own BACnet device.
+- **Optional hub connector**: with `--sc-hub-uri`, the hub also connects out
+  to another BACnet/SC hub (with an optional failover hub).
+- **BACnet/IP** on Network Port 1 (UDP 47808), always on: discovery
+  (Who-Is/I-Am, Who-Has/I-Have), ReadProperty, ReadPropertyMultiple and
+  DeviceCommunicationControl.
+- **Certificate management over BACnet**: a client can add an issuer and
+  replace the hub's operational certificate (ANSI/ASHRAE 135 clause 19.8.3).
+- **Status page, health and metrics** over HTTP, for people and for
+  monitoring tools.
+- **Built-in lab certificate generator**, including a ready-to-import
+  connection file for each device.
 
-### Services (executed / B-side)
+### Supported BIBBs
 
-| Service | Notes |
-|---------|-------|
-| ReadProperty | Responds to property reads (DS-RP-B). |
-| ReadPropertyMultiple | Responds to multi-property reads in a single request (DS-RPM-B) - reuses the same per-property callbacks as ReadProperty. |
-| Who-Is / I-Am | Answers Who-Is with I-Am, and broadcasts an I-Am on start-up (DM-DDB-B). |
-| Who-Has / I-Have | Answers Who-Has with I-Have (DM-DOB-B). |
-| DeviceCommunicationControl | Stops/resumes communication, optionally timed/passworded (DM-DCC-B). |
-| BACnet/SC hub function | Protocol/state-machine AND WebSocket/TLS transport both real (NM-SCH-B) - see above. |
-| AtomicReadFile | Serves the 4 certificate/CSR File objects, stream access. |
-| AtomicWriteFile | Writes a new certificate into File 1 (operational) or File 3/4 (issuer slots) - staged until activated. See [Certificate management over BACnet](#certificate-management-over-bacnet). |
-| WriteProperty | Only `File_Size` of Files 1, 3 and 4 (0 empties the file before a new certificate is written). Every other property of every object is read-only. |
-| ReinitializeDevice | `ACTIVATE_CHANGES` and `WARMSTART` apply staged certificate writes (validated first); other states are refused. Uses the `dcc-password` when one is set. |
+| BIBB | Name |
+|---|---|
+| DS-RP-B | Data Sharing - ReadProperty - B |
+| DS-RPM-B | Data Sharing - ReadPropertyMultiple - B |
+| DM-DDB-B | Device Management - Dynamic Device Binding - B |
+| DM-DOB-B | Device Management - Dynamic Object Binding - B |
+| DM-DCC-B | Device Management - DeviceCommunicationControl - B |
+| NM-SCH-B | Network Management - BACnet/SC Hub Function - B |
 
-### Object types
+### Services executed
 
-| Object type | Instance | Name | Access |
-|-------------|:--------:|------|--------|
-| Device | 389022 | Chipkin Example B-SCHUB | - |
-| Analog Input | 1 | Bronze | read-only |
-| Binary Input | 1 | Emerald | read-only |
-| Multi-State Input | 1 | Hot Pink | read-only |
-| Network Port | 1 | BACnet IP | - (BACnet/IP) |
-| Network Port | 2 | BACnet SC | - (BACnet/SC) |
-| File | 1 | Operational Certificate | writable over BACnet (operational certificate) |
-| File | 2 | Certificate Signing Request | read-only (certificate signing request) |
-| File | 3 | Issuer Certificate Slot 1 | writable over BACnet (issuer certificate slot 1) |
-| File | 4 | Issuer Certificate Slot 2 | writable over BACnet (issuer certificate slot 2) |
+| Service | Use |
+|---|---|
+| ReadProperty, ReadPropertyMultiple | Read any property of any object. |
+| Who-Is / I-Am, Who-Has / I-Have | Discovery. The hub also broadcasts I-Am at startup. |
+| DeviceCommunicationControl | Silence or resume the device, optionally with a password. |
+| AtomicReadFile | Read the certificate File objects. |
+| AtomicWriteFile, WriteProperty | Certificate management only: write a certificate into File 1, 3 or 4, and set their `File_Size`. No other property is writable. |
+| ReinitializeDevice | `ACTIVATE_CHANGES` or `WARMSTART` applies written certificates. Other states are refused. |
 
-Every required property of every object, and who answers it, is in
-[docs/PICS.md](docs/PICS.md).
+The [PICS](docs/PICS.pdf) lists every object and property and who answers it.
 
-## Requires the CAS BACnet Stack (licensed product)
+## The BACnet device
 
-This example **builds against the CAS BACnet Stack, which is a commercial Chipkin
-product** - it is not free or open source, and there is no public/trial build.
-The stack is referenced here as the **private** git submodule
-`submodules/cas-bacnet-stack`; you can only fetch and build it once you have a CAS
-BACnet Stack license and access to that repository.
+```
+Device 389022          "Chipkin Example B-SCHUB"       Vendor 389 (Chipkin Automation Systems)
+├── Analog Input 1     "Bronze"                        example sensor value, degrees C
+├── Network Port 1     "BACnet IP"                     BACnet/IP, UDP 47808
+├── Network Port 2     "BACnet SC"                     BACnet/SC hub function (and optional connector)
+├── File 1             "Operational Certificate"       the hub's certificate            (writable)
+├── File 2             "Certificate Signing Request"   CSR for the hub's key            (read-only)
+├── File 3             "Issuer Certificate Slot 1"     trusted CA certificate           (writable)
+└── File 4             "Issuer Certificate Slot 2"     second trusted CA certificate    (writable)
+```
 
-**To get the CAS BACnet Stack (and access to build this example), contact
-Chipkin:** <https://store.chipkin.com/services/stacks/bacnet-stack> or
-sales@chipkin.com.
+Every object has a **Description** saying what it is for. The Device's
+Description links back to this repository.
 
-You do not need a stack licence to *read* this example, or to run a
-[prebuilt release binary](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases).
-The licence is what lets you *build* it - that is the part the stack submodule
-gates.
+The device instance defaults to 389022; change it with `--deviceID` or the
+config file's `device-id`. Analog Input 1 is example data: the up/down arrow
+keys change it while the hub runs.
 
-## What's in this repository
+Both Network Ports report `Network_Number` 0 with `Network_Number_Quality`
+**unknown**, because this device is not configured with a network number
+and isn't a router. The private key is never served by any object.
 
-This is a **self-contained** project. It ships:
+## Certificates
 
-- `main.cpp` - the example device.
-- `config.h`/`config.cpp` - the `--config <path>` file parser (example-local,
-  not `common/` - see [Configuration file](#configuration-file) above).
-- `example.conf` - a checked-in config-file template.
-- `common/` - the shared helper (UDP, callbacks, CLI, keyboard) vendored in.
-- `sc_transport/` - the real BACnet/SC WebSocket+TLS transport (libwebsockets
-  + OpenSSL) and the stack&lt;-&gt;transport glue - see
-  [`sc_transport/README.md`](sc_transport/README.md) for the wire-level
-  contract.
-- `scripts/generate-test-certs.cmake` - generates a throwaway lab CA + hub +
-  node certificate set under `certs/` (gitignored).
-- `tests/sc/` - the BACnet/SC verification scripts (see [Verify -> Over
-  BACnet/SC](#over-bacnetsc-verified-against-a-real-peer) below).
-- `vcpkg.json` - pins the `libwebsockets`/`openssl` dependencies `sc_transport/`
-  needs (see [Prerequisites](#prerequisites) below).
-- `CMakeLists.txt` - the build, the same on Windows, Linux, and macOS.
-- `docs/PICS.md` - the conformance statement.
-- `THIRD-PARTY-NOTICES.md` - licences for the bundled/linked third-party
-  dependencies (libwebsockets, OpenSSL).
-- `submodules/cas-bacnet-stack/` - the **CAS BACnet Stack as a git submodule**
-  (private; requires a license - see above). Its sources are compiled into the
-  executable, so there is no library or DLL to build, ship, or install.
+BACnet/SC runs over TLS with **mutual authentication**: the hub and every
+device present a certificate, and each side accepts the other only if that
+certificate was signed by an issuer (CA) it trusts.
 
-## Prerequisites
+### Lab certificates
 
-- A C++17 compiler (MSVC, GCC, or Clang).
-- CMake >= 3.15.
-- Git (to fetch the stack submodule).
-- **[vcpkg](https://vcpkg.io/)**, with the `VCPKG_ROOT` environment variable
-  set - `sc_transport/`'s BACnet/SC transport depends on `libwebsockets` and
-  `openssl` (via vcpkg's manifest mode, `vcpkg.json`), and CMake needs
-  `VCPKG_ROOT` to find vcpkg's toolchain file automatically (see
-  [Build](#build) below for exactly what that buys you). Visual Studio
-  bundles a vcpkg install and sets `VCPKG_ROOT` for you inside a Developer
-  Command Prompt; on Linux/macOS, or a bare Windows shell, install it
-  yourself: <https://vcpkg.io/en/getting-started>.
+The hub can make a complete lab certificate set itself:
 
-### Windows
+```bash
+BACnetExampleBSCHUB --generate-certs        # CA + hub + 3 device certificates
+BACnetExampleBSCHUB --generate-certs 10     # ... or any number of devices
+```
 
-- **C++ compiler** - install
-  [Visual Studio Community](https://visualstudio.microsoft.com/downloads/)
-  (free) and select the **"Desktop development with C++"** workload (this
-  also gives you a vcpkg install and a Developer Command Prompt with
-  `VCPKG_ROOT` already set).
-- **CMake** - from <https://cmake.org/download/>, or `winget install Kitware.CMake`.
+This writes PEM files to `--sc-cert-dir` (default `./certs`) and exits. The
+file names follow the Network Port properties that carry them (ANSI/ASHRAE
+135 clause 12.56):
 
-### Linux / macOS
+| File | What it is |
+|---|---|
+| `operational-certificate.pem` | The hub's certificate (File 1, Operational_Certificate_File). Its subjectAltName lists localhost, 127.0.0.1, this computer's host name and the hub URI's host. |
+| `private-key.pem` | The hub's private key. **Private.** |
+| `certificate-signing-request.pem` | CSR for the hub's key (File 2, Certificate_Signing_Request_File). |
+| `issuer-certificate.pem` | The lab CA (File 3, Issuer_Certificate_Files). Every device needs a copy. |
+| `issuer-private-key.pem` | The CA's private key, only used to sign more devices. **Private.** Keep it off the network. |
+| `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem` and `bacnetsc.config`. |
+| `certificates.txt` | Every certificate's label, location, serial number, expiry and SHA-256 fingerprint. |
+| `readme.txt` | A walkthrough of the folder, including which files are private. |
 
-- Debian/Ubuntu: `sudo apt install build-essential cmake git ninja-build pkg-config`
-- macOS: `xcode-select --install` and `brew install cmake ninja`
-- vcpkg needs a handful of build tools of its own to compile `openssl`/
-  `libwebsockets` from source (Perl, plus `libssl-dev`/build headers on some
-  distros) - if `vcpkg install` reports a missing tool, install exactly the
-  one it names and re-run the CMake configure step.
+The hub adds two files of its own: `issuer-certificate-2.pem` (File 4, once a
+second issuer is written over BACnet) and `trusted-issuers.pem` (every issuer
+from both slots; this is what TLS trusts).
+
+Device certificates are labeled by folder and by subject Common Name
+(`Chipkin Example B-SCHUB client-01`), so the hub's log shows which device
+connected.
+
+**Adding devices later.** Sign more device certificates with the *existing*
+CA. Numbering continues, and a running hub trusts them straight away:
+
+```bash
+BACnetExampleBSCHUB --add-client-certs 2                    # clients/client-04, client-05
+BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # clients/ahu-01 .. ahu-03
+```
+
+**Starting over.** `--generate-certs` won't replace an existing CA, because
+every certificate already handed out would stop working. Add `--force` to
+delete the whole set, including `clients/`, and make a new one.
+
+The lab profile is ECDSA P-256 with SHA-256; the CA is valid for 10 years and
+device certificates for 825 days. For a production site, use your own CA:
+have it sign the hub's CSR (File 2), and install the result on disk or [over
+BACnet](#managing-certificates-over-bacnet). Folders made by earlier releases
+(`hub.crt`, `hub.key`, `ca.crt`) still work.
+
+## Running the hub
+
+```bash
+BACnetExampleBSCHUB [options]
+```
+
+Typical startup:
+
+```
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.2.0
+CAS BACnet Stack version: 6.0.23.0
+Common helper (common/) version: 3.0.0
+FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
+FYI: Device 389022 ("Chipkin Example B-SCHUB") ready. Vendor ID 389. Press 'h' for help, 'm' for a health/metrics snapshot.
+BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
+```
+
+At startup the hub also checks its certificates and logs the subject, days
+until expiry (a warning under 30 days), whether the private key matches, and
+the subjectAltName entries. Allow UDP 47808 and TCP 47819 through the firewall.
+
+### Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--port <n>` | `47808` | BACnet/IP UDP port. |
+| `--deviceID <n>` | `389022` | BACnet device instance. |
+| `--sc-port <n>` | `47819` | BACnet/SC hub (wss://) port. |
+| `--sc-cert-dir <dir>` | `./certs` | Certificate folder. |
+| `--sc-hub-uri <wss://host:port/>` | off | Also connect out to this BACnet/SC hub. |
+| `--sc-failover-uri <wss://host:port/>` | off | Failover hub for `--sc-hub-uri`. |
+| `--sc-max-hub-connections <n>` | `4` | Maximum BACnet/SC devices connected at once, 1 to 4 (see [Connection limit](#connection-limit)). |
+| `--sc-rate-limit <n>` | `10` | Maximum new connection attempts per second (0 = no limit). Excess attempts are refused before the TLS handshake. |
+| `--http-port <n>` | `8080` | Status page and HTTP endpoints. |
+| `--http-bind <addr>` | `127.0.0.1` | Interface for the HTTP listener. See [Security](#security) before changing it. |
+| `--config <path>` | none | Read settings from a config file (below). |
+| `--generate-certs [n]` | `3` | Make a lab certificate set with `n` device certificates, then exit. |
+| `--add-client-certs [n]` | `1` | Sign `n` more device certificates with the existing CA, then exit. |
+| `--cert-label <prefix>` | `client` | Label for new device certificates. |
+| `--cert-hub-uri <wss://host:port/>` | this computer's IPv4 and `--sc-port` | Hub URI written into each device's `bacnetsc.config` (and the hub certificate's subjectAltName). |
+| `--force` | - | With `--generate-certs`: replace an existing certificate set. |
+| `--help`, `--version` | - | Usage, or version information. |
+
+### Configuration file
+
+`--config <path>` reads `key = value` lines (`#` starts a comment).
+[`example.conf`](example.conf) lists every key with its default:
+`device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`,
+`sc-failover-uri`, `dcc-password`, `http-port`, `http-bind`,
+`sc-max-hub-connections` and `sc-rate-limit`. A command-line option always
+wins over the config file. An unknown key or bad value is logged and skipped.
+
+**`dcc-password` can only be set in the config file**, so it never shows up in
+process listings or shell history. It protects DeviceCommunicationControl,
+ReinitializeDevice and the HTTP certificate upload. Restrict the file's
+permissions (`chmod 600 example.conf`, or on Windows
+`icacls example.conf /inheritance:r /grant:r "%USERNAME%:F"`); the hub warns
+at startup if the file looks readable by other users.
+
+### Connection limit
+
+This example accepts **at most 4 BACnet/SC devices at a time**. It is for
+evaluation and testing, not for production. You can lower the limit with
+`--sc-max-hub-connections` or `sc-max-hub-connections` in the config file, but
+not raise it: asking for more than 4 prints an error and the hub shuts down.
+
+For a production BACnet/SC hub with more connections, contact Chipkin at
+**sales@chipkin.com**.
+
+### Console keys
+
+| Key | Action |
+|---|---|
+| `h` | Help and version. |
+| `m` | Health and metrics snapshot. |
+| up / down | Change Analog Input 1 by 1.1. |
+| `q` | Quit. |
+
+## Connecting devices
+
+For each BACnet/SC device:
+
+1. Give it its own `certs/clients/<label>/` folder. Don't share a folder
+   between devices: the hub couldn't tell them apart.
+2. **Chipkin BACnet Explorer:** import the folder's `bacnetsc.config`. It
+   names the hub URI and the folder's three PEM files, so keep them together.
+3. **Any other BACnet/SC device:** install `operational-certificate.pem` and
+   `private-key.pem` as its operational certificate and key, and
+   `issuer-certificate.pem` as its issuer certificate. Set its primary hub URI
+   to `wss://<hub address>:47819/`.
+
+The hub URI in `bacnetsc.config` is this computer's LAN address unless you
+generated the set with `--cert-hub-uri`. The hub logs every connection and
+disconnection with the device's address, and refused TLS handshakes with the
+reason.
+
+## Managing certificates over BACnet
+
+A BACnet client can change the hub's certificates with the BACnet/SC
+certificate procedures (ANSI/ASHRAE 135 clause 19.8.3), for example from the
+CAS BACnet Explorer's certificate page:
+
+1. **Write** - WriteProperty `File_Size = 0`, then AtomicWriteFile the new PEM
+   certificate: File 1 for the hub's own certificate, File 3 or 4 for an
+   issuer.
+2. **Staged** - reading the File back shows the new certificate and Network
+   Port 2's `Changes_Pending` is TRUE, but nothing is saved yet and the hub
+   keeps using its current certificates.
+3. **Activate** - ReinitializeDevice `ACTIVATE_CHANGES` (or `WARMSTART`). The
+   hub checks the staged certificates first: each must be a PEM certificate,
+   at least one issuer must remain, and the hub certificate must match its
+   private key and chain to an issuer. If they pass, it saves them and
+   restarts BACnet/SC; devices reconnect under the new certificates. If not,
+   it answers `INVALID_CONFIGURATION_DATA` and nothing changes, so a mistake
+   can't lock the hub out. The staged writes stay, so the client can correct
+   them and activate again.
+
+Supported procedures:
+
+- **Add an issuer** - write the new CA into slot 2 (File 4). Devices signed by
+  either CA are then accepted, which lets a site move to a new CA gradually.
+- **Replace the hub certificate** - read the CSR (File 2), have your CA sign
+  it, write the result to File 1, activate.
+
+Not yet supported: key-pair regeneration (`GENERATE_CSR_FILE`, waiting on
+[cas-bacnet-stack#2976](https://github.com/chipkin/cas-bacnet-stack/issues/2976)),
+and discarding staged writes with `DISCARD_CHANGES`
+([#29](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/29)).
+A restart discards staged writes.
+
+If `dcc-password` is set, ReinitializeDevice requires it.
+
+## Status page and HTTP endpoints
+
+The hub serves HTTP on `--http-port` (default 8080), on `127.0.0.1` only by
+default.
+
+| Path | What it returns |
+|---|---|
+| `GET /` | Status page for a browser: versions, device, health, BACnet/SC state, metrics, and links to this project and the CAS BACnet Stack. Refreshes every 5 seconds. |
+| `GET /health` | *Is the hub working?* JSON with `status` `ok` (HTTP 200) or `degraded` (HTTP 503 - the BACnet/SC hub isn't listening, usually because of missing or bad certificates). Point uptime monitors and load balancers here. |
+| `GET /metrics` | *How much is it doing?* JSON counters: uptime, connected devices, connects, disconnects, rate-limit refusals, messages and bytes in and out. |
+| `POST /certs/<slot>` | Upload a certificate file (`operational`, `csr`, `issuer1`, `issuer2`). Needs `Authorization: Bearer <dcc-password>`; disabled when no `dcc-password` is set. |
+
+```
+$ curl -s http://127.0.0.1:8080/health
+{"status":"ok","version":"1.2.0","uptime_seconds":154,"sc_hub_function_listening":true,"sc_hub_connections_current":1,"staged_certificate_changes":false}
+
+$ curl -s http://127.0.0.1:8080/metrics
+{"uptime_seconds":154,"uptime":"2m 34s","sc_hub_connections_current":1,"sc_hub_connections_max":4,"sc_total_connects":3,"sc_total_disconnects":2,"sc_rate_limit_rejections":0,"sc_rx_messages":12,"sc_rx_bytes":456,"sc_tx_messages":12,"sc_tx_bytes":456}
+```
+
+An uploaded certificate is written to disk atomically and used from the next
+BACnet/SC restart. Prefer [managing certificates over
+BACnet](#managing-certificates-over-bacnet), which validates before
+activating.
+
+## Security
+
+- **BACnet/SC** uses TLS 1.3 only, with mutual authentication. A device is
+  accepted if its certificate chains to an issuer in File 3 or 4.
+  Certificate revocation isn't checked
+  ([#15](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/15)):
+  to cut a device off, replace the issuer.
+- **Host names aren't checked** when the hub connects out to another hub.
+  BACnet/SC certificates identify devices, not DNS names; the certificate
+  chain is still verified.
+- **The HTTP listener has no TLS**
+  ([#22](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/22)).
+  It binds to 127.0.0.1 by default. If you need it from another machine, use
+  an SSH tunnel or a TLS reverse proxy rather than `--http-bind`; the hub logs
+  a warning on every start bound off loopback. `/`, `/health` and `/metrics`
+  have no authentication.
+- **Private keys** (`private-key.pem`, `issuer-private-key.pem`) must stay
+  private. Keep the CA's key off the hub in production.
+- **Rate limiting** (`--sc-rate-limit`) is one limit for the whole listener,
+  not per source address
+  ([#20](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/20)).
+  On an untrusted network, add a per-address limit in a firewall.
+
+Open items are tracked as [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues).
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `cannot start listening ... certificate file(s) missing/unreadable` | No certificates in `--sc-cert-dir`. Run `--generate-certs`, or point `--sc-cert-dir` at your certificates. BACnet/IP keeps working. `/health` reports `degraded`. |
+| `SC TLS handshake REJECTED - client certificate failed verification` | The device's certificate isn't signed by an issuer the hub trusts, or has expired. Check it with `openssl verify -CAfile issuer-certificate.pem operational-certificate.pem`. |
+| `private key ... DOES NOT MATCH` at startup | `private-key.pem` and `operational-certificate.pem` are from different sets. |
+| A device can't reach the hub | Check the hub URI in its `bacnetsc.config`, TCP 47819 in the firewall, and whether 4 devices are already connected (the [connection limit](#connection-limit)). |
+| `ERROR: TOO MANY BACnet/SC CONNECTIONS REQUESTED` and the hub exits | `sc-max-hub-connections` is above 4. Set it to 4 or less. See [Connection limit](#connection-limit). |
+| Red `Error:` lines at startup | Normal CAS BACnet Stack debug output (e.g. the hub hearing its own broadcast I-Am). See [TUTORIAL.md](TUTORIAL.md#troubleshooting). |
 
 ## Build
 
-CMake only, and the same two commands on every platform (with `VCPKG_ROOT`
-set - see [Prerequisites](#prerequisites) above):
+You need a CAS BACnet Stack licence to build (see [Licensing](#licensing)).
+
+**Prerequisites:** a C++17 compiler, CMake 3.15+, Git and
+[vcpkg](https://vcpkg.io/) with `VCPKG_ROOT` set (vcpkg supplies OpenSSL and
+libwebsockets).
+
+- Windows: Visual Studio with "Desktop development with C++" (it includes
+  vcpkg; use a Developer Command Prompt) and CMake.
+- Debian/Ubuntu: `sudo apt install build-essential cmake git ninja-build pkg-config`,
+  plus vcpkg.
+- macOS: `xcode-select --install`, `brew install cmake ninja`, plus vcpkg.
 
 ```bash
 git clone --recursive https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP.git
 cd BACnetProfileExample-B-SCHUB-CPP
-
 cmake -B build -S .
 cmake --build build --config Release
 ```
 
-Already cloned without `--recursive`? Run `git submodule update --init --recursive`
-first - the build needs the stack submodule.
+Cloned without `--recursive`? Run `git submodule update --init --recursive`
+first. The first build compiles the CAS BACnet Stack (about 600 files) and,
+the first time on a machine, OpenSSL (10-15 minutes); later builds are
+incremental. After updating the stack submodule, run `cmake -B build` again
+before building. To use a stack outside the submodule:
+`cmake -B build -S . -D CAS_STACK_DIR=/path/to/cas-bacnet-stack`.
 
-> **The first build takes longer than the series norm** - a few minutes to
-> compile the CAS BACnet Stack (~600 source files) into the executable, **plus
-> ~10-15 minutes the very first time vcpkg has to build OpenSSL from source**
-> (`libwebsockets` is quick by comparison). vcpkg caches what it builds, so
-> every build after that first one - even a from-scratch `rm -rf build` - skips
-> straight to the stack compile. Rebuilds after that are incremental and take
-> seconds.
+## Testing
 
-If your CAS BACnet Stack lives somewhere other than the bundled submodule, point
-CMake at it: `cmake -B build -S . -D CAS_STACK_DIR=/path/to/cas-bacnet-stack`.
+`tests/sc/` holds the verification scripts; see its
+[README](tests/sc/README.md). They need Python 3 and
+`pip install -r tests/sc/requirements.txt`.
 
-### Generate lab test certificates
-
-BACnet/SC's accept URIs are `wss://` (TLS) - the hub function needs a
-certificate/key pair before it can actually listen (it still starts up and
-answers BACnet/IP without one; see [Run](#run) below). Generate a throwaway
-lab CA + hub + node certificate set under `certs/` (gitignored - **lab testing
-only**, see [TUTORIAL.md](TUTORIAL.md#implement-the-bacnetsc-transport-for-real)
-for what a production certificate story needs):
-
-The example can generate them itself (no separate `openssl` needed):
-
-```bash
-./build/BACnetExampleBSCHUB --generate-certs        # issuer + hub + 3 client certificate sets
-./build/BACnetExampleBSCHUB --generate-certs 10     # ... or any number of clients
-```
-
-This writes PEM files to `--sc-cert-dir` (default `./certs`) and exits. The
-file names follow the BACnet Network Port properties that carry them
-(ANSI/ASHRAE 135 cl. 12.56):
-
-| File | What it is |
+| Script | Checks |
 |---|---|
-| `operational-certificate.pem` | This hub's certificate, served as **Operational_Certificate_File** (File 1). EKU serverAuth+clientAuth, SAN `localhost`, `127.0.0.1` and this machine's hostname. |
-| `private-key.pem` | The hub certificate's private key. No File object ever serves it. |
-| `certificate-signing-request.pem` | Served as **Certificate_Signing_Request_File** (File 2). |
-| `issuer-certificate.pem` | The lab CA, served as both **Issuer_Certificate_Files** entries (Files 3 and 4). Every connecting device needs it. |
-| `issuer-private-key.pem` | The CA's private key. Only used to sign more clients; keep it private. |
-| `clients/<label>/` | One folder per connecting device, holding its own `operational-certificate.pem`, `private-key.pem`, a copy of `issuer-certificate.pem`, and a `bacnetsc.config` to import into the Chipkin BACnet Explorer (see below). Hand the whole folder to that device. |
-| `certificates.txt` | One line per certificate: label, location, serial, expiry and SHA-256 fingerprint. |
-| `readme.txt` | A walkthrough of the folder: what each file is for (described from ANSI/ASHRAE 135 cl. 12.56 and Annex AB), which files are private, and how to install the client folders on devices. Each `clients/<label>/` folder gets a short `readme.txt` of its own. |
-
-Every client is labeled by its folder (`clients/client-01/`) and in its
-certificate's subject Common Name (`Chipkin Example B-SCHUB client-01`), so
-you can tell which device is which in a TLS capture or the hub's log. To add
-devices later, sign more clients with the **existing** issuer. Numbering
-continues where it left off, and a hub that's already running trusts them
-straight away (same issuer, no restart):
-
-```bash
-./build/BACnetExampleBSCHUB --add-client-certs 2                    # clients/client-04/, clients/client-05/
-./build/BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # clients/ahu-01/ .. clients/ahu-03/
-```
-
-Each client folder's `bacnetsc.config` is the BACnet/SC connection file the
-**Chipkin BACnet Explorer** imports. It sets role `device`, the hub's primary
-URI, the folder's three PEM files (by name, so keep them together) and
-`ValidateHubCertificate` = `true`:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<BACnetSCConfigChannel>
-    <Role>device</Role>
-    <primaryHubURI>wss://192.168.1.10:47819/</primaryHubURI>
-    <failoverHubURI></failoverHubURI>
-    <operationalCertificate>operational-certificate.pem</operationalCertificate>
-    <devicePrivateKeyFile>private-key.pem</devicePrivateKeyFile>
-    <issuerCertificate>issuer-certificate.pem</issuerCertificate>
-    <ValidateHubCertificate>true</ValidateHubCertificate>
-</BACnetSCConfigChannel>
-```
-
-The hub URI defaults to this computer's IPv4 address and `--sc-port`. If the
-hub will run somewhere else, set it when generating:
-`--generate-certs --cert-hub-uri wss://192.168.3.73:47819/` (also works with
-`--add-client-certs`).
-
-`--generate-certs` refuses to replace an existing issuer, because that would
-invalidate every certificate already handed out. Add `--force` to start over
-(it deletes the old set and the `clients/` folder first). All of this is
-**lab testing only**: ECDSA P-256, issuer valid 10 years, device certificates
-825 days.
-
-The older CMake script still works. It writes the older names (`hub.crt`,
-`hub.key`, `hub.csr`, `ca.crt`, `ca.key`, and a `node.crt` client), and the
-hub reads either naming, preferring the BACnet names when both exist:
-
-```bash
-cmake --build build --target test-certs
-# or directly:
-cmake -P scripts/generate-test-certs.cmake
-```
-
-## Run
-
-```bash
-# Linux / macOS
-./build/BACnetExampleBSCHUB
-
-# Windows
-.\build\Release\BACnetExampleBSCHUB.exe
-```
-
-Expected output (with `certs/` already generated - see [Generate lab test
-certificates](#generate-lab-test-certificates) above):
-
-```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.1.21
-CAS BACnet Stack version: 6.0.23.0
-Common helper (common/) version: 3.0.0
-FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
-TX 21 bytes to 192.168.3.255:47808 (broadcast) (Network Port 1)
-FYI: Device 389022 ("Chipkin Example B-SCHUB") ready. Vendor ID 389. Press 'h' for help.
-FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (BACnet SC), accept URI wss://0.0.0.0:47819/. Certificates: ./certs. See README.md "BACnet/SC support" for how to generate lab test certs.
-RX 21 bytes from 192.168.3.64:47808 (Network Port 1)
-BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
-```
-
-Without `certs/`, the last line instead reads (and BACnet/IP keeps working
-exactly the same either way) - naming specifically which file(s) are
-missing/unreadable, not all three regardless of which one actually failed:
-
-```
-BACnet/SC: cannot start listening on wss://0.0.0.0:47819/: certificate file(s) missing/unreadable: key="./certs/private-key.pem". Run: BACnetExampleBSCHUB --generate-certs
-```
-
-When the cert files ARE present and readable, startup also logs a
-self-diagnosis of them - subject/issuer CN, days until expiry (a `Warning` if
-under 30 days or already expired), whether the private key actually matches
-the certificate (the most common real misconfiguration), and any SAN
-entries:
-
-```
-2026-09-22 05:35:34 [INFO] cert diagnostics: operational certificate ("./certs/hub.crt") subject CN="BACnetExampleBSCHUB-hub" issuer CN="BACnet SC Example Test CA" notBefore=(0 day(s) ago) notAfter=(824 day(s) from now)
-2026-09-22 05:35:34 [INFO] cert diagnostics: operational certificate ("./certs/hub.crt") SAN entries: DNS:localhost, IP Address:127.0.0.1, DNS:blackstar
-2026-09-22 05:35:34 [INFO] cert diagnostics: private key "./certs/hub.key" MATCHES the public key in "./certs/hub.crt"
-2026-09-22 05:35:34 [INFO] cert diagnostics: CA certificate ("./certs/ca.crt") subject CN="BACnet SC Example Test CA" issuer CN="BACnet SC Example Test CA" notBefore=(0 day(s) ago) notAfter=(3649 day(s) from now)
-```
-
-This diagnosis also runs before the connector role's `Connect()` (same
-identity cert, same checks), and libwebsockets' own internal logging (e.g.
-`lws_tls_check_cert_lifetime`) now goes through this same
-`CASExampleHelper::Log` facility too - `lws: ...`-prefixed lines carrying
-this app's own UTC timestamp, instead of lws's unformatted stderr default.
-
-The `TX` line is the start-up I-Am the device broadcasts to announce itself. It
-goes to the **local subnet broadcast** address (computed from the Network
-Port's interface), not the global `255.255.255.255`. As clients talk to the
-device you'll see `RX ... bytes from ...` and `TX ... bytes to ...` lines
-showing the traffic - both over BACnet/IP and, once a node connects, over
-BACnet/SC (tagged `SC peer "..."` instead of an IP:port). If `certs/` is
-missing, the listener line instead explains what to run
-(`BACnetExampleBSCHUB --generate-certs`) and BACnet/IP keeps working.
-
-The device listens on UDP **47808** (BACnet/IP). Allow that port through your
-firewall. To use a different port, pass `--port` (see below).
-
-> **A wall of red `Error:` lines at start-up is expected and is not your bug** -
-> it is the stack's own debug logging (the device hearing its own broadcast I-Am,
-> and BACnet/SC datalink bring-up). [TUTORIAL.md](TUTORIAL.md#troubleshooting)
-> explains both.
-
-### Command-line options
-
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `--port <n>` | `47808` | UDP port to listen on (BACnet/IP). |
-| `--deviceID <n>` | `389022` | The device's BACnet instance number (BACnet requires this to be configurable). |
-| `--sc-port <n>` | `47819` | WebSocket/TLS port for the BACnet/SC hub accept URI. |
-| `--sc-cert-dir <dir>` | `./certs` | Directory holding `operational-certificate.pem`, `private-key.pem` and `issuer-certificate.pem` (or the older `hub.crt`/`hub.key`/`ca.crt`) - see [Generate lab test certificates](#generate-lab-test-certificates) above. |
-| `--sc-hub-uri <wss://host:port/path>` | *(none)* | Also run the hub **connector** role: dial out to another hub at this URI. Off by default - this hub-only example needs only the listener role above for NM-SCH-B. |
-| `--sc-failover-uri <wss://host:port/path>` | *(none)* | Optional failover hub URI, used only if `--sc-hub-uri` is also given. |
-| `--sc-max-hub-connections <n>` | `4` | Max simultaneous inbound BACnet/SC peer connections the hub function accepts - enforced by the stack (see [Configuration file](#configuration-file) and `TODO.md`/this option's own doc comment in `main.cpp` for how). |
-| `--sc-rate-limit <n>` | `10` | Max NEW inbound BACnet/SC connection *attempts*/second the listener accepts before rejecting the excess - enforced by this example's transport (`sc_transport/ScTransport`), before the TLS handshake. Distinct from `--sc-max-hub-connections`, which bounds *concurrent* connections, not the rate of new attempts - see [Rate-limiting and the audit trail](#rate-limiting-and-the-audit-trail) below. `0` = no limit. |
-| `--http-port <n>` | `8080` | TCP port for `GET /health`, `GET /metrics` and `POST /certs/<slot>` - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) and [Certificate upload endpoint](#certificate-upload-endpoint) below. |
-| `--http-bind <addr>` | `127.0.0.1` | Interface the HTTP endpoints above bind to. Loopback-only by default; see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) before setting this to anything else - this listener has no TLS and `GET /health`/`GET /metrics` have no authentication at all. |
-| `--config <path>` | *(none)* | Read defaults for `device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`, `http-port`, `http-bind`, `sc-max-hub-connections`, `sc-rate-limit` from a config file - see [Configuration file](#configuration-file) below. A matching CLI flag always overrides the config file - **except `dcc-password`, which has no CLI flag at all** (see [Secrets handling](#secrets-handling)). |
-| `--generate-certs [n]` | `3` | Write a fresh set of BACnet-named PEM files (issuer, hub, and `n` labeled `clients/<label>/` folders) to `--sc-cert-dir`, then exit. See [Generate lab test certificates](#generate-lab-test-certificates). |
-| `--add-client-certs [n]` | `1` | Sign `n` more client certificate sets with the issuer already in `--sc-cert-dir`, then exit. |
-| `--cert-label <prefix>` | `client` | Label for client folders (`clients/<prefix>-01/`, `clients/<prefix>-02/`, ...). |
-| `--cert-hub-uri <wss://host:port/>` | this computer's IPv4 + `--sc-port` | Primary hub URI written into each client's `bacnetsc.config`. |
-| `--force` | - | With `--generate-certs`: replace an existing certificate set. |
-| `--help`, `-h` | - | Show usage (including the BACnet/SC options above) and exit. |
-| `--version` | - | Print the example, stack, and `common/` helper versions, then exit. |
-
-There is deliberately **no** `--dcc-password <string>` CLI flag - see
-[Secrets handling](#secrets-handling) below.
-
-### Secrets handling
-
-`dcc-password` (the DeviceCommunicationControl/ReinitializeDevice password -
-see [DeviceCommunicationControl](#devicecommunicationcontrol) below) can be
-set **only** via the `--config` file's `dcc-password` key, never on the
-command line. Earlier batches added a `--dcc-password <string>` CLI flag
-(`common/` 2.6.0's `ParseDccPasswordArg`); this batch **removed it from this
-example** because a command-line argument is visible to any other user/process
-on the same host for the life of the process - `ps aux` / `/proc/<pid>/cmdline`
-on Linux, the Task Manager "Command line" column or `wmic process get
-commandline` on Windows - and typically also lands in shell history. A config
-file is not immune to bad permissions either, which is why this example also
-warns about that:
-
-**File-permission warning.** At `--config` load time, if the file sets a
-non-empty `dcc-password`, the example checks the file's own permissions and
-logs a `Warning` (via `CASExampleHelper::Log`) if it looks readable by more
-than its owner/Administrators:
-
-```
-2026-09-21 19:15:55 [WARNING] config file "test_config_perm.conf" sets a non-empty dcc-password and appears readable by more than its owner/Administrators. Restrict its permissions: Windows - "icacls test_config_perm.conf /inheritance:r /grant:r %USERNAME%:F"; Linux/macOS - "chmod 600 test_config_perm.conf". See README.md "Secrets handling".
-```
-
-This is a **warning, not enforcement** - the device still starts. On
-Linux/macOS the check is exact (the POSIX group/other read/write/execute mode
-bits). On Windows there is no single mode bit to check, so
-`config.cpp`'s `WindowsFileHasBroadAccess()` uses a best-effort heuristic:
-it walks the file's DACL via `GetNamedSecurityInfoA`/`GetAce` and flags an
-`ALLOW` entry for `Everyone`, `Authenticated Users`, or `BUILTIN\Users` as
-"broad", while treating `BUILTIN\Administrators` and `SYSTEM` as trusted. It
-does **not** resolve nested/domain group membership, does not distinguish
-read from write/full access, and does not walk ACEs inherited from a parent
-directory - this is example/tutorial code, not a security product, so a
-best-effort warning is the goal, not bulletproof enforcement. Restrict the
-file yourself:
-
-```powershell
-# Windows - grant only the current user full control, strip inherited ACEs:
-icacls example.conf /inheritance:r /grant:r "$env:USERNAME:F"
-```
-
-```bash
-# Linux/macOS:
-chmod 600 example.conf
-```
-
-### Configuration file
-
-`--config <path>` points at a small, dependency-free `key = value` text file
-(no third-party INI/YAML/JSON library - see `config.h`) providing DEFAULTS for
-`device-id`, `port`, `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`,
-`dcc-password`, `http-port`, `sc-max-hub-connections`, and `sc-rate-limit`.
-**Precedence is CLI args > config file > this example's built-in defaults**
-for every key **except `dcc-password`**, which has no CLI form at all (see
-[Secrets handling](#secrets-handling) above) - the config file is the only
-way to set it.
-
-`example.conf` (checked in, at the repository root) is a commented template
-with every key shown at its built-in default:
-
-```ini
-# example.conf
-# device-id = 389022
-# port = 47808
-# sc-port = 47819
-# sc-cert-dir = ./certs
-# sc-hub-uri =
-# sc-failover-uri =
-# dcc-password =
-# http-port = 8080
-# sc-max-hub-connections = 4
-# sc-rate-limit = 10
-```
-
-```bash
-./build/BACnetExampleBSCHUB.exe --config example.conf
-# a CLI flag still overrides the config file:
-./build/BACnetExampleBSCHUB.exe --config example.conf --port 47876
-```
-
-Format rules: one `key = value` per line, `#` starts a comment to
-end-of-line, blank lines are ignored, no `[sections]`. An unrecognised key or
-an unparsable numeric value is logged as a warning and skipped - a malformed
-config file never prevents the device from starting (an unopenable `--config`
-*path*, however, is a startup error, since the user explicitly named it).
-
-### Rate-limiting and the audit trail
-
-Two operational-hardening features for the hub-function listener, added in
-the same batch:
-
-**Connect/disconnect audit trail.** Every accepted BACnet/SC peer connection
-logs when it connects and disconnects, via the `common/CASExampleLog.h`
-facility at `Info` level (visible on stdout by default), in a
-grep/pipe-friendly format, including the peer's source IP:port:
-
-```
-2026-09-21 18:15:33 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" connected from 127.0.0.1:50581
-2026-09-21 18:15:36 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=1" (127.0.0.1:50581) disconnected (closeCode=1000)
-```
-
-The identifier is the accepted-peer connection string
-(`"<acceptUri>|client=<N>"`) - the same identifier `sc_transport/ScTransport`
-already uses as this peer's BACnet/SC source address for the rest of the
-connection's life. A BACnet/SC VMAC/UUID is **not** available at this point:
-that identity is only established once the stack completes its own
-Connect-Request/Accept exchange over the socket (data this transport layer
-relays but does not parse), so using it here would mean inventing/guessing an
-identifier rather than reporting one this layer genuinely has - see
-`sc_transport/ScTransport.cpp`'s `LWS_CALLBACK_ESTABLISHED`/`LWS_CALLBACK_CLOSED`
-cases. `CASExampleHelper::Log` already prefixes every line with a UTC
-timestamp, so the audit lines do not duplicate one of their own. The source
-address (`PeerAddressPort()` in `ScTransport.cpp`) combines
-`lws_get_peer_simple()` with a raw `getpeername()` on the underlying socket -
-captured once at connect and reused at disconnect (the socket may already be
-gone by then).
-
-**A rejected mTLS handshake is now visible.** A client whose certificate does
-not chain to `certs/ca.crt` fails inside OpenSSL before this transport's
-`LWS_CALLBACK_ESTABLISHED` (or any other application callback) ever fires -
-previously this had zero application-level trace. It now logs a `Warning`
-naming the OpenSSL verify error and the presented certificate's CN, without
-changing the accept/reject decision itself:
-
-```
-2026-09-22 05:35:37 [WARNING] SC TLS handshake REJECTED - client certificate failed verification: "self-signed certificate" (OpenSSL error code 18); presented cert subject CN="rogue-test-peer" issuer CN="rogue-test-peer"
-```
-
-**`--sc-rate-limit <n>`** bounds how fast the listener accepts *new
-connection attempts* - a token bucket (burst capacity = `n`, refilling at `n`
-tokens/second), checked in `ScTransport::HandleServerCallback`'s
-`LWS_CALLBACK_FILTER_NETWORK_CONNECTION` case - the earliest point lws offers
-a hook, firing at raw-socket accept() time, **before** the TLS handshake
-starts. An attempt beyond the limit is refused immediately (no TLS/WebSocket
-resources spent) and logged at `Warning`, including a source address when one
-is available at this early point in the connection's lifecycle (`?:?` when
-it genuinely is not - see `ScTransport.cpp`'s `PeerAddressPort()` for why
-this specific call site can't always resolve one, verified during this
-example's own rate-limit testing):
-
-```
-2026-09-21 18:15:57 [WARNING] SC rate limit: rejecting new connection attempt from 127.0.0.1:50581 on wss://0.0.0.0:47819/ - more than 3 attempt(s)/sec (rejected before TLS handshake; see --sc-rate-limit)
-```
-
-This is deliberately a *different* control from `--sc-max-hub-connections`:
-that one bounds *concurrent* BACnet/SC-protocol-level connections (enforced
-by the stack, after a full TLS handshake); `--sc-rate-limit` bounds the
-*rate* of new attempts (enforced by this example's transport, before TLS).
-Default `10`/sec is generous - a real reconnect storm from this example's own
-demo peers is nowhere near that rate - so it only bites under an actual flood.
-`0` disables it (the pre-existing, unbounded behaviour). See
-`sc_transport/ScTransport.h`'s `SetMaxConnectionAttemptsPerSecond` doc comment
-for the token-bucket algorithm, and `TODO.md` for its known limitation (the
-bucket is per-process/in-memory, not per-source-IP - see that entry for why).
-
-### Interactive commands
-
-While the example runs, these keys are available:
-
-| Key | Action |
-|-----|--------|
-| `h` | Show the version information and this command list. |
-| `q` | Quit. |
-| up arrow | Increase Analog Input 1 (`Bronze`) by 1.1. |
-| down arrow | Decrease Analog Input 1 (`Bronze`) by 1.1. |
-| `m` | Print a health/metrics snapshot to stdout (uptime, BACnet/SC connection count, connect/disconnect/rate-limit counters, RX/TX counters) - see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint) for the same data over HTTP. Added in `common/` 2.7.0 (`KeyCommand::Metrics`). |
-
-The up/down keys change the live `Present_Value` of the analog input, so a client
-re-reading it sees the new value. Example `m` output:
-
-```
---- Health/metrics snapshot -------------------------------------------
-Uptime:                    2m 34s (154 s)
-BACnet/SC hub connections: 1 / 4 (current / --sc-max-hub-connections)
-BACnet/SC connects total:      3
-BACnet/SC disconnects total:   2
-BACnet/SC rate-limit rejects:  0
-BACnet/SC RX: 12 message(s), 456 byte(s)
-BACnet/SC TX: 12 message(s), 456 byte(s)
-------------------------------------------------------------------------
-```
-
-### Health/metrics HTTP endpoint
-
-Open `http://<http-bind>:<http-port>/` (by default `http://127.0.0.1:8080/`)
-in a browser for a **status page**. It shows:
-- the example, CAS BACnet Stack and `common/` versions, and the Device;
-- BACnet/SC listener and connector state, and whether certificate changes
-  are staged;
-- the health/metrics numbers below, as a table and as the raw JSON.
-
-It refreshes every 5 seconds. Like `/health`, it has no authentication.
-
-`GET http://<http-bind>:<http-port>/health` and `GET .../metrics` (identical -
-two paths for whatever a monitoring tool expects) return the same data as the
-`m` keypress above, as JSON, **with no authentication** - this is a
-deliberate, documented tradeoff: the endpoint is read-only and low-risk
-**as long as it stays on loopback**, which is its default (`--http-bind`
-defaults to `127.0.0.1`) - a tutorial monitoring integration should not need
-a secret just to poll uptime from the same host.
-
-**`--http-bind` (and the config file's `http-bind` key) can point this
-listener at a non-loopback address** (`0.0.0.0`, or a specific LAN address)
-if you need to reach it from another machine. Understand what that actually
-removes before doing it: this HTTP server has **no TLS at all**, and neither
-`GET /health` nor `GET /metrics` check any credential - binding off loopback
-makes both of those readable, in plaintext, by anything that can reach the
-port. `sc_transport/HttpServer::Start()` logs a `Warning`-level line every
-single time it starts bound to anything other than `127.0.0.1`/`localhost`,
-specifically so this cannot go unnoticed in a log an operator only skims. If
-you need this reachable from another host, prefer terminating TLS in front of
-it (an SSH tunnel, or a reverse proxy like nginx/Caddy) over binding it
-directly to a LAN interface - that keeps this example's own code and default
-posture unchanged.
-
-```
-$ curl -s http://127.0.0.1:8080/health
-{"uptime_seconds":154,"uptime":"2m 34s","sc_hub_connections_current":1,"sc_hub_connections_max":4,"sc_total_connects":3,"sc_total_disconnects":2,"sc_rate_limit_rejections":0,"sc_rx_messages":12,"sc_rx_bytes":456,"sc_tx_messages":12,"sc_tx_bytes":456}
-```
-
-JSON (not plain text) was chosen because it is what an actual monitoring
-integration (Prometheus textfile collector, a custom scraper, `jq` in a
-shell script) can consume without inventing a parser - and the format is
-simple enough (flat, numeric/string fields) that hand-built string
-concatenation in `main.cpp`'s `BuildHealthJson()` is clearer than pulling in
-a JSON library for it.
-
-Built on the already-vendored `libwebsockets` (the same library
-`sc_transport/ScTransport` already links for BACnet/SC) via its
-`LWS_CALLBACK_HTTP`/`LWS_CALLBACK_HTTP_WRITEABLE` HTTP-server callbacks - see
-`sc_transport/HttpServer.h`/`.cpp` - specifically so this feature adds no new
-vcpkg dependency. It is a **separate `lws_context`** from the BACnet/SC
-listener (plain HTTP, no TLS, a completely different protocol handler) -
-see `HttpServer.h`'s file header for the full reasoning.
-
-### Certificate upload endpoint
-
-`POST http://<http-bind>:<http-port>/certs/<slot>` (`<slot>` one of
-`operational`, `csr`, `issuer1`, `issuer2`, mapping to the same
-`operational-certificate.pem`/`certificate-signing-request.pem`/`issuer-certificate.pem`/`issuer-certificate.pem`
-files (or their older `hub.crt`/`hub.csr`/`ca.crt` equivalents) under `--sc-cert-dir` the 4 read-only
-File objects already serve - see [The device this example
-creates](#the-device-this-example-creates)) uploads a replacement
-certificate/CSR without manual file copying - e.g. after an operator gets a
-CSR signed externally and wants to push just the resulting cert onto the
-device.
-
-**This is the highest-risk feature in this batch. Read this whole section
-before using it.**
-
-- **Requires `Authorization: Bearer <dcc-password>`.** A request with no
-  token, or the wrong one, is rejected `401` and logged at `Warning`.
-- **Disabled entirely if `dcc-password` is unset/empty** (the default) -
-  the endpoint refuses every upload with `503` rather than accepting one with
-  no protection. An empty password does **not** mean "no auth required".
-- Same listener/port (and the same `--http-bind` setting) as the
-  health/metrics endpoint above - but the auth requirement does **not** leak
-  between the two routes in either direction: `GET /health`/`GET /metrics`
-  never check the token; `POST /certs/<slot>` always does (or is disabled)
-  regardless of whether `GET` is reachable. If you bind this off loopback
-  (see [Health/metrics HTTP endpoint](#healthmetrics-http-endpoint)), the
-  bearer-token check is your ONLY protection on this endpoint - it is a
-  plain string compare over plain HTTP, not a real auth scheme (no rate
-  limiting on upload attempts, no TLS, no protection against the token being
-  sniffed on the wire). Keeping this on loopback and reaching it through an
-  SSH tunnel or a TLS-terminating reverse proxy is the safer choice if you
-  need it reachable at all from off-host.
-- **PEM sanity check, not full X.509 validation.** The upload must contain
-  `-----BEGIN CERTIFICATE-----` (or `-----BEGIN CERTIFICATE REQUEST-----` for
-  the `csr` slot) and be 64..65536 bytes. This is **not** a real parse -
-  OpenSSL is already vendored for the SC transport's TLS and could be used
-  for one, but the real trust decision for an uploaded cert is made by the
-  peer's TLS stack at the next handshake anyway (a malformed cert simply
-  fails to work; it does not compromise this device), so this example sticks
-  to a small, easy-to-audit header/size check rather than adding an ASN.1/X.509
-  parser here. Judged, not skipped by oversight - see `sc_transport/HttpServer.cpp`'s
-  `HandlePostBodyComplete` for exactly what is (and isn't) checked.
-- **Atomic write.** The upload is written to a temp file, then renamed over
-  the live target - never a partial/truncating write to the path
-  `CallbackReadFile`/`AtomicReadFile` may be actively serving to a connected
-  peer.
-- Every attempt (success and every rejection reason) is logged via
-  `CASExampleHelper::Log` at `Info`/`Warning`, in the spirit of the
-  connect/disconnect audit trail above.
-
-```bash
-# health/metrics need no token:
-curl http://127.0.0.1:8080/health
-
-# upload a replacement operational certificate (dcc-password must be set):
-curl -X POST -H "Authorization: Bearer $DCC_PASSWORD" \
-     --data-binary @new-hub.crt \
-     http://127.0.0.1:8080/certs/operational
-```
-
-**What is honestly NOT hardened here** (this is lab/tutorial-grade, not a
-production upload path): no rate limiting on upload *attempts* specifically
-(only the BACnet/SC listener has `--sc-rate-limit`), no TLS on the HTTP
-listener itself at all - plain HTTP, acceptable by default only because
-`--http-bind` defaults to `127.0.0.1` and stops being acceptable the moment
-that default is changed (see [Health/metrics HTTP
-endpoint](#healthmetrics-http-endpoint)) - and a bearer token in a header
-rather than a real auth scheme (mTLS, OAuth). See `TODO.md`'s "Genuinely open
-items" for the full list.
-
-### Certificate management over BACnet
-
-A BACnet client can replace this hub's certificates over plain BACnet, using
-the BACnet/SC certificate procedures (ANSI/ASHRAE 135-2024 clause 19.8.3) -
-for example the CAS BACnet Explorer's BACnet/SC certificate page. This hub is
-the "device B" side:
-
-1. The client writes `File_Size = 0` to a certificate File object
-   (WriteProperty), then `AtomicWriteFile`s the new PEM certificate into it:
-   File 1 for a new operational certificate, File 3 or 4 for an issuer.
-2. The writes are **staged**: reading the File object back returns what was
-   written, and Network Port 2's `Changes_Pending` goes TRUE, but nothing is
-   written to disk and TLS keeps using the current certificates.
-3. The client sends **ReinitializeDevice `ACTIVATE_CHANGES`** (or
-   `WARMSTART`). The hub checks the staged set first. It refuses with
-   `INVALID_CONFIGURATION_DATA`, changing nothing, if:
-   - a certificate doesn't parse;
-   - both issuer slots would be empty;
-   - the operational certificate doesn't match this hub's private key or
-     doesn't chain to an issuer.
-   Otherwise it writes the files atomically and restarts its TLS listener
-   and hub connection, and peers reconnect under the new certificates.
-
-Two procedures work end to end (`tests/sc/cert_procedure_test.py`):
-
-- **Add issuer** - write a new CA into the unused issuer slot. Slot 2 has
-  its own file (`issuer-certificate-2.pem`) and serves slot 1's certificate
-  until something is written to it. TLS trusts every issuer in both slots
-  (the hub writes them to `trusted-issuers.pem`), so devices from the old
-  and new CA are both accepted.
-- **Replace operational certificate, existing CSR** - read File 2
-  (`Certificate Signing Request`), have the site CA sign it, write the result
-  into File 1, activate.
-
-**Not supported:**
-- **Key-pair regeneration.** Writing `GENERATE_CSR_FILE` to Network Port 2's
-  Command needs a host hook the stack doesn't have yet
-  ([cas-bacnet-stack#2976](https://github.com/chipkin/cas-bacnet-stack/issues/2976)).
-  A new operational certificate therefore has to be issued for the hub's
-  existing key, which is what the CSR File holds.
-- **Discarding staged writes.** The hub isn't told about a `DISCARD_CHANGES`
-  ([cas-bacnet-stack#2557](https://github.com/chipkin/cas-bacnet-stack/issues/2557)),
-  so staged writes last until the next activation or a restart.
-
-If `dcc-password` is set in the config file, ReinitializeDevice needs it too.
-
-## Verify
-
-### Over BACnet/IP (verified, real client)
-
-Verified with a real BACnet client (not a hand check)
-against a running instance of this example:
-
-1. **Discover** - `who_is()` returns an **I-Am** from instance **389022**
-   (vendor **389**).
-2. **Read the Device** - ReadProperty `389022` `Object_Name` = `"Chipkin Example B-SCHUB"`;
-   `Vendor_Identifier` = `389`; `Model_Name` = `"CAS BACnet Stack Example -
-   B-SCHUB"`.
-3. **Read Analog Input 1** - `Present_Value` = `21.5`.
-4. **Read Network Port 2** - `Object_Name` = `"BACnet SC"`; `Network_Type` =
-   `11` (`secureConnect`) - confirming the BACnet/SC Network Port object is
-   present and correctly typed, over ordinary BACnet/IP ReadProperty.
-5. **Confirm the profile boundary** - a **WriteProperty** to any property
-   other than a certificate File object's `File_Size` is rejected, and `DeviceCommunicationControl` with the deprecated plain
-   `disable` value is rejected with `service-request-denied`.
-
-You can repeat this with the [CAS BACnet
-Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer).
-
-### Over BACnet/SC (verified against a real peer)
-
-Verified on the wire, against a real second process, not just against this
-repository's own test scripts:
-
-1. **Generate lab certificates** - `cmake --build build --target test-certs`
-   (see [Generate lab test certificates](#generate-lab-test-certificates)
-   above).
-2. **Listener (hub-function accept role)** - `tests/sc/hub_listener_test.py`
-   drives a hand-built BACnet/SC client against the running example and
-   asserts: TLS 1.3 negotiates; the `hub.bsc.bacnet.org` subprotocol is
-   echoed; a client with no certificate, TLS 1.2, or the wrong subprotocol is
-   all refused/rejected; a text WebSocket frame is closed with code 1003; and
-   a hand-built BVLC-SC Connect-Request gets a real Connect-Accept back:
-   ```bash
-   python -m pip install -r tests/sc/requirements.txt
-   ./build/BACnetExampleBSCHUB.exe --sc-port 47819 --sc-cert-dir ./certs &
-   python tests/sc/hub_listener_test.py --port 47819 --cert-dir certs
-   ```
-   Then, independently, a **real** BACnet/SC node
-   (`BACnetSCCli.exe`, `Role=node`) completed Who-Is -> I-Am -> ReadProperty
-   discovery of this device (`Object_Name` = `"Chipkin Example B-SCHUB"`) over the SC
-   connection.
-3. **Connector (hub/node initiate role, `--sc-hub-uri`)** -
-   `tests/sc/fake_hub_server.py` (a hand-built mutual-TLS fake hub) answers
-   the example's Connect-Request with a Connect-Accept and the example's own
-   console shows the hub-connector state machine reach `Connected`; killing
-   the fake hub produces a `Disconnected` log line, with the **stack** (not
-   this example's transport code) doing the later re-dial, per its own retry
-   timer. Independently, against a **real** hub (`BACnetSCCli.exe`,
-   `Role=hub`), the example's hub-connector state machine reaches
-   `ConnectedPrimary`.
-4. **Certificate File objects** - `tests/sc/file_object_test.py` (a real
-   `bacpypes3` BACnet/IP client) confirms `AtomicReadFile(File 1, "Operational Certificate")`
-   returns the hub's operational certificate byte-for-byte, Network Port 2's
-   `Issuer_Certificate_Files` has exactly 2 entries, and none of the 4 File
-   objects ever serve the private key.
-5. **Mux fairness** - with an SC peer connection held open, BACnet/IP
-   Who-Is/I-Am keeps answering normally on port 47808 (or whatever `--port`
-   is), confirming `ScTransportRouter`'s IP-first/SC-first alternating poll
-   does not starve either datalink while both are busy.
-
-See `tests/sc/README.md` for the full command lines and what each script
-checks, and `sc_transport/README.md` for the transport's wire-level contract.
-
-For a property-by-property review against the conformance statement, see
-[TUTORIAL.md](TUTORIAL.md).
-
-## Licence
-
-The example source code (this repository, excluding `submodules/`) is
-dedicated to the public domain under [CC0-1.0](LICENSE). Building this example
-also links **third-party dependencies with their own licences**:
-[libwebsockets](https://libwebsockets.org/) (MIT) and
-[OpenSSL 3](https://www.openssl.org/) (Apache-2.0), both pulled in via vcpkg -
-see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the full text/
-pointers. The CAS BACnet Stack itself is a separate, commercially licensed
-product (see [Requires the CAS BACnet Stack](#requires-the-cas-bacnet-stack-licensed-product)
-above) and is not covered by any of the above.
-
+| `hub_listener_test.py` | TLS 1.3 and subprotocol negotiation, refusal of bad clients, and a BACnet/SC Connect-Request/Accept. |
+| `file_object_test.py` | The certificate File objects over BACnet/IP; the private key is never served. |
+| `cert_procedure_test.py` | Certificate management over BACnet: add issuer, rejected activation, replace the hub certificate. |
+| `fake_hub_server.py` | A test hub for the `--sc-hub-uri` connector. |
+| `rpm_test.py` | ReadPropertyMultiple against the Device. |
+
+CI runs these on Windows and Linux for every pull request.
+
+## Licensing
+
+- **This project** (everything outside `submodules/`) is public domain under
+  [CC0-1.0](LICENSE).
+- **CAS BACnet Stack** - a commercial Chipkin product, included as a private
+  git submodule. You need a licence to build this project, not to use a
+  [prebuilt release](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases).
+  Contact <https://store.chipkin.com/services/stacks/bacnet-stack> or
+  sales@chipkin.com.
+- **libwebsockets** (MIT) and **OpenSSL 3** (Apache-2.0), via vcpkg. See
+  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## The BACnet profile example series
 
@@ -1037,19 +519,11 @@ Client-side profiles.
 
 ## References
 
-- **ANSI/ASHRAE Standard 135** (BACnet) - the protocol standard. Object model
-  (Clause 12), services (Clause 16), BACnet/SC (Annex AB), device profiles
-  (Annex L). Purchase / preview via the [ASHRAE store](https://www.ashrae.org/technical-resources/standards-and-guidelines).
-- **What is BACnet?** - Chipkin's introduction:
-  <https://docs.chipkin.com/protocols/bacnet/>.
-- **CAS BACnet Stack** - product page and documentation:
-  <https://store.chipkin.com/services/stacks/bacnet-stack>.
-- **CAS BACnet Stack BACnet/SC Manual** -
-  `submodules/cas-bacnet-stack/docs/CAS BACnet Stack - BACnet SC Manual_v6.md`
-  (private, part of the stack submodule).
-- **CAS BACnet Explorer** - client for testing this device:
-  <https://store.chipkin.com/products/tools/cas-bacnet-explorer>.
-- **Shared helper used by this example** - [`common/README.md`](common/README.md).
-
-See also [TUTORIAL.md](TUTORIAL.md), [docs/PICS.md](docs/PICS.md),
-[CHANGELOG.md](CHANGELOG.md), [TODO.md](TODO.md), and [AGENTS.md](AGENTS.md).
+- **ANSI/ASHRAE Standard 135** (BACnet): objects (clause 12), services
+  (clause 16), certificate management (clause 19.8), BACnet/SC (Annex AB),
+  device profiles (Annex L). From the
+  [ASHRAE store](https://www.ashrae.org/technical-resources/standards-and-guidelines).
+- **CAS BACnet Stack**: <https://store.chipkin.com/services/stacks/bacnet-stack>.
+- **CAS BACnet Explorer**: <https://store.chipkin.com/products/tools/cas-bacnet-explorer>.
+- **What is BACnet?**: <https://docs.chipkin.com/protocols/bacnet/>.
+- [CHANGELOG.md](CHANGELOG.md) - release history.

@@ -261,7 +261,7 @@ bool ValidateStaged(std::string* reason) {
 
     bool ok = true;
     // It must belong to this hub's private key: GENERATE_CSR_FILE isn't
-    // available (see TODO.md), so a new operational certificate has to be
+    // available (issue #10), so a new operational certificate has to be
     // issued for the key behind the Certificate Signing Request File object.
     std::string keyPem;
     EVP_PKEY* key = nullptr;

@@ -51,11 +51,11 @@
 // peer's certificate can be traced back to its files from the hub's logs or a
 // TLS capture.
 //
-// Same key and certificate profile as scripts/generate-test-certs.cmake:
+// Key and certificate profile:
 // ECDSA P-256, SHA-256, issuer valid 10 years, leaves 825 days; the hub gets
 // EKU serverAuth+clientAuth with SAN localhost/127.0.0.1/<hostname>, clients
-// get EKU clientAuth. That script still writes the older names (hub.crt,
-// hub.key, hub.csr, ca.crt, ca.key); the hub reads either - see
+// get EKU clientAuth. The hub also still reads the older file names (hub.crt,
+// hub.key, hub.csr, ca.crt, ca.key) from earlier releases - see
 // ResolveCertFile().
 //
 // LAB TESTING ONLY. A real deployment uses its own PKI - see README.md
@@ -85,7 +85,7 @@ static const char* const TRUSTED_ISSUERS_FILE = "trusted-issuers.pem";
 static const char* const CLIENTS_DIR = "clients";
 static const char* const BACNETSC_CONFIG_FILE = "bacnetsc.config";
 
-// The older names scripts/generate-test-certs.cmake writes.
+// The older file names used by earlier releases (still read).
 static const char* const LEGACY_OPERATIONAL_CERTIFICATE_FILE = "hub.crt";
 static const char* const LEGACY_PRIVATE_KEY_FILE = "hub.key";
 static const char* const LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE = "hub.csr";
@@ -94,8 +94,7 @@ static const char* const LEGACY_ISSUER_PRIVATE_KEY_FILE = "ca.key";
 
 // Picks which name to use in certDir: `name` if that file exists or `legacyName`
 // doesn't, otherwise `legacyName`. So a directory from --generate-certs uses
-// the BACnet names, and one from scripts/generate-test-certs.cmake keeps
-// working unchanged. Returns a name relative to certDir.
+// the BACnet names, and one from an earlier release keeps working unchanged. Returns a name relative to certDir.
 std::string ResolveCertFile(const std::string& certDir, const char* name, const char* legacyName);
 
 // Creates the hub's files and `clientCount` labeled client folders in certDir

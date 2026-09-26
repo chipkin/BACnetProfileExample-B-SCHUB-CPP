@@ -9,7 +9,7 @@ Per docs/bacnet-sc-transport-plan.md's "Verification" section:
 
   V1 (TLS/WS handshake): connect with the node test-peer certificate
      (certs/node.crt + node.key, signed by certs/ca.crt - see
-     scripts/generate-test-certs.cmake) and assert:
+     BACnetExampleBSCHUB --generate-certs) and assert:
        - TLS 1.3 is negotiated,
        - the server echoes back the "hub.bsc.bacnet.org" subprotocol
          (135-2024 AB.7.1 - NOT plugfest-example's "hub.bacnet.org", which is
@@ -281,7 +281,7 @@ async def main():
     parser.add_argument("--client-cert", default=None,
                         help="client certificate label to connect with, e.g. client-02 "
                              "(clients/client-02/ from BACnetExampleBSCHUB --generate-certs). "
-                             "Default: node (scripts/generate-test-certs.cmake) if present, else client-01.")
+                             "Default: node (BACnetExampleBSCHUB --generate-certs) if present, else client-01.")
     args = parser.parse_args()
 
     global CLIENT_CERT
@@ -290,8 +290,7 @@ async def main():
     certfile, keyfile = cert_paths.client_files(cert_dir, CLIENT_CERT)
     for needed in (certfile, keyfile, cert_paths.issuer_certificate(cert_dir)):
         if not needed.is_file():
-            print(f"ERROR: {needed} not found - run: BACnetExampleBSCHUB --generate-certs "
-                  "(or cmake -P scripts/generate-test-certs.cmake)")
+            print(f"ERROR: {needed} not found - run: BACnetExampleBSCHUB --generate-certs")
             return 2
     print(f"Using client certificate {certfile}")
 

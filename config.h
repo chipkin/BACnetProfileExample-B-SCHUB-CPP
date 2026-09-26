@@ -84,7 +84,7 @@ struct ExampleConfig {
     // (loopback-only) - deliberately requiring an EXPLICIT setting to bind
     // anywhere else, since this listener has no TLS and GET /health, GET
     // /metrics have no authentication at all (see HttpServer.h's Start() doc
-    // comment and README.md "Health/metrics HTTP endpoint" for the full risk
+    // comment and README.md "Status page and HTTP endpoints" for the full risk
     // reasoning). Binding to "0.0.0.0" or a specific LAN address is a real,
     // reviewed decision this example now supports but does not default to -
     // HttpServer::Start() logs a loud warning every time it binds to
@@ -122,8 +122,8 @@ std::string ParseConfigPathArg(int argc, char** argv);
 // contract the device refuses to start over. If dcc-password is set to a
 // non-empty value, this function ALSO warns (still non-fatal) if the config
 // file itself looks readable by more than its owner/Administrators - see
-// ConfigFileHasBroadPermissions() in config.cpp and README.md "Secrets
-// handling".
+// ConfigFileHasBroadPermissions() in config.cpp and README.md
+// "Configuration file".
 //
 // Returns true if the file itself was found and opened (even if some lines
 // inside it were skipped); false if the path could not be opened at all - the

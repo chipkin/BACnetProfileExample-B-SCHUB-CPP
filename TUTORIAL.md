@@ -36,9 +36,9 @@ skipped by someone who only reads the code.
 file's `dcc-password` key (into `main.cpp`'s `g_dccPassword`), or change that
 variable's compile-time default in `main.cpp`; the `DeviceCommunicationControl`
 callback then rejects a mismatch with `password-failure` instead of accepting
-any request. There is **no** `--dcc-password` command-line flag (removed in
-the 2026-09 secrets-handling pass - a CLI argument is visible in process
-listings/shell history; see README.md "Secrets handling"). If you set a
+any request. There is **no** `--dcc-password` command-line flag, because a
+command-line argument is visible in process listings and shell history (see
+README.md "Configuration file"). If you set a
 non-empty `dcc-password`, restrict the config file's own permissions
 (`icacls`/`chmod 600` - see README.md) - the example warns, but does not
 refuse to start, if it looks group/world-readable. The same value also gates
@@ -85,7 +85,7 @@ ReadProperty already uses.
 ### Implement the BACnet/SC transport for real
 
 Both transport roles are real, compiled, and verified against real peers -
-see [README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first)
+see [README.md "What the hub does"](README.md#what-the-hub-does)
 for what's implemented and `sc_transport/README.md` for the wire-level
 contract. This section is the "how it works, and how to take it further" a
 reader who wants to productionize the pattern needs - not a build-it-yourself
@@ -123,10 +123,9 @@ does not repeat it.
 
 #### Certificates: what this example does, and what a real deployment needs instead
 
-`scripts/generate-test-certs.cmake` generates a throwaway **lab CA**, signs a
-hub certificate and a test node certificate with it, and writes them under
-`certs/` (gitignored). This is explicitly **lab testing only** - every doc
-comment and README section touching it says so. Turning this into a real
+`BACnetExampleBSCHUB --generate-certs` generates a throwaway **lab CA**, signs
+a hub certificate and one certificate per connecting device with it, and
+writes them under `certs/` (gitignored). This is **lab testing only**. Turning this into a real
 deployment's certificate story needs, at minimum:
 
 1. **A real CA**, not a self-signed one this script mints on your machine.
@@ -140,20 +139,15 @@ deployment's certificate story needs, at minimum:
    CA ever issues (for any website) pass this hub's `ssl_ca_filepath` check
    unless you also scope the accepted CA bundle down to just your own
    BACnet/SC issuing CA.
-2. **A certificate rotation strategy.** This example's `certs/hub.crt` is
-   generated once and read fresh off disk on every `AtomicReadFile` request
-   and by `ScTransport` at listen/connect time - so replacing the files
-   under `--sc-cert-dir` and restarting the process (or, for a production
-   implementation, re-reading them on a `BACnetStack_SetBACnetSCWebSocketStatus`-
-   driven reconnect rather than requiring a restart) is enough to rotate.
+2. **A certificate rotation strategy.** A client can replace the hub's
+   certificate and add a second issuer over BACnet (clause 19.8.3 - see
+   README.md "Managing certificates over BACnet"); the hub validates the new
+   set and restarts BACnet/SC without restarting the process.
    What this example does **not** implement: automatic renewal before
-   expiry, a CSR-based rotation flow (see point 4 below - the CSR-generation
-   callback has no call site in this stack build, so there is no hook to wire
-   one up through the stack today), or alerting when a certificate is close
-   to expiring. `scripts/generate-test-certs.cmake`'s lab CA is valid 10
-   years and the hub/node leaf certs a shorter, script-defined period - check
-   the script for the exact values before relying on them for anything but a
-   lab.
+   expiry, key-pair regeneration (`GENERATE_CSR_FILE`, see point 4 below), or
+   alerting when a certificate is close to expiring (the hub only logs a
+   warning at start-up). The lab CA is valid 10 years and the hub and device
+   certificates 825 days (`cert_tool.cpp`).
 3. **A hostname/identity policy decision.** `ScTransport::Connect()` passes
    `LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK` when dialing out - deliberately,
    not by oversight. BACnet/SC certificates identify *BACnet/SC devices*
@@ -224,8 +218,8 @@ to miss and the one BTL will fail you for.
 > `Max_APDU_Length_Accepted`, `APDU_Timeout` and `Number_Of_APDU_Retries` among
 > them. Name an error on the catch-all and those start failing instead of
 > answering. Set `errorCode` only where *this device* knows the read is wrong;
-> `main.cpp` does it in exactly one place, `State_Text` with an out-of-range
-> array index. The table above is still how the fall-through behaves, and the
+> `main.cpp` never needs to: none of its objects has an array property the
+> application serves. The table above is still how the fall-through behaves, and the
 > diff below is still what catches a missed step.
 >
 > It is worse than "wrong value": the object's `Property_List` **still advertises
@@ -281,8 +275,6 @@ It differs per type — this is the checklist, so you do not have to infer it:
 | Object type | You must serve | Plus |
 |---|---|---|
 | Analog Input | `Present_Value` (Real), `Object_Name`, `Units` | — |
-| Binary Input | `Present_Value` (Enumerated), `Object_Name` | `Polarity` |
-| Multi-State Input | `Present_Value` (Unsigned), `Object_Name` | `Number_Of_States` |
 | Network Port | `Object_Name`, `Network_Type`, `Protocol_Level`, `Changes_Pending` | — (`Network_Type`/`Protocol_Level` are set from `BACnetStack_AddNetworkPortObject()`'s arguments, not a `GetProperty*` callback) |
 
 ## Who serves what: the application or the stack?
@@ -344,8 +336,7 @@ rather than against "it looked fine in the explorer":
    success at start-up and that the console prints the
    `CallbackSCStartListening` line once, then confirm the transport itself
    with `tests/sc/hub_listener_test.py` (listener) and, if you enabled it,
-   `tests/sc/fake_hub_server.py` (connector) - see [README.md "Over
-   BACnet/SC"](README.md#over-bacnetsc-verified-against-a-real-peer). Both
+   `tests/sc/fake_hub_server.py` (connector) - see [README.md "Testing"](README.md#testing). Both
    transport roles are real in this example; an actual SC node/hub connecting
    is verifiable, and should be verified, not assumed from the configuration
    calls succeeding alone.
@@ -376,8 +367,7 @@ not in `accepted`, comes out as a ⚠ row - that is a defect, not a feature.
 | Symptom | Cause / fix |
 |---------|-------------|
 | On start-up the app prints a wall of red `Error:` lines but the device works | **Expected — this is not your bug.** Two benign sources, both from the stack's own debug logging: (1) the device receives its **own** broadcast I-Am and logs a decode cascade (*"Services is not supported service=[0]"* … *"Failed to process the incoming NPDU"*) — any BACnet/IP device that listens for broadcasts hears itself; (2) a one-time *"UUID has not been set..."* notice can appear from the stack's own BACnet/SC datalink bring-up before `BACnetStack_SetBACnetSCUuid` runs. On a healthy start-up roughly half the output is these lines. |
-| Console prints a line every time `BACnetStack_Tick()` runs about listening for WebSocket connections | Fixed by design: `CallbackSCStartListening` only logs **once** (a static `warned` flag), even though the stack retries it every `Tick()` while it keeps returning `false`. If you see it repeating, check you're running the version in this repo. |
-| No BACnet/SC node ever connects | The transport is real now, so this is worth debugging rather than assuming. Check: does `certs/` exist (`cmake --build build --target test-certs` if not - the console prints this exact command when certs are missing)? Does the peer trust the SAME CA (`certs/ca.crt`) this hub was generated with? Is the peer using the `hub.bsc.bacnet.org` subprotocol and TLS 1.3? `tests/sc/hub_listener_test.py` isolates each of these. See [README.md "Over BACnet/SC"](README.md#over-bacnetsc-verified-against-a-real-peer) and `sc_transport/README.md`. |
+| No BACnet/SC node ever connects | The transport is real now, so this is worth debugging rather than assuming. Check: does `certs/` exist (`BACnetExampleBSCHUB --generate-certs` if not)? Does the peer trust the SAME CA (`certs/issuer-certificate.pem`) this hub's certificate was signed by? Is the peer using the `hub.bsc.bacnet.org` subprotocol and TLS 1.3? `tests/sc/hub_listener_test.py` isolates each of these. See [README.md "Troubleshooting"](README.md#troubleshooting) and `sc_transport/README.md`. |
 | CMake error: *"CAS BACnet Stack adapter not found under: ..."* | Submodules not initialized. Run `git submodule update --init --recursive` (or pass `-D CAS_STACK_DIR=...`). |
 | `CASBACnetStackDLL.h: No such file or directory` | Same - submodules not checked out. |
 | Windows: *"No CMAKE_CXX_COMPILER could be found"* | Install Visual Studio with the "Desktop development with C++" workload, then re-run from a fresh terminal. |

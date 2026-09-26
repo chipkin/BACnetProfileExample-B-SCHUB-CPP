@@ -19,58 +19,38 @@
       "type": "Analog Input",
       "instance": 1,
       "name": "Bronze",
-      "app": ["Present_Value", "Object_Name", "Units", "Out_Of_Service"],
-      "enabled": [],
+      "app": ["Present_Value", "Object_Name", "Units", "Out_Of_Service", "Description"],
+      "enabled": ["Description"],
       "writable": [],
       "accepted": ["Event_State"],
-      "note": "REAL, degrees Celsius; starts at 21.5; read-only"
-    },
-    {
-      "type": "Binary Input",
-      "instance": 1,
-      "name": "Emerald",
-      "app": ["Present_Value", "Object_Name", "Polarity", "Out_Of_Service"],
-      "enabled": [],
-      "writable": [],
-      "accepted": ["Event_State"],
-      "note": "starts inactive; read-only"
-    },
-    {
-      "type": "Multi-state Input",
-      "instance": 1,
-      "name": "Hot Pink",
-      "app": ["Present_Value", "Object_Name", "Number_Of_States", "Out_Of_Service", "State_Text"],
-      "enabled": ["State_Text"],
-      "writable": [],
-      "accepted": ["Event_State"],
-      "note": "state 1 of 3: On, Off, Auto; read-only"
+      "note": "REAL, degrees Celsius; starts at 21.5; read-only (example data, changed with the arrow keys)"
     },
     {
       "type": "Network Port",
       "instance": 1,
       "name": "BACnet IP",
-      "app": ["Object_Name", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
-      "enabled": [],
+      "app": ["Object_Name", "Description", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
+      "enabled": ["Description"],
       "writable": [],
       "accepted": ["Reliability"],
-      "note": "BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal)"
+      "note": "BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown: no network number is configured and the device is not a router"
     },
     {
       "type": "Network Port",
       "instance": 2,
       "name": "BACnet SC",
-      "app": ["Object_Name", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
-      "enabled": [],
+      "app": ["Object_Name", "Description", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
+      "enabled": ["Description"],
       "writable": [],
       "accepted": ["Reliability"],
-      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function - see README \"BACnet/SC support\". Both the protocol configuration (UUID, accept URI, SetBACnetSCHubFunctionConfig) and the WebSocket/TLS transport underneath it (sc_transport/ScTransport) are real and verified against real BACnet/SC peers - both the hub-function/listener and hub-connector roles. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability is accepted at the generic default (normal) for the same reason as Network Port 1"
+      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener) and the optional hub connector; the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1"
     },
     {
       "type": "File",
       "instance": 1,
       "name": "Operational Certificate",
-      "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
-      "enabled": [],
+      "app": ["Object_Name", "Description", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
+      "enabled": ["Description"],
       "writable": ["File_Size"],
       "accepted": [],
       "note": "writable over BACnet (clause 19.8.3): File_Size and AtomicWriteFile, staged until ReinitializeDevice ACTIVATE_CHANGES/WARMSTART, which validates the set (parses, matches the hub's private key, chains to an issuer) before writing operational-certificate.pem and reloading TLS. Serves the hub's operational certificate via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date come from the staged copy or the file on disk"
@@ -79,8 +59,8 @@
       "type": "File",
       "instance": 2,
       "name": "Certificate Signing Request",
-      "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
-      "enabled": [],
+      "app": ["Object_Name", "Description", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
+      "enabled": ["Description"],
       "writable": [],
       "accepted": [],
       "note": "read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. GENERATE_CSR_FILE is not supported (cas-bacnet-stack#2976), so this CSR is for the hub's existing key"
@@ -89,8 +69,8 @@
       "type": "File",
       "instance": 3,
       "name": "Issuer Certificate Slot 1",
-      "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
-      "enabled": [],
+      "app": ["Object_Name", "Description", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
+      "enabled": ["Description"],
       "writable": ["File_Size"],
       "accepted": [],
       "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (issuer-certificate.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries"
@@ -99,8 +79,8 @@
       "type": "File",
       "instance": 4,
       "name": "Issuer Certificate Slot 2",
-      "app": ["Object_Name", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
-      "enabled": [],
+      "app": ["Object_Name", "Description", "File_Type", "File_Size", "Modification_Date", "Archive", "Read_Only"],
+      "enabled": ["Description"],
       "writable": ["File_Size"],
       "accepted": [],
       "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (issuer-certificate-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)"

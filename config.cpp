@@ -71,7 +71,7 @@ static bool ParseConfigUint(const std::string& field, const std::string& value,
 // on a platform with no single mode-bit to check. Deliberately NOT a full
 // security audit: it does not resolve nested/domain group membership, does
 // not distinguish read from write/full access, and does not walk ACEs
-// inherited from a parent directory - see README.md "Secrets handling" for
+// inherited from a parent directory - see README.md "Configuration file" for
 // why a best-effort warning (not enforcement) is this tutorial's goal, not a
 // hardened permissions check.
 static bool WindowsFileHasBroadAccess(const std::string& path) {
@@ -233,7 +233,7 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
     // owner/Administrators, so an operator who copied a config file with the
     // wrong permissions finds out from the log instead of from an incident.
     // See ConfigFileHasBroadPermissions()'s own comment for what this check
-    // does and does not catch, and README.md "Secrets handling" for the
+    // does and does not catch, and README.md "Configuration file" for the
     // icacls/chmod remediation this warning points at.
     if (outConfig->hasDccPassword && !outConfig->dccPassword.empty() &&
         ConfigFileHasBroadPermissions(path)) {
@@ -241,7 +241,7 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
             "config file \"%s\" sets a non-empty dcc-password and appears readable by more than "
             "its owner/Administrators. Restrict its permissions: Windows - "
             "\"icacls %s /inheritance:r /grant:r %%USERNAME%%:F\"; Linux/macOS - \"chmod 600 %s\". "
-            "See README.md \"Secrets handling\".",
+            "See README.md \"Configuration file\".",
             path.c_str(), path.c_str(), path.c_str());
     }
     return true;

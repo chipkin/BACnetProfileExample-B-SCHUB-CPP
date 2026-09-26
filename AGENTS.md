@@ -6,23 +6,19 @@ Guidance for AI coding agents working in this repository. See
 
 ## What this project is
 
-A **tutorial** C++ example that implements the BACnet **B-SCHUB (BACnet Secure
-Connect Hub)** device profile using the CAS BACnet Stack. It is one of a
-series - one git repo per BACnet profile - and builds on the B-ASC
-(Application Specific Controller) example, replacing its WriteProperty/
-commandable-outputs delta with a **BACnet/SC hub function** (NM-SCH-B). The top
-priority is that the code reads like a tutorial a customer can learn from and
-copy-paste. Favour clarity over cleverness.
+A C++ example that implements the BACnet **B-SCHUB (BACnet Secure Connect
+Hub)** device profile using the CAS BACnet Stack. It is released to customers
+both as a working hub (prebuilt binaries on GitHub Releases) and as source to
+learn from and copy. It is one of a series - one git repo per BACnet profile.
+Favour clarity over cleverness; the code should read like a tutorial.
 
-**This repository is canonical for F-SC (BACnet/SC in the example series).**
-Read [README.md "BACnet/SC support"](README.md#bacnetsc-support-read-this-first)
-and [TODO.md](TODO.md) before touching anything SC-related: **both** the
-BACnet/SC *protocol* configuration and the WebSocket/TLS *transport*
-underneath it are real and verified against real peers - there is no
-remaining transport stub in this repository. `TODO.md` still lists genuine,
-documented limitations (no hostname check by design, no CRL support, the 1497-byte SC
-ingress ceiling); read it before assuming a gap is a bug you should fix here
-versus a known limitation to work around or report upstream.
+**This repository is canonical for BACnet/SC in the example series.** Both the
+BACnet/SC protocol configuration and the WebSocket/TLS transport underneath it
+are real and verified against real peers. Open work and known limitations are
+tracked as [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues),
+not in a TODO file. Some limitations are by design (no host-name check on the
+connector; BACnet/SC certificates identify devices, not DNS names) - check the
+issues and README "Security" before "fixing" one.
 
 ## Layout
 
@@ -57,22 +53,26 @@ This repository is self-contained:
   or WARMSTART. Never write through to disk (a hub re-dial mid-upload would
   load a half-written certificate), and never commit a set that fails
   `ValidateStaged()` - that is what stops the hub locking itself out.
-- `scripts/generate-test-certs.cmake` - generates the lab-only self-signed
-  certificate set under `certs/` (gitignored) `sc_transport/` and the File
-  objects (`main.cpp` section 2d) both read.
 - `tests/sc/` - the BACnet/SC verification scripts
-  (`hub_listener_test.py`/`fake_hub_server.py`/`file_object_test.py`) and
-  their own README. Re-run the relevant one after any `sc_transport/` or
+  (`hub_listener_test.py`, `fake_hub_server.py`, `file_object_test.py`,
+  `cert_procedure_test.py`, `rpm_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
   BACnet/SC-related `main.cpp` change.
 - `vcpkg.json` - pins the `libwebsockets`/`openssl` dependencies (see "Build"
   below).
-- `README.md` - what this example is. Keep it short and about THIS example only.
+- `README.md` - the user manual for the application: what it does, how to
+  run it, certificates, HTTP endpoints, security, troubleshooting. Write it
+  for someone running the hub, describe the current behaviour only (no
+  "previously"/"as of vX" history - that belongs in CHANGELOG.md), and keep it
+  in step with `--help` and `example.conf`.
 - `TUTORIAL.md` - how to extend and review the example, including how the
   real BACnet/SC transport works and what productionizing it further needs.
   Long-form material that would bloat the README belongs here.
 - `docs/PICS.md` - the Protocol Implementation Conformance Statement. Its
   objects-and-properties section is GENERATED from `docs/objects.json`; do not
   hand-edit between the `OBJECTS-PROPERTIES` markers.
+- `docs/PICS.pdf` - the PICS as a PDF, built by `docs/build-pics-pdf.py`
+  (needs `pip install markdown` and Chrome/Edge). Rebuild it whenever
+  `docs/PICS.md` changes, in the same commit.
 - `docs/objects.json` - the input to that generator. Update it in the same change
   as any `main.cpp` change that adds an object or a `GetProperty*` branch.
 - `THIRD-PARTY-NOTICES.md` - licence notices for `sc_transport/`'s two
@@ -121,11 +121,26 @@ commands above (plus `VCPKG_ROOT` set, as above).
 .\build\Release\BACnetExampleBSCHUB.exe [--port 47808] [--deviceID 389022]   # Windows
 ```
 
-Interactive keys while running: `h` help, `q` quit, up/down nudge Analog Input 1.
+Interactive keys while running: `h` help, `m` health/metrics snapshot, `q`
+quit, up/down nudge Analog Input 1. `--generate-certs` makes a lab
+certificate set first. The HTTP status page is at <http://127.0.0.1:8080/>.
 
 ## Conventions
 
-- Device is named "Chipkin Example B-SCHUB"; objects use the series' colour names; vendor id 389.
+- Device is named "Chipkin Example B-SCHUB"; vendor id 389. The objects are
+  Device, Analog Input 1 "Bronze", Network Ports 1 "BACnet IP" and 2 "BACnet
+  SC", and File objects 1-4 (certificates). Don't add objects the profile
+  doesn't need.
+- **Every object has a Description** (`ObjectDescription()` in `main.cpp`,
+  enabled per object with `BACnetStack_SetPropertyEnabled`) saying what the
+  object is for. A new object needs one too. Keep each under ~250 characters:
+  a longer string has broken ReadPropertyMultiple ALL on the Device. The
+  Device's Description carries the repository URL (`PROJECT_URL`).
+- **`/health` vs `/metrics`**: `/health` answers "is the hub working?"
+  (`status` ok/degraded, HTTP 200/503 - monitors act on it); `/metrics`
+  answers "how much is it doing?" (counters only, always 200). Keep them
+  separate. `GET /` is the human status page built from both; it links to
+  `PROJECT_URL` and the CAS BACnet Stack product page (`STACK_PRODUCT_URL`).
 - Implement **only** the services and objects the B-SCHUB profile requires -
   but expose **every required property** of each object for Protocol_Revision
   24. No commandable outputs, and WriteProperty only for the certificate File
@@ -143,7 +158,8 @@ Interactive keys while running: `h` help, `q` quit, up/down nudge Analog Input 1
   `main.cpp` - not added to `common/`, see below).
 - DeviceCommunicationControl (DM-DCC-B): the stack runs the enable/disable state
   machine; the `DeviceCommunicationControl` callback just validates
-  `g_dccPassword` (from `--dcc-password`, `common/` 2.6.0's `ParseDccPasswordArg`)
+  `g_dccPassword` (from the config file's `dcc-password` only - there is
+  deliberately no command-line flag, so it never appears in process listings)
   and logs. The deprecated plain `disable` (1) is rejected by the stack at
   Protocol_Revision >= 20 - only `enable` (0) and `disable-initiation` (2) apply.
   This callback has no fallback error code: it must set `*errorCode` on every
@@ -162,7 +178,7 @@ Interactive keys while running: `h` help, `q` quit, up/down nudge Analog Input 1
 - Every `GetProperty*` callback ends with `uint32_t* errorCode`. Leave it alone
   on a catch-all decline (the stack's decline-and-fabricate default answers
   required properties this app does not serve); set it only where this device
-  knows the read is wrong (`State_Text` out of range is the one case here).
+  knows the read is wrong.
 - Match the surrounding code style: `const`-correct parameters, check every stack
   return value, keep `main.cpp` linear and well-commented.
 - **Never edit `common/` in this repo alone** - it is a vendored copy shared by
@@ -187,22 +203,27 @@ There are no unit tests; verification is behavioural:
    `Network_Type` reads back `11` (secureConnect).
 4. **DeviceCommunicationControl**: confirm `disable-initiation` and `enable`
    SimpleACK, the deprecated `disable` is rejected (service-request-denied), and a
-   wrong password (if `--dcc-password` was given) is rejected (password-failure).
+   wrong password (if `dcc-password` is set in the config file) is rejected (password-failure).
 5. **BACnet/SC**: confirm the SC configuration calls all return success at
    start-up and that the console prints the `CallbackSCStartListening` line
    once, then run `tests/sc/hub_listener_test.py` (listener - always
-   applicable) and, if you touched the connector, `tests/sc/fake_hub_server.py`
-   (`--sc-hub-uri`). Both transport roles are real; verify against them, do
+   applicable), `tests/sc/file_object_test.py` and
+   `tests/sc/cert_procedure_test.py` (certificates), and, if you touched the
+   connector, `tests/sc/fake_hub_server.py` (`--sc-hub-uri`). Both transport roles are real; verify against them, do
    not claim BACnet/SC behaviour works from the configuration calls
    succeeding alone.
 6. If you changed the objects or their properties, regenerate `docs/PICS.md`
    (`python tools/gen-objects-properties.py BACnetProfileExample-B-SCHUB-CPP`
-   from the series root) and confirm no row comes out flagged with ⚠.
+   from the series root) and confirm no row comes out flagged with ⚠. Then
+   rebuild `docs/PICS.pdf` (`python docs/build-pics-pdf.py`).
+7. **HTTP**: `curl` `/`, `/health` and `/metrics`. `/health` must return 503
+   when the hub isn't listening (e.g. start with an empty `--sc-cert-dir`).
 
 ## Releasing
 
-Bump `APP_VERSION` in `main.cpp` and add an entry to [CHANGELOG.md](CHANGELOG.md),
-then tag `vX.Y.Z`. The GitHub Actions workflow builds and publishes the release.
+Bump `APP_VERSION` in `main.cpp` (and the version in README.md and
+docs/PICS.md), add an entry to [CHANGELOG.md](CHANGELOG.md), then tag
+`vX.Y.Z`. The GitHub Actions workflow builds and publishes the release.
 
 ## License
 
@@ -212,6 +233,6 @@ product and is not covered by that dedication. Building this example also
 links two third-party dependencies via vcpkg (never vendored into this
 repository): **libwebsockets** (MIT) and **OpenSSL 3** (Apache-2.0), both used
 by `sc_transport/`. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and
-[README.md "Licence"](README.md#licence) for the full notices. If you add
+[README.md "Licensing"](README.md#licensing) for the full notices. If you add
 another dependency to `vcpkg.json`, add its licence to both places in the same
 change.
