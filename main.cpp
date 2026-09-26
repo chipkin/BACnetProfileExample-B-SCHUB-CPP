@@ -25,21 +25,19 @@
 //
 //     Device 389022                "Chipkin Example B-SCHUB"                   (instance configurable with --deviceID)
 //     Analog Input  1               "Bronze"                    (REAL, degrees Celsius; read-only)
-//     Binary Input  1               "Emerald"                   (active / inactive; read-only)
-//     Multi-State Input 1           "Hot Pink"                  (state 1..3; read-only)
 //     Network Port 1                "BACnet IP"                 (the BACnet/IP port - required, kept
 //                                                                 active so the device stays
 //                                                                 discoverable over plain BACnet/IP)
 //     Network Port 2                "BACnet SC"                 (the BACnet/SC port - hub function)
-//     File 1                        "Operational Certificate"   (read-only; serves the hub's operational
-//                                                                 certificate, certs/hub.crt)
-//     File 2                        "Certificate Signing Request" (read-only; serves the hub's CSR, certs/hub.csr)
-//     File 3                        "Issuer Certificate Slot 1" (read-only; issuer certificate slot 1,
-//                                                                 certs/ca.crt)
-//     File 4                        "Issuer Certificate Slot 2" (read-only; issuer certificate slot 2, also
-//                                                                 certs/ca.crt - the stack requires exactly 2
-//                                                                 issuer slots; this lab setup has one CA, so
-//                                                                 both slots point at it)
+//     File 1                        "Operational Certificate"   (the hub's operational certificate,
+//                                                                 operational-certificate.pem; writable)
+//     File 2                        "Certificate Signing Request" (the hub's CSR,
+//                                                                 certificate-signing-request.pem; read-only)
+//     File 3                        "Issuer Certificate Slot 1" (issuer-certificate.pem; writable)
+//     File 4                        "Issuer Certificate Slot 2" (issuer-certificate-2.pem, or slot 1's
+//                                                                 certificate until one is written; writable)
+//
+// Every object has a Description saying what it is for (ObjectDescription()).
 //
 // This profile does NOT require WriteProperty, COV, alarms, scheduling or
 // trending, so this example leaves those off (unlike B-ASC, its seed, it does
@@ -159,7 +157,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.1.21";
+static const char* APP_VERSION = "1.2.0";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -190,15 +188,10 @@ static const uint32_t VENDOR_IDENTIFIER = 389;
 // number, DIP switches, a config file, or add a --deviceName argument.
 static const char* DEVICE_NAME = "Chipkin Example B-SCHUB";
 
-// The Device object's Description. Change it to what YOUR device actually is;
-// this string describes this tutorial.
-static const char* DEVICE_DESCRIPTION =
-    "Chipkin CAS BACnet Stack example - B-SCHUB (BACnet/SC Hub) profile. "
-    "Demonstrates DS-RP-B + DM-DDB-B + DM-DOB-B + DM-DCC-B + NM-SCH-B: "
-    "ReadProperty, discovery, DeviceCommunicationControl and a real BACnet/SC "
-    "hub function (mutual-TLS WebSocket transport, both listener and connector "
-    "roles) Network Port, alongside an always-active BACnet/IP port. See "
-    "README.md and TUTORIAL.md.";
+// Where this example lives - shown in the Device's Description and on the
+// HTTP status page. Change both to your own product's pages.
+static const char* PROJECT_URL = "https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP";
+static const char* STACK_PRODUCT_URL = "https://store.chipkin.com/services/stacks/bacnet-stack";
 
 // Device identity strings (read by clients, and used to populate I-Am).
 //   VENDOR_NAME - your company name; it must match VENDOR_IDENTIFIER above.
@@ -218,7 +211,7 @@ static const char* MODEL_NAME = "CAS BACnet Stack Example - B-SCHUB";
 // pass, Task 1) - there is deliberately NO "--dcc-password <string>" CLI flag
 // (common/CASExampleHelper::ParseDccPasswordArg still EXISTS in common/ 2.6.0+
 // for any other example that wants a CLI flag; this repo simply stopped
-// calling it for that purpose - see README.md "Secrets handling" for why a
+// calling it for that purpose - see README.md "Configuration file" for why a
 // CLI argument is a real exposure a config-file key is not: it is visible in
 // process listings/shell history on every platform). Not a compile-time
 // constant, so it is NOT `static const` like the rest of this identity block;
@@ -249,9 +242,6 @@ static std::string g_firmwareRevision;
 // The sensor objects (all instance 1) and their colour names - the series'
 // base object set (unchanged from every other example).
 static const uint32_t ANALOG_INPUT_INSTANCE = 1;       // "Bronze"
-static const uint32_t BINARY_INPUT_INSTANCE = 1;       // "Emerald"
-static const uint32_t MULTI_STATE_INPUT_INSTANCE = 1;  // "Hot Pink"
-static const uint32_t MULTI_STATE_INPUT_NUMBER_OF_STATES = 3;
 
 // Network Port 1 - the BACnet/IP port every BACnet device must have. Kept
 // active so this example stays discoverable over plain BACnet/IP regardless of
@@ -268,18 +258,23 @@ static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
 static const uint8_t NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT = 11;
 static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "BACnet SC"
 
-// The hub function's max simultaneous inbound peer connections - the built-in
-// default (used when neither --sc-max-hub-connections nor a config-file
-// sc-max-hub-connections key is given). Runtime-configurable as of Task 3
-// (previously a hardcoded constant used directly below); see g_scMaxHubConnections
-// and ParseScMaxHubConnectionsArg() below. Enforced by the STACK, not this
-// example: BACnetSCHubFunctionManager.cpp rejects a Connect-Request once
-// m_hubFunctionAcceptedConnections.size() >= maxConnections
-// (HubFunctionPeerUpsertResult_TableFull) - a real BACnet/SC-protocol-level
-// rejection, not merely advisory and not a raw-socket/TCP-level limit (the
-// WebSocket/TLS handshake in sc_transport/ScTransport still completes; the
-// stack rejects at the BVLC-SC Connect-Request step that follows).
-static const uint16_t SC_MAX_HUB_CONNECTIONS_DEFAULT = 4;
+// The hub function's max simultaneous inbound peer connections.
+//
+// SC_MAX_HUB_CONNECTIONS_LIMIT is a HARD limit for this example: it is for
+// evaluation and testing, not production, so it accepts at most 4 BACnet/SC
+// devices at a time. Asking for more (--sc-max-hub-connections or the config
+// file's sc-max-hub-connections) is refused at start-up with an error pointing
+// at Chipkin sales - see CheckScMaxHubConnectionsLimit(). A value from 1 to the
+// limit is allowed; the default is the limit.
+//
+// Enforced by the STACK: BACnetSCHubFunctionManager rejects a Connect-Request
+// once the accepted-connection table holds maxConnections peers - a BACnet/SC
+// protocol-level rejection (the WebSocket/TLS handshake in
+// sc_transport/ScTransport completes first; the stack rejects at the BVLC-SC
+// Connect-Request that follows).
+static const uint16_t SC_MAX_HUB_CONNECTIONS_LIMIT = 4;
+static const uint16_t SC_MAX_HUB_CONNECTIONS_DEFAULT = SC_MAX_HUB_CONNECTIONS_LIMIT;
+static const char* const SALES_EMAIL = "sales@chipkin.com";
 
 // The runtime value actually passed to BACnetStack_SetBACnetSCHubFunctionConfig -
 // see main()'s CLI-parsing block (--sc-max-hub-connections / config-file
@@ -502,7 +497,7 @@ static bool IsScCertFileInstance(const uint32_t fileInstance) {
 // instances above, or "" if fileInstance isn't one of them. The names follow
 // the Network Port properties each file backs (see cert_tool.h), e.g.
 // operational-certificate.pem for Operational_Certificate_File. A directory
-// made by scripts/generate-test-certs.cmake still uses the older names
+// made by an earlier release still uses the older names
 // (hub.crt, hub.csr, ca.crt); CertTool::ResolveCertFile picks whichever exists.
 static std::string ScCertFileRelativePath(const uint32_t fileInstance) {
     switch (fileInstance) {
@@ -570,8 +565,7 @@ bool GetPropertyReal(const uint32_t deviceInstance, const uint16_t objectType,
     return false;
 }
 
-// ENUMERATED - the Binary Input's Present_Value (0 = inactive, 1 = active) and
-// the Analog Input's Units (degrees Celsius).
+// ENUMERATED - the Analog Input's Units (degrees Celsius).
 bool GetPropertyEnumerated(const uint32_t deviceInstance, const uint16_t objectType,
                            const uint32_t objectInstance, const uint32_t propertyIdentifier,
                            uint32_t* value, const bool useArrayIndex,
@@ -581,20 +575,6 @@ bool GetPropertyEnumerated(const uint32_t deviceInstance, const uint16_t objectT
     (void)propertyArrayIndex;
     if (deviceInstance != g_deviceInstance) {
         return false;
-    }
-    if (objectType == OBJECT_TYPE_BINARY_INPUT &&
-        objectInstance == BINARY_INPUT_INSTANCE) {
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_PRESENT_VALUE) {
-            // ON REAL HARDWARE: return your cached input state here - the same rule
-            // as GetPropertyReal above applies (never block this callback on slow
-            // I/O; sample on a timer/another thread and hand back the latest).
-            *value = 0; // inactive - the series-wide starting value
-            return true;
-        }
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_POLARITY) {
-            *value = POLARITY_NORMAL; // required property of a Binary Input
-            return true;
-        }
     }
     if (propertyIdentifier == PROPERTY_IDENTIFIER_UNITS &&
         objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
@@ -610,33 +590,17 @@ bool GetPropertyEnumerated(const uint32_t deviceInstance, const uint16_t objectT
     return false;
 }
 
-// UNSIGNED INTEGER - the Multi-State Input's Present_Value, and the Device's
-// Vendor_Identifier (the stack also uses Vendor_Identifier to build I-Am).
+// UNSIGNED INTEGER - the Device's Vendor_Identifier (the stack also uses it to
+// build I-Am).
 bool GetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t objectType,
                                 const uint32_t objectInstance, const uint32_t propertyIdentifier,
                                 uint32_t* value, const bool useArrayIndex,
                                 const uint32_t propertyArrayIndex, uint32_t* errorCode) {
     (void)errorCode;
+    (void)useArrayIndex;
+    (void)propertyArrayIndex;
     if (deviceInstance != g_deviceInstance) {
         return false;
-    }
-    if (objectType == OBJECT_TYPE_MULTI_STATE_INPUT &&
-        objectInstance == MULTI_STATE_INPUT_INSTANCE) {
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_PRESENT_VALUE) {
-            *value = 1; // state 1 (valid range is 1..Number_Of_States)
-            return true;
-        }
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_NUMBER_OF_STATES) {
-            *value = MULTI_STATE_INPUT_NUMBER_OF_STATES; // required property
-            return true;
-        }
-        // State_Text is an array. The stack asks for its LENGTH here (array
-        // index 0) before reading each element via GetPropertyCharString.
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_STATE_TEXT &&
-            useArrayIndex && propertyArrayIndex == 0) {
-            *value = MULTI_STATE_INPUT_NUMBER_OF_STATES;
-            return true;
-        }
     }
     if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance &&
         propertyIdentifier == PROPERTY_IDENTIFIER_VENDOR_IDENTIFIER) {
@@ -690,8 +654,6 @@ bool GetPropertyBool(const uint32_t deviceInstance, const uint16_t objectType,
     }
     if (propertyIdentifier == PROPERTY_IDENTIFIER_OUT_OF_SERVICE &&
         (objectType == OBJECT_TYPE_ANALOG_INPUT ||
-         objectType == OBJECT_TYPE_BINARY_INPUT ||
-         objectType == OBJECT_TYPE_MULTI_STATE_INPUT ||
          objectType == OBJECT_TYPE_NETWORK_PORT)) {
         *value = false;
         return true;
@@ -811,6 +773,47 @@ bool GetPropertyOctetString(const uint32_t deviceInstance, const uint16_t object
 
 // Small helper: copy a C string into the stack's character-string buffer and
 // set the element count + encoding. Returns true (so callers can `return`).
+// Description (optional property) of each object: what it is for in this
+// example. Kept under ~250 characters - a longer string than the stack's
+// character-string buffer aborts the read instead of truncating (found on
+// B-BC). Returns "" for an object this device doesn't have.
+static std::string ObjectDescription(const uint16_t objectType, const uint32_t objectInstance) {
+    if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
+        return std::string("Chipkin CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile) with an "
+                           "always-on BACnet/IP port. Source, manual and releases: ") + PROJECT_URL;
+    }
+    if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
+        return "Example sensor value in degrees C, showing a hub serving its own data. "
+               "Change it with the up/down arrow keys in the console.";
+    }
+    if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
+        return "BACnet/IP port (UDP). Always on, so this hub can be found and managed over plain BACnet/IP.";
+    }
+    if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
+        return "BACnet/SC port: the hub function (wss:// listener that devices connect to) and, if "
+               "configured, the hub connector. Its certificates are File objects 1-4.";
+    }
+    if (objectType == OBJECT_TYPE_FILE) {
+        switch (objectInstance) {
+            case FILE_OPERATIONAL_CERT_INSTANCE:
+                return "This hub's operational certificate (PEM), presented in every BACnet/SC TLS "
+                       "handshake. Replace it over BACnet (clause 19.8.3), then ACTIVATE_CHANGES.";
+            case FILE_CSR_INSTANCE:
+                return "Certificate signing request (PEM) for this hub's private key. Have your CA sign "
+                       "it, then write the certificate to File 1.";
+            case FILE_ISSUER_CERT_1_INSTANCE:
+                return "Issuer (CA) certificate, slot 1 (PEM). Devices connecting to this hub must be "
+                       "signed by the issuer in slot 1 or slot 2.";
+            case FILE_ISSUER_CERT_2_INSTANCE:
+                return "Issuer (CA) certificate, slot 2 (PEM). Write a second CA here to trust it "
+                       "alongside slot 1. Shows slot 1's certificate until one is written.";
+            default:
+                break;
+        }
+    }
+    return std::string();
+}
+
 static bool ReturnCharacterString(const char* text, char* value,
                                   uint32_t* valueElementCount,
                                   const uint32_t maxElementCount,
@@ -837,19 +840,17 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
         return false;
     }
 
-    // State_Text (optional) - one label per state of the Multi-State Input. It is
-    // a BACnet array, so the stack asks for one element at a time by index
-    // (1..Number_Of_States). Present_Value 1 -> "On", 2 -> "Off", 3 -> "Auto".
-    if (objectType == OBJECT_TYPE_MULTI_STATE_INPUT &&
-        objectInstance == MULTI_STATE_INPUT_INSTANCE &&
-        propertyIdentifier == PROPERTY_IDENTIFIER_STATE_TEXT && useArrayIndex) {
-        static const char* const stateText[] = { "On", "Off", "Auto" };
-        if (propertyArrayIndex >= 1 && propertyArrayIndex <= MULTI_STATE_INPUT_NUMBER_OF_STATES) {
-            return ReturnCharacterString(stateText[propertyArrayIndex - 1], value,
-                                         valueElementCount, maxElementCount, encodingType);
+    (void)useArrayIndex;
+    (void)propertyArrayIndex;
+    (void)errorCode;
+
+    // Description (optional, enabled on every object in main()) - what each
+    // object is for in this example. See ObjectDescription().
+    if (propertyIdentifier == PROPERTY_IDENTIFIER_DESCRIPTION) {
+        const std::string description = ObjectDescription(objectType, objectInstance);
+        if (!description.empty()) {
+            return ReturnCharacterString(description.c_str(), value, valueElementCount, maxElementCount, encodingType);
         }
-        *errorCode = ERROR_CODE_INVALID_ARRAY_INDEX;
-        return false;
     }
 
     // Object_Name - a colour name for the Device/sensor objects (this series'
@@ -861,12 +862,6 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
         }
         if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
             return ReturnCharacterString("Bronze", value, valueElementCount, maxElementCount, encodingType);
-        }
-        if (objectType == OBJECT_TYPE_BINARY_INPUT && objectInstance == BINARY_INPUT_INSTANCE) {
-            return ReturnCharacterString("Emerald", value, valueElementCount, maxElementCount, encodingType);
-        }
-        if (objectType == OBJECT_TYPE_MULTI_STATE_INPUT && objectInstance == MULTI_STATE_INPUT_INSTANCE) {
-            return ReturnCharacterString("Hot Pink", value, valueElementCount, maxElementCount, encodingType);
         }
         if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
             return ReturnCharacterString("BACnet IP", value, valueElementCount, maxElementCount, encodingType);
@@ -896,8 +891,6 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
     // by clients and used to populate the device's I-Am / object list.
     if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
         switch (propertyIdentifier) {
-            case PROPERTY_IDENTIFIER_DESCRIPTION:
-                return ReturnCharacterString(DEVICE_DESCRIPTION, value, valueElementCount, maxElementCount, encodingType);
             case PROPERTY_IDENTIFIER_VENDOR_NAME:
                 return ReturnCharacterString(VENDOR_NAME, value, valueElementCount, maxElementCount, encodingType);
             case PROPERTY_IDENTIFIER_MODEL_NAME:
@@ -1102,7 +1095,7 @@ bool CallbackReadFile(const uint32_t deviceInstance, const uint32_t fileInstance
 // -----------------------------------------------------------------------------
 
 // Only the operational certificate and the two issuer slots are writable; the
-// Certificate Signing Request (File 2) is read-only - see TODO.md (GENERATE_CSR_FILE).
+// Certificate Signing Request (File 2) is read-only - GENERATE_CSR_FILE isn't available (issue #10).
 static bool IsWritableScCertFileInstance(const uint32_t fileInstance) {
     return fileInstance == FILE_OPERATIONAL_CERT_INSTANCE ||
            fileInstance == FILE_ISSUER_CERT_1_INSTANCE ||
@@ -1157,7 +1150,7 @@ bool SetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t ob
 }
 
 // Password check shared by DeviceCommunicationControl and ReinitializeDevice.
-// dcc-password (config file only - see README.md "Secrets handling") guards
+// dcc-password (config file only - see README.md "Configuration file") guards
 // both: "" means no password is required.
 static bool PasswordMatches(const char* password, const size_t passwordLength) {
     const size_t requiredLength = strlen(g_dccPassword);
@@ -1288,16 +1281,12 @@ static std::string FormatUptime(const uint64_t totalSeconds) {
     return std::string(buf);
 }
 
-// Builds the JSON body served by GET /health and GET /metrics (Task 3) - the
-// SAME data PrintHealthSnapshot() below prints as plain text for the 'm'
-// keypress (Task 2), so the two can never drift apart (both read
-// g_scTransport.GetMetrics() and g_scMaxHubConnections directly, nothing is
-// cached/duplicated). Deliberately plain, hand-built JSON (no third-party
-// JSON library - see this repo's existing "dependency-free where reasonable"
-// pattern, e.g. config.h/config.cpp's own INI-like format) - the shape is
-// simple enough (flat, all-numeric-or-string fields) that string
-// concatenation is clearer here than pulling in a library for it.
-static std::string BuildHealthJson() {
+// GET /metrics - the counters: uptime, BACnet/SC connections, rate-limit
+// rejections, RX/TX. The SAME numbers PrintHealthSnapshot() prints for the
+// 'm' keypress, read from the same place (g_scTransport.GetMetrics()). Plain
+// hand-built JSON - the shape is flat enough that a JSON library isn't worth
+// the dependency.
+static std::string BuildMetricsJson() {
     const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
     const uint64_t uptime = UptimeSeconds();
     char buf[768];
@@ -1324,6 +1313,29 @@ static std::string BuildHealthJson() {
     return std::string(buf);
 }
 
+// GET /health - is the hub doing its job? "ok" (HTTP 200) when the BACnet/SC
+// hub function is listening; "degraded" (HTTP 503) when it isn't - most often
+// because the certificates in --sc-cert-dir are missing or unusable. BACnet/IP
+// keeps working either way. Deliberately small: a monitor polls it often.
+static std::string BuildHealthJson(bool* healthy) {
+    const bool listening = g_scTransport.IsListening();
+    *healthy = listening;
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "{"
+        "\"status\":\"%s\","
+        "\"version\":\"%s\","
+        "\"uptime_seconds\":%llu,"
+        "\"sc_hub_function_listening\":%s,"
+        "\"sc_hub_connections_current\":%zu,"
+        "\"staged_certificate_changes\":%s"
+        "}",
+        listening ? "ok" : "degraded", APP_VERSION, (unsigned long long)UptimeSeconds(),
+        listening ? "true" : "false", g_scTransport.GetMetrics().currentPeerCount,
+        CertStore::HasStagedChanges() ? "true" : "false");
+    return std::string(buf);
+}
+
 // HTML-escapes text for the status page (every value on it is built by this
 // program, but a URI or name could still contain '<' or '&').
 static std::string HtmlEscape(const std::string& s) {
@@ -1343,12 +1355,13 @@ static std::string HtmlEscape(const std::string& s) {
 // The page GET / serves: what is running (example, stack and common/
 // versions, device), BACnet/SC status, and the health/metrics numbers - the
 // SAME metrics GET /health and GET /metrics return, shown as a table and as
-// the raw JSON those endpoints send. Server-rendered, no JavaScript, no
-// external resources; refreshes itself every 5 seconds.
+// links to both endpoints, the project and the stack product page.
+// Server-rendered, no JavaScript, no external resources; refreshes every 5 s.
 static std::string BuildStatusPage() {
     const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
     const uint64_t uptime = UptimeSeconds();
-    const std::string json = BuildHealthJson();
+    bool healthy = true;
+    BuildHealthJson(&healthy);
 
     struct Row { const char* label; std::string value; };
     char n[64];
@@ -1360,6 +1373,7 @@ static std::string BuildStatusPage() {
         {"Device", std::string(DEVICE_NAME) + " (instance " + num(g_deviceInstance) + ")"},
     };
     const Row sc[] = {
+        {"Health", healthy ? std::string("ok") : std::string("degraded - the BACnet/SC hub function is not listening")},
         {"Hub function (listener)", g_scTransport.IsListening() ? "listening on " + g_scTransport.ListenUri() : "not listening"},
         {"Hub connector", g_scHubUri.empty() ? std::string("off") : "dialing " + g_scHubUri},
         {"Staged certificate changes", CertStore::HasStagedChanges()
@@ -1400,14 +1414,22 @@ static std::string BuildStatusPage() {
     table("Version", version, sizeof(version) / sizeof(version[0]));
     table("BACnet/SC", sc, sizeof(sc) / sizeof(sc[0]));
     table("Health and metrics", metrics, sizeof(metrics) / sizeof(metrics[0]));
-    html += "<h2>Endpoints</h2><p><a href=\"/health\">/health</a> and <a href=\"/metrics\">/metrics</a> "
-            "return this JSON (for monitoring tools):</p><pre>" + HtmlEscape(json) + "</pre>\n";
+    html += "<h2>Endpoints</h2><table>"
+            "<tr><td><a href=\"/health\">/health</a></td><td>Is the hub working? JSON; HTTP 200 when ok, "
+            "503 when degraded.</td></tr>"
+            "<tr><td><a href=\"/metrics\">/metrics</a></td><td>Uptime, connection and traffic counters. "
+            "JSON.</td></tr></table>\n";
+    html += std::string("<h2>More</h2><table>") +
+            "<tr><td>This example</td><td><a href=\"" + PROJECT_URL + "\">" + PROJECT_URL +
+            "</a></td></tr>"
+            "<tr><td>CAS BACnet Stack</td><td><a href=\"" + STACK_PRODUCT_URL + "\">" + STACK_PRODUCT_URL +
+            "</a></td></tr></table>\n";
     html += "</body></html>\n";
     return html;
 }
 
 // Plain-text health/metrics snapshot for the 'm' keypress (Task 2) - same
-// fields as BuildHealthJson() above, formatted for a human reading stdout
+// fields as BuildMetricsJson() above, formatted for a human reading stdout
 // rather than a monitoring scraper.
 static void PrintHealthSnapshot() {
     const CASSc::ScTransportMetrics m = g_scTransport.GetMetrics();
@@ -1494,7 +1516,8 @@ static uint16_t ParseScPortArg(const int argc, char** argv, const uint16_t defau
 }
 
 // Parse "--sc-max-hub-connections <n>" (1..65535); returns defaultValue if not
-// given/invalid. Same pattern as ParseScPortArg above (Task 3).
+// given/invalid. A value above SC_MAX_HUB_CONNECTIONS_LIMIT is returned as-is
+// so CheckScMaxHubConnectionsLimit() can refuse it loudly.
 static uint16_t ParseScMaxHubConnectionsArg(const int argc, char** argv, const uint16_t defaultValue) {
     for (int i = 1; i + 1 < argc; ++i) {
         if (strcmp(argv[i], "--sc-max-hub-connections") == 0) {
@@ -1508,6 +1531,47 @@ static uint16_t ParseScMaxHubConnectionsArg(const int argc, char** argv, const u
         }
     }
     return defaultValue;
+}
+
+// Refuses to start if more than SC_MAX_HUB_CONNECTIONS_LIMIT connections were
+// asked for. Deliberately loud: a banner on stdout AND stderr, then exit(1), so
+// nobody mistakes this example for a production hub. Returns only if the value
+// is within the limit.
+static void CheckScMaxHubConnectionsLimit(const uint16_t requested, const char* source) {
+    if (requested <= SC_MAX_HUB_CONNECTIONS_LIMIT) {
+        return;
+    }
+    char banner[1600];
+    snprintf(banner, sizeof(banner),
+             "\n"
+             "################################################################################\n"
+             "##                                                                            ##\n"
+             "##   ERROR: TOO MANY BACnet/SC CONNECTIONS REQUESTED                          ##\n"
+             "##                                                                            ##\n"
+             "################################################################################\n"
+             "\n"
+             "  sc-max-hub-connections = %u (from %s)\n"
+             "\n"
+             "  This example hub accepts at most %u BACnet/SC devices at a time. It is\n"
+             "  for evaluation and testing only, not for production use.\n"
+             "\n"
+             "  For a production BACnet/SC hub with more connections, contact Chipkin:\n"
+             "\n"
+             "      %s\n"
+             "      https://store.chipkin.com/services/stacks/bacnet-stack\n"
+             "\n"
+             "  To run this example, set sc-max-hub-connections to %u or less.\n"
+             "  Shutting down.\n"
+             "\n"
+             "################################################################################\n"
+             "\n",
+             (unsigned)requested, source, (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT, SALES_EMAIL,
+             (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT);
+    fputs(banner, stdout);
+    fflush(stdout);
+    fputs(banner, stderr);
+    fflush(stderr);
+    exit(1);
 }
 
 // Parse "--sc-rate-limit <n>" (0..65535; 0 = no limit); returns defaultValue
@@ -1635,7 +1699,7 @@ int main(int argc, char** argv) {
     // --- Command line + version --------------------------------------------
     // showDccPasswordCliOption=false (common/ 2.7.0) - this example does NOT
     // accept --dcc-password on the command line (Task 1: config-file only,
-    // see g_dccPassword's own comment and README.md "Secrets handling").
+    // see g_dccPassword's own comment and README.md "Configuration file").
     if (CASExampleHelper::HandleHelpAndVersionArgs(argc, argv, APP_NAME, APP_VERSION,
                                                    /*showDccPasswordCliOption*/ false)) {
         // common/'s --help handler cannot know about this example's BACnet/SC
@@ -1648,8 +1712,8 @@ int main(int argc, char** argv) {
                 printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 47819.\n");
                 printf("  --sc-cert-dir <dir> Directory holding operational-certificate.pem,\n");
                 printf("                      private-key.pem and issuer-certificate.pem (or the older\n");
-                printf("                      hub.crt/hub.key/ca.crt; see --generate-certs or\n");
-                printf("                      scripts/generate-test-certs.cmake). Default \"./certs\".\n");
+                printf("                      hub.crt/hub.key/ca.crt; see\n");
+                printf("                      --generate-certs below). Default \"./certs\".\n");
                 printf("  --sc-hub-uri <wss://host:port/path>\n");
                 printf("                      Also run the hub CONNECTOR role: dial out to another hub at\n");
                 printf("                      this URI. Off by default (this example needs only the hub\n");
@@ -1658,8 +1722,11 @@ int main(int argc, char** argv) {
                 printf("                      Optional failover hub URI, used only if --sc-hub-uri is\n");
                 printf("                      also given.\n");
                 printf("  --sc-max-hub-connections <n>\n");
-                printf("                      Max simultaneous inbound BACnet/SC peer connections the hub\n");
-                printf("                      function accepts (enforced by the stack). Default 4.\n");
+                printf("                      Max BACnet/SC devices connected to the hub at once, 1 to %u.\n",
+                       (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT);
+                printf("                      Default %u. This example is limited to %u for evaluation and\n",
+                       (unsigned)SC_MAX_HUB_CONNECTIONS_DEFAULT, (unsigned)SC_MAX_HUB_CONNECTIONS_LIMIT);
+                printf("                      testing; for production, contact %s.\n", SALES_EMAIL);
                 printf("  --sc-rate-limit <n>\n");
                 printf("                      Max NEW inbound BACnet/SC connection ATTEMPTS/second the\n");
                 printf("                      listener accepts before rejecting the excess (before the TLS\n");
@@ -1807,8 +1874,18 @@ int main(int argc, char** argv) {
     if (g_scFailoverUri.empty() && fileConfig.hasScFailoverUri) {
         g_scFailoverUri = fileConfig.scFailoverUri;
     }
-    g_scMaxHubConnections = ParseScMaxHubConnectionsArg(
-        argc, argv, fileConfig.hasScMaxHubConnections ? fileConfig.scMaxHubConnections : SC_MAX_HUB_CONNECTIONS_DEFAULT);
+    {
+        const uint16_t fromFile =
+            fileConfig.hasScMaxHubConnections ? fileConfig.scMaxHubConnections : SC_MAX_HUB_CONNECTIONS_DEFAULT;
+        g_scMaxHubConnections = ParseScMaxHubConnectionsArg(argc, argv, fromFile);
+        const char* source = "the built-in default";
+        if (g_scMaxHubConnections != fromFile) {
+            source = "the --sc-max-hub-connections command-line option";
+        } else if (fileConfig.hasScMaxHubConnections) {
+            source = "the config file's sc-max-hub-connections";
+        }
+        CheckScMaxHubConnectionsLimit(g_scMaxHubConnections, source);
+    }
     g_scRateLimit = ParseScRateLimitArg(
         argc, argv, fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
     g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
@@ -1856,7 +1933,7 @@ int main(int argc, char** argv) {
     {
         CASSc::ScTlsFiles tls;
         // BACnet-named PEM files from --generate-certs, or the older names
-        // from scripts/generate-test-certs.cmake - see cert_tool.h.
+        // from an earlier release - see cert_tool.h.
         const std::string issuer1Path = ScCertFilePath(FILE_ISSUER_CERT_1_INSTANCE);
 
         // CertStore owns the 4 certificate File objects' contents (section 2d-ii).
@@ -1981,17 +2058,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --- Add the read-only sensor objects (base series pattern) -------------
+    // --- Add the example sensor object ----------------------------------------
     if (!BACnetStack_AddObject(g_deviceInstance, OBJECT_TYPE_ANALOG_INPUT, ANALOG_INPUT_INSTANCE)) {
         printf("Error: Failed to add Analog Input %u (Bronze).\n", ANALOG_INPUT_INSTANCE);
-        return 1;
-    }
-    if (!BACnetStack_AddObject(g_deviceInstance, OBJECT_TYPE_BINARY_INPUT, BINARY_INPUT_INSTANCE)) {
-        printf("Error: Failed to add Binary Input %u (Emerald).\n", BINARY_INPUT_INSTANCE);
-        return 1;
-    }
-    if (!BACnetStack_AddObject(g_deviceInstance, OBJECT_TYPE_MULTI_STATE_INPUT, MULTI_STATE_INPUT_INSTANCE)) {
-        printf("Error: Failed to add Multi-State Input %u (Hot Pink).\n", MULTI_STATE_INPUT_INSTANCE);
         return 1;
     }
 
@@ -2147,15 +2216,28 @@ int main(int argc, char** argv) {
     }
 
     // --- Enable the OPTIONAL properties we choose to expose ------------------
-    if (!BACnetStack_SetPropertyEnabled(g_deviceInstance, OBJECT_TYPE_DEVICE,
-                                        g_deviceInstance, PROPERTY_IDENTIFIER_DESCRIPTION, true)) {
-        printf("Error: Failed to enable Description on the Device object.\n");
-        return 1;
-    }
-    if (!BACnetStack_SetPropertyEnabled(g_deviceInstance, OBJECT_TYPE_MULTI_STATE_INPUT,
-                                        MULTI_STATE_INPUT_INSTANCE, PROPERTY_IDENTIFIER_STATE_TEXT, true)) {
-        printf("Error: Failed to enable State_Text on Multi-State Input 1 (Hot Pink).\n");
-        return 1;
+    // Description on every object (served by GetPropertyCharString from
+    // ObjectDescription()). An optional property needs SetPropertyEnabled, not
+    // just a callback branch: the stack checks it before calling the callback.
+    {
+        struct { uint16_t type; uint32_t instance; } objects[] = {
+            {OBJECT_TYPE_DEVICE, g_deviceInstance},
+            {OBJECT_TYPE_ANALOG_INPUT, ANALOG_INPUT_INSTANCE},
+            {OBJECT_TYPE_NETWORK_PORT, NETWORK_PORT_INSTANCE},
+            {OBJECT_TYPE_NETWORK_PORT, SC_NETWORK_PORT_INSTANCE},
+            {OBJECT_TYPE_FILE, FILE_OPERATIONAL_CERT_INSTANCE},
+            {OBJECT_TYPE_FILE, FILE_CSR_INSTANCE},
+            {OBJECT_TYPE_FILE, FILE_ISSUER_CERT_1_INSTANCE},
+            {OBJECT_TYPE_FILE, FILE_ISSUER_CERT_2_INSTANCE},
+        };
+        for (const auto& o : objects) {
+            if (!BACnetStack_SetPropertyEnabled(g_deviceInstance, o.type, o.instance,
+                                                PROPERTY_IDENTIFIER_DESCRIPTION, true)) {
+                printf("Error: Failed to enable Description on object type %u instance %u.\n",
+                       (unsigned)o.type, o.instance);
+                return 1;
+            }
+        }
     }
 
     // Who-Is is answered automatically. The spec also requires a device to
@@ -2184,6 +2266,7 @@ int main(int argc, char** argv) {
         httpConfig.bearerToken = g_dccPassword;  // Task 4: empty => upload endpoint disabled entirely
         httpConfig.resolveCertSlot = ResolveCertUploadSlot;
         httpConfig.buildHealthJson = BuildHealthJson;
+        httpConfig.buildMetricsJson = BuildMetricsJson;
         httpConfig.buildStatusPage = BuildStatusPage;  // GET / - see BuildStatusPage()
         g_httpServer.Start(httpConfig);
     }

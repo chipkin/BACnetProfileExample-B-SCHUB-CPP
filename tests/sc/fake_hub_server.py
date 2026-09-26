@@ -44,7 +44,7 @@ WHY THIS SCRIPT REUSES certs/hub.crt + certs/hub.key AS ITS OWN IDENTITY:
     roles - one BACnet/SC device, one identity, per ScTransport.h's
     class-header comment. This script stands in for a DIFFERENT device (a
     real hub), but for a lab test signed by the same throwaway CA
-    (scripts/generate-test-certs.cmake), reusing hub.crt/hub.key as this
+    (BACnetExampleBSCHUB --generate-certs), reusing hub.crt/hub.key as this
     fake hub's own server identity is sufficient: it already carries EKU
     serverAuth+clientAuth and a SAN covering 127.0.0.1/localhost, and the
     example's own Connect() sets LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK (the
@@ -58,7 +58,7 @@ WHY THIS SCRIPT REUSES certs/hub.crt + certs/hub.key AS ITS OWN IDENTITY:
 USAGE
 
     pip install -r tests/sc/requirements.txt
-    cmake -P scripts/generate-test-certs.cmake     # once, if certs/ is empty
+    BACnetExampleBSCHUB --generate-certs          # once, if certs/ is empty
     python tests/sc/fake_hub_server.py [--host 127.0.0.1] [--port 47820]
                                         [--cert-dir certs] [--once]
 
@@ -202,8 +202,7 @@ async def run(host: str, port: int, cert_dir: Path, once: bool, max_seconds: flo
     for needed in (cert_paths.hub_certificate(cert_dir), cert_paths.hub_private_key(cert_dir),
                    cert_paths.issuer_certificate(cert_dir)):
         if not needed.is_file():
-            print(f"ERROR: {needed} not found - run: BACnetExampleBSCHUB --generate-certs "
-                  "(or cmake -P scripts/generate-test-certs.cmake)")
+            print(f"ERROR: {needed} not found - run: BACnetExampleBSCHUB --generate-certs")
             return 2
 
     ssl_ctx = make_server_ssl_context(cert_dir)

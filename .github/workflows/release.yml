@@ -165,7 +165,8 @@ jobs:
       # V1/V2/V6, the CI-runnable subset - V3/V5, real-peer verification against
       # BACnetSCCli, are manual/local only, no such tool is available on a hosted runner).
       - name: Generate BACnet/SC lab test certificates
-        run: cmake --build build --target test-certs
+        shell: bash
+        run: '"${{ matrix.exe }}" --sc-cert-dir certs --generate-certs 1'
 
       - name: Set up Python (for the BACnet/SC test scripts)
         uses: actions/setup-python@v5
@@ -202,6 +203,15 @@ jobs:
       # The clause 19.8.3 certificate procedures over BACnet (add issuer, rejected
       # activation, replace operational certificate). Runs a SECOND instance on its
       # own certificate sets, because the test rewrites the hub's certificates.
+      - name: Connection limit - more than 4 BACnet/SC connections is refused
+        shell: bash
+        run: |
+          rc=0
+          "${{ matrix.exe }}" --sc-max-hub-connections 5 > limit.log 2>&1 || rc=$?
+          cat limit.log
+          [ "$rc" -ne 0 ] || { echo "FAIL: --sc-max-hub-connections 5 did not exit with an error"; exit 1; }
+          grep -q "sales@chipkin.com" limit.log || { echo "FAIL: limit error does not name sales@chipkin.com"; exit 1; }
+
       - name: BACnet/SC certificate procedures over BACnet (clause 19.8.3)
         shell: bash
         run: |
@@ -234,11 +244,11 @@ jobs:
           cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
           cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
           cp docs/PICS.md dist/ 2>/dev/null || true
-          # SC-TRANSPORT:BEGIN - this example's package also ships the BACnet/SC cert-generation
-          # script and its third-party-dependency notices (docs/bacnet-sc-transport-plan.md's
-          # "Files" section) - no other example in the series has either.
+          # SC-TRANSPORT:BEGIN - this example's package also ships the PICS as a PDF and
+          # its third-party-dependency notices (libwebsockets, OpenSSL) - no other
+          # example in the series has either.
+          cp docs/PICS.pdf dist/ 2>/dev/null || true
           cp THIRD-PARTY-NOTICES.md dist/ 2>/dev/null || true
-          cp -r scripts dist/scripts 2>/dev/null || true
           # SC-TRANSPORT:END
 
       - name: Upload build artifact

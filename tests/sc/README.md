@@ -8,7 +8,7 @@ each one proves.
 
 ```
 pip install -r tests/sc/requirements.txt
-cmake -P ../scripts/generate-test-certs.cmake   # from the repo root: cmake -P scripts/generate-test-certs.cmake
+./build/BACnetExampleBSCHUB --generate-certs   # from the repo root
 # in a separate terminal:
 ./build/BACnetExampleBSCHUB.exe --sc-port 47819 --sc-cert-dir ./certs
 # then:
@@ -31,7 +31,7 @@ Exit code 0 = every automated check passed.
 
 `--client-cert <label>` picks which client certificate to connect with:
 `clients/<label>/` from `BACnetExampleBSCHUB --generate-certs`, or
-`<label>.crt`/`.key` from `scripts/generate-test-certs.cmake`. The default
+`<label>.crt`/`.key` from an older certificate folder. The default
 is `node` if `node.crt` exists, otherwise `client-01`. For example, after
 `BACnetExampleBSCHUB --add-client-certs 1 --cert-label late` while the hub is
 running, `--client-cert late-01` confirms the hub trusts the new certificate
@@ -52,7 +52,7 @@ subprotocol, standing in as a fake hub so the CONNECTOR half
 
 ```
 pip install -r tests/sc/requirements.txt
-cmake -P scripts/generate-test-certs.cmake   # once, if certs/ is empty
+./build/BACnetExampleBSCHUB --generate-certs   # once, if certs/ is empty
 python tests/sc/fake_hub_server.py --port 47820 --cert-dir certs
 # in a separate terminal:
 ./build/BACnetExampleBSCHUB.exe --sc-hub-uri wss://127.0.0.1:47820/ --sc-cert-dir ./certs
@@ -83,7 +83,7 @@ Network Port 1.
 
 ```
 pip install -r tests/sc/requirements.txt
-cmake -P scripts/generate-test-certs.cmake   # once, if certs/ is empty
+./build/BACnetExampleBSCHUB --generate-certs   # once, if certs/ is empty
 ./build/BACnetExampleBSCHUB.exe --sc-cert-dir ./certs
 # in a separate terminal:
 python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47808 --cert-dir certs

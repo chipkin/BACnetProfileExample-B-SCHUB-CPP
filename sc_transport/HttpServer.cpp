@@ -119,7 +119,7 @@ bool HttpServer::Start(const HttpServerConfig& config) {
     // listener could only ever bind 127.0.0.1; now that --http-bind /
     // config-file http-bind can point it elsewhere, that safety margin is
     // gone the moment an operator opts in - see the loud warning just below
-    // and TODO.md "Genuinely open items" for why this would need real TLS
+    // and issue #22 for why this would need real TLS
     // (or a unix domain socket / named pipe instead of TCP) to be a sound
     // default off loopback, which this fix does NOT add.
     info.user = this;
@@ -212,8 +212,14 @@ void HttpServer::HandleGet(lws* wsi, Session* session) {
         SendResponse(wsi, session, 200, "text/html; charset=utf-8", m_config.buildStatusPage());
         return;
     }
-    if (session->uri == "/health" || session->uri == "/metrics") {
-        const std::string json = m_config.buildHealthJson ? m_config.buildHealthJson() : std::string("{}");
+    if (session->uri == "/health") {
+        bool healthy = true;
+        const std::string json = m_config.buildHealthJson ? m_config.buildHealthJson(&healthy) : std::string("{}");
+        SendResponse(wsi, session, healthy ? 200 : 503, "application/json", json);
+        return;
+    }
+    if (session->uri == "/metrics") {
+        const std::string json = m_config.buildMetricsJson ? m_config.buildMetricsJson() : std::string("{}");
         SendResponse(wsi, session, 200, "application/json", json);
         return;
     }
@@ -269,8 +275,8 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     // at the next handshake anyway - a malformed cert simply fails to work,
     // it does not compromise this device - and (c) adding a full ASN.1/X.509
     // parse here would be exactly the kind of scope creep this batch's task
-    // list explicitly asks to weigh carefully. See README.md/TODO.md for
-    // this tradeoff stated plainly.
+    // list explicitly asks to weigh carefully. Issue #25 tracks validating
+    // uploads the way CertStore validates BACnet writes.
     const bool isCsr = (session->slot == "csr");
     const std::string neededHeader = isCsr ? "-----BEGIN CERTIFICATE REQUEST-----" : "-----BEGIN CERTIFICATE-----";
     if (session->body.find(neededHeader) == std::string::npos) {

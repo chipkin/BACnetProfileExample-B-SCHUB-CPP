@@ -7,7 +7,9 @@ build-static/
 # never commit them)
 vcpkg_installed/
 
-# Lab test certificates (scripts/generate-test-certs.cmake) - regenerate with
-# `cmake -D FORCE=1 -P scripts/generate-test-certs.cmake`; never commit private
-# keys.
+# Lab test certificates (BACnetExampleBSCHUB --generate-certs) - never commit
+# private keys.
 certs/
+
+# Python bytecode
+__pycache__/

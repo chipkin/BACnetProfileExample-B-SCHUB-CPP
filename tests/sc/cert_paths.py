@@ -1,8 +1,8 @@
 """Locate this example's certificate files for the tests/sc scripts.
 
 `BACnetExampleBSCHUB --generate-certs` writes PEM files named after the BACnet
-Network Port properties (see cert_tool.h); scripts/generate-test-certs.cmake
-writes the older names. The hub reads either, so the tests do too - the
+Network Port properties (see cert_tool.h); earlier releases wrote the older
+names (hub.crt, ca.crt, node.crt). The hub reads either, so the tests do too - the
 BACnet name wins when both exist, the same rule as CertTool::ResolveCertFile.
 
     <cert-dir>/operational-certificate.pem   (or hub.crt)   the hub's certificate
@@ -42,5 +42,5 @@ def client_files(cert_dir: Path, label: str):
 
 
 def default_client_label(cert_dir: Path) -> str:
-    """node (scripts/generate-test-certs.cmake) if present, else client-01 (--generate-certs)."""
+    """node (older certificate folders) if present, else client-01 (--generate-certs)."""
     return "node" if (cert_dir / "node.crt").is_file() else "client-01"

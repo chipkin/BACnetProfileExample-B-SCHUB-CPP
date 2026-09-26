@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <memory>
 #include <regex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -34,7 +35,7 @@ namespace fs = std::filesystem;
 namespace CertTool {
 namespace {
 
-// Same profile as scripts/generate-test-certs.cmake.
+// Lab certificate profile: ECDSA P-256, SHA-256.
 const long CA_VALID_DAYS = 3650;
 const long LEAF_VALID_DAYS = 825;
 const char* const ORGANIZATION = "Chipkin Automation Systems (lab test)";
@@ -103,8 +104,35 @@ std::string LocalHostname() {
 
 // Builds and signs one certificate. For Role::Ca the certificate is
 // self-signed (issuer == NULL); otherwise `issuer` signs it.
+// The hub certificate's subjectAltName: localhost, 127.0.0.1, this computer's
+// host name, and the host clients will dial (from the hub URI written into
+// their bacnetsc.config - this computer's LAN address by default), so a client
+// that checks host names accepts wss://<that host>/ (BACnetProfileExample-B-SCHUB-CPP#9).
+std::string HubSubjectAltName(const std::string& hubUri) {
+    std::vector<std::string> entries = {"DNS:localhost", "IP:127.0.0.1", "DNS:" + LocalHostname()};
+    // wss://host:port/path -> host (an IPv6 [literal] is left to the defaults above)
+    std::string host = hubUri;
+    const size_t scheme = host.find("://");
+    if (scheme != std::string::npos) {
+        host = host.substr(scheme + 3);
+    }
+    host = host.substr(0, host.find_first_of(":/"));
+    if (!host.empty() && host[0] != '[') {
+        const bool isIPv4 = host.find_first_not_of("0123456789.") == std::string::npos;
+        entries.push_back((isIPv4 ? "IP:" : "DNS:") + host);
+    }
+    std::string san;
+    std::set<std::string> seen;
+    for (const std::string& e : entries) {
+        if (seen.insert(e).second) {
+            san += (san.empty() ? "" : ",") + e;
+        }
+    }
+    return san;
+}
+
 X509Ptr MakeCertificate(Role role, const std::string& commonName, EVP_PKEY* subjectKey,
-                        const Credential* issuer) {
+                        const Credential* issuer, const std::string& hubSubjectAltName = std::string()) {
     X509Ptr cert(X509_new());
     if (!cert) {
         return nullptr;
@@ -150,7 +178,7 @@ X509Ptr MakeCertificate(Role role, const std::string& commonName, EVP_PKEY* subj
         // connector), so it carries both EKUs and a SAN a peer can match.
         ok = ok && AddExtension(cert.get(), issuerCert, NID_ext_key_usage, "serverAuth,clientAuth");
         ok = ok && AddExtension(cert.get(), issuerCert, NID_subject_alt_name,
-                                "DNS:localhost,IP:127.0.0.1,DNS:" + LocalHostname());
+                                hubSubjectAltName.empty() ? HubSubjectAltName(std::string()) : hubSubjectAltName);
     } else if (role == Role::Client) {
         ok = ok && AddExtension(cert.get(), issuerCert, NID_ext_key_usage, "clientAuth");
     }
@@ -586,7 +614,7 @@ bool CheckNotExisting(const std::vector<fs::path>& paths) {
 }
 
 // Generates the hub's key, operational certificate and CSR in certDir.
-bool IssueHub(const fs::path& certDir, const Credential& issuer) {
+bool IssueHub(const fs::path& certDir, const Credential& issuer, const std::string& hubUri) {
     const fs::path keyPath = certDir / PRIVATE_KEY_FILE;
     const fs::path crtPath = certDir / OPERATIONAL_CERTIFICATE_FILE;
     const fs::path csrPath = certDir / CERTIFICATE_SIGNING_REQUEST_FILE;
@@ -597,7 +625,8 @@ bool IssueHub(const fs::path& certDir, const Credential& issuer) {
     if (!key) {
         return false;
     }
-    X509Ptr cert = MakeCertificate(Role::Hub, CN_PREFIX + std::string(HUB_LABEL), key.get(), &issuer);
+    X509Ptr cert = MakeCertificate(Role::Hub, CN_PREFIX + std::string(HUB_LABEL), key.get(), &issuer,
+                                   HubSubjectAltName(hubUri));
     if (!cert || !WritePem(keyPath, key.get(), NULL) || !WritePem(crtPath, NULL, cert.get()) ||
         !WriteCsr(csrPath, key.get(), cert.get())) {
         return false;
@@ -754,7 +783,7 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
     }
     RecordInManifest(certDir, ISSUER_LABEL, "issuer", "", issuer.cert.get());
 
-    if (!IssueHub(certDir, issuer) || !IssueClients(certDir, issuer, clientCount, clientLabel, hubUri) ||
+    if (!IssueHub(certDir, issuer, hubUri) || !IssueClients(certDir, issuer, clientCount, clientLabel, hubUri) ||
         !WriteText(certDir / README_FILE, CERT_DIR_README)) {
         return false;
     }
