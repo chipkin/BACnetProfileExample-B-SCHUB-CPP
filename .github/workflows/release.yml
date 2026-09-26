@@ -21,9 +21,21 @@ name: build-and-release
 
 on:
   pull_request:
+    # A PR that only changes Markdown or docs/ doesn't need a 10-minute build.
+    # (Tag builds are unaffected: path filters don't apply to tag pushes.)
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
+
+# A new push to a PR cancels that PR's run still in progress; tag builds are
+# never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
@@ -129,6 +141,12 @@ jobs:
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
           mkdir -p vcpkg-binary-cache
           echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+          # x64-windows-static matches this repo's own CMakeLists.txt Windows default (kept in
+          # sync with the CAS BACnet Stack adapter's static-runtime default); x64-linux is
+          # vcpkg's own default triplet there, so nothing needs to be forced on Linux.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "VCPKG_TARGET_TRIPLET=x64-windows-static" >> "$GITHUB_ENV"
+          fi
 
       # A binary cache that doesn't expire (issue #17): actions/cache above is
       # evicted after 7 days unused, and this workflow only runs on pull requests
@@ -148,24 +166,20 @@ jobs:
           FEED_MODE: ${{ github.event_name == 'pull_request' && 'read' || 'readwrite' }}
         run: |
           set -e
+          # nuget.exe is a .NET program; on Linux vcpkg (and this step) run it with
+          # mono, which must be installed first - mono-devel is enough.
+          if [ "${{ runner.os }}" != "Windows" ] && ! command -v mono > /dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends mono-devel > /dev/null
+          fi
           nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
           run_nuget() {
             if [ "${{ runner.os }}" = "Windows" ]; then "$nuget" "$@"; else mono "$nuget" "$@"; fi
           }
-          if [ "${{ runner.os }}" != "Windows" ] && ! command -v mono > /dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq mono-complete > /dev/null
-          fi
           run_nuget sources add -Source "$FEED_URL" -StorePasswordInClearText -Name GitHubPackages \
             -UserName "${{ github.repository_owner }}" -Password "$FEED_TOKEN"
           run_nuget setapikey "$FEED_TOKEN" -Source "$FEED_URL"
           echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite;nuget,${FEED_URL},${FEED_MODE}" >> "$GITHUB_ENV"
           echo "vcpkg binary cache: files + GitHub Packages NuGet (${FEED_MODE})"
-          # x64-windows-static matches this repo's own CMakeLists.txt Windows default (kept in
-          # sync with the CAS BACnet Stack adapter's static-runtime default); x64-linux is
-          # vcpkg's own default triplet there, so nothing needs to be forced on Linux.
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            echo "VCPKG_TARGET_TRIPLET=x64-windows-static" >> "$GITHUB_ENV"
-          fi
 
       # The runner image's vcpkg clone is usually older than the manifest's builtin-baseline,
       # and vcpkg then fails with "failed to git show versions/baseline.json". Fetch exactly
@@ -193,7 +207,7 @@ jobs:
           [ "$mode" = "SOURCE" ] || { echo "FAIL: expected SOURCE, got '$mode'"; exit 1; }
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build --config Release --parallel
       # SC-TRANSPORT:BEGIN - Code signing, part 2: sign the executable (Windows, tag builds
       # only; part 1, the Azure login and checks, ran first). Signs before the smoke test
       # and metrics, so the published binary, its metrics and its checksum are all the

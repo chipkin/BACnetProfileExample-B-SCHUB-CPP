@@ -104,6 +104,14 @@ find_package(Threads REQUIRED)  # log_file.cpp's copy thread
 # CAS_BACNET_STACK_LINK is the adapter's own cache variable (SOURCE/STATIC/DLL,
 # default SOURCE) - set it BEFORE add_subdirectory() so the adapter target picks it up.
 # See submodules/cas-bacnet-stack/adapters/cpp/CMakeLists.txt for what each mode does.
+# Compile each target's files in parallel with MSVC too (/MP): the stack is
+# ~600 files, and Visual Studio otherwise builds a project's files one at a
+# time. Before add_subdirectory() so the stack's target gets it. (Makefile and
+# Ninja builds parallelise with "cmake --build build --parallel".)
+if(MSVC)
+    add_compile_options(/MP)
+endif()
+
 add_subdirectory("${CAS_STACK_DIR}/adapters/cpp" cas-bacnet-stack-adapter)
 
 # --- The shared example helper ----------------------------------------------
