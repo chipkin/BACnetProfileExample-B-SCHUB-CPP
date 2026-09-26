@@ -455,6 +455,7 @@ jobs:
       # The installer wraps the executable that "Sign executable with Azure Artifact
       # Signing" signed on a tag build; the installer itself is not signed yet.
       - name: Windows installer (Inno Setup)
+        id: installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -463,7 +464,34 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
           & $iscc /Q "/DAppVersion=$version" "/DSourceDir=$PWD\dist" "/DOutputDir=$PWD\dist" packaging\windows\installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "path=$PWD\dist\BACnetSCHub-$version-setup.exe" >> $env:GITHUB_OUTPUT
           Get-ChildItem dist
+
+      # Sign the installer too (issue #34), with the same Azure Artifact Signing
+      # account and profile as the executable, on tag builds only. The Azure login
+      # from the start of this job is still valid.
+      - name: Sign installer with Azure Artifact Signing
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AS_ENDPOINT }}
+          signing-account-name: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
+          files: |
+            ${{ steps.installer.outputs.path }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify installer signature
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "No installer in dist" }
+          $sig = Get-AuthenticodeSignature -LiteralPath $setup.FullName
+          Write-Host "$($setup.Name): $($sig.Status) - $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { throw "The installer is not validly signed ($($sig.Status))" }
 
       - name: Linux archive and .deb package
         if: runner.os == 'Linux'
@@ -479,6 +507,45 @@ jobs:
           sh packaging/linux/build-deb.sh "$version" "$stage" dist
           dpkg-deb --info "dist/bacnet-schub-hub_${version}_amd64.deb"
           ls -l dist
+
+      # Install the packages on the runner and check the service really runs
+      # (issue #34): the runners have admin rights and, on Linux, systemd.
+      - name: Test the .deb - install, service up, /health, purge
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
+          sudo apt-get install -y -qq "./dist/bacnet-schub-hub_${version}_amd64.deb" > /dev/null
+          ok=0
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8080/health > /dev/null && { ok=1; break; }
+            sleep 1
+          done
+          systemctl is-active bacnet-schub-hub
+          sudo journalctl -u bacnet-schub-hub --no-pager | tail -20
+          [ "$ok" = 1 ] || { echo "FAIL: the bacnet-schub-hub service did not answer /health"; exit 1; }
+          curl -s http://127.0.0.1:8080/health; echo
+          test -f /var/log/bacnet-schub/hub.log || { echo "FAIL: no /var/log/bacnet-schub/hub.log"; exit 1; }
+          sudo apt-get purge -y -qq bacnet-schub-hub > /dev/null
+          ! systemctl is-active bacnet-schub-hub
+
+      - name: Test the Windows installer - silent install, service up, /health, uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter "*-setup.exe" | Select-Object -First 1
+          Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $ok = $false
+          foreach ($i in 1..30) {
+            try { Invoke-RestMethod http://127.0.0.1:8080/health | ConvertTo-Json -Compress; $ok = $true; break } catch { Start-Sleep 1 }
+          }
+          Get-Service BACnetSCHub | Format-List Name, Status, StartType
+          Get-Content "$env:ProgramData\Chipkin\BACnetSCHub\logs\hub.log" -Tail 20 -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "The BACnetSCHub service did not answer /health" }
+          if ((Get-Service BACnetSCHub).StartType -ne 'Automatic') { throw "The service does not start automatically" }
+          $uninstaller = Get-ChildItem "${env:ProgramFiles}\Chipkin\BACnet SC Hub" -Filter "unins*.exe" | Select-Object -First 1
+          Start-Process -FilePath $uninstaller.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
+          if (Get-Service BACnetSCHub -ErrorAction SilentlyContinue) { throw "Uninstall left the BACnetSCHub service behind" }
       # SC-TRANSPORT:END
 
       - name: Upload build artifact
@@ -492,6 +559,10 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # publish the release
+      id-token: write      # build-provenance attestations (Sigstore, keyless)
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -522,6 +593,15 @@ jobs:
           cd release
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      # Signed build provenance for every release asset (issue #34): the Linux
+      # archive and .deb as well as the Windows files. Keyless - GitHub OIDC and
+      # Sigstore, no key to store. Anyone can check a download came from this
+      # workflow and commit with: gh attestation verify <file> --repo <owner>/<repo>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
       # SC-TRANSPORT:END
       - uses: softprops/action-gh-release@v2
         with:

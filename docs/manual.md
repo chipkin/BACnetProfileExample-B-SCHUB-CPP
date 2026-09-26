@@ -107,12 +107,14 @@ empty, so the hub starts listening straight away; replace it for production
 (see [Certificates](#4-certificates)). Settings and certificates are kept
 when you upgrade or uninstall.
 
-**Signed downloads.** The Windows program in a release is code-signed by
-Chipkin (Azure Artifact Signing, SHA-256 with a timestamp). Check it with
-`Get-AuthenticodeSignature .\BACnetExampleBSCHUB.exe`, and check any download
-against `SHA256SUMS.txt` - see
-[code-signing.md](code-signing.md#checking-a-release). The installer itself
-isn't signed yet.
+**Signed downloads.** The Windows program and the Windows installer are
+code-signed by Chipkin (Azure Artifact Signing, SHA-256 with a timestamp);
+check them with `Get-AuthenticodeSignature <file>`. Every download - the
+Linux archive and `.deb` included - also has a signed build-provenance
+attestation: `gh attestation verify <file> --repo
+chipkin/BACnetProfileExample-B-SCHUB-CPP` confirms it was built by this
+project's release workflow. `SHA256SUMS.txt` lists every file's checksum. See
+[code-signing.md](code-signing.md#checking-a-release).
 
 ### Supported platforms
 

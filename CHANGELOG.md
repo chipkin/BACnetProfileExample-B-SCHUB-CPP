@@ -7,6 +7,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Open work is tracked in
 [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues).
 
+## [Unreleased]
+
+### Added
+
+- The Windows installer is code-signed like the program, and every release
+  download (the Linux archive and `.deb` included) has a signed
+  build-provenance attestation: `gh attestation verify <file> --repo
+  chipkin/BACnetProfileExample-B-SCHUB-CPP`
+  ([#34](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/34)).
+
 ## [1.3.0] - 2026-09-26
 
 ### Added
