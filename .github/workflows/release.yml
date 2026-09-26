@@ -57,6 +57,44 @@ jobs:
             exe: build/BACnetExampleBSCHUB
             metrics: metrics-linux.json
     steps:
+      # SC-TRANSPORT:BEGIN - Code signing, part 1 (Windows, tag builds only). Same pattern
+      # as chipkin-modbus-explorer: Azure Artifact Signing through GitHub OIDC, no
+      # certificate or password stored in GitHub. These steps run FIRST so a signing
+      # misconfiguration (missing variable, federated credential or role) fails the run in
+      # seconds, before checkout and the long build. A tag build that can't sign fails -
+      # no unsigned releases. Part 2 (the signing itself) runs after "Build".
+      - name: Validate signing configuration inputs exist
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AS_ENDPOINT: ${{ vars.AS_ENDPOINT }}
+          AS_ACCOUNT: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
+          AS_PROFILE: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AS_ENDPOINT)) { throw "Missing repo variable AS_ENDPOINT" }
+          if ([string]::IsNullOrWhiteSpace($env:AS_ACCOUNT)) { throw "Missing repo variable AS_SIGNING_ACCOUNT_NAME" }
+          if ([string]::IsNullOrWhiteSpace($env:AS_PROFILE)) { throw "Missing repo variable AS_CERTIFICATE_PROFILE_NAME" }
+          Write-Host "Signing endpoint: $env:AS_ENDPOINT"
+          Write-Host "Signing account:  $env:AS_ACCOUNT"
+          Write-Host "Cert profile:     $env:AS_PROFILE"
+
+      - name: Azure login (OIDC)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Check a code-signing token can be issued
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $null = az account get-access-token --resource https://codesigning.azure.net --query expiresOn -o tsv
+          if ($LASTEXITCODE -ne 0) { throw "Could not get an Azure Artifact Signing token for this identity" }
+          Write-Host "Azure Artifact Signing token OK"
+      # SC-TRANSPORT:END
       - name: Enable git long paths (Windows)
         if: runner.os == 'Windows'
         run: git config --system core.longpaths true
@@ -124,35 +162,10 @@ jobs:
 
       - name: Build
         run: cmake --build build --config Release
-      # SC-TRANSPORT:BEGIN - Code signing (Windows, tag builds only). Same pattern as
-      # chipkin-modbus-explorer: Azure Artifact Signing through GitHub OIDC, no certificate
-      # or password stored in GitHub. Signs the executable before the smoke test and
-      # metrics, so the published binary, its metrics and its checksum are all the signed
-      # one. A tag build fails here if signing isn't configured - no unsigned releases.
-      - name: Azure login (OIDC)
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
-        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          enable-AzPSSession: true
-
-      - name: Validate signing configuration inputs exist
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
-        shell: pwsh
-        env:
-          AS_ENDPOINT: ${{ vars.AS_ENDPOINT }}
-          AS_ACCOUNT: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
-          AS_PROFILE: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:AS_ENDPOINT)) { throw "Missing repo variable AS_ENDPOINT" }
-          if ([string]::IsNullOrWhiteSpace($env:AS_ACCOUNT)) { throw "Missing repo variable AS_SIGNING_ACCOUNT_NAME" }
-          if ([string]::IsNullOrWhiteSpace($env:AS_PROFILE)) { throw "Missing repo variable AS_CERTIFICATE_PROFILE_NAME" }
-          Write-Host "Signing endpoint: $env:AS_ENDPOINT"
-          Write-Host "Signing account:  $env:AS_ACCOUNT"
-          Write-Host "Cert profile:     $env:AS_PROFILE"
-
+      # SC-TRANSPORT:BEGIN - Code signing, part 2: sign the executable (Windows, tag builds
+      # only; part 1, the Azure login and checks, ran first). Signs before the smoke test
+      # and metrics, so the published binary, its metrics and its checksum are all the
+      # signed one.
       - name: Sign executable with Azure Artifact Signing
         if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
         uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0

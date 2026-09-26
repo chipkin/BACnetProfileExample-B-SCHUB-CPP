@@ -11,9 +11,11 @@ In `.github/workflows/release.yml`, on a `vX.Y.Z` tag build only, the Windows
 leg of the `build` job:
 
 1. runs in the GitHub environment `release`
-2. logs in to Azure with OIDC (`azure/login`)
-3. signs `build/Release/BACnetExampleBSCHUB.exe` (SHA-256, RFC 3161 timestamp
-   from `http://timestamp.acs.microsoft.com`)
+2. **first**, before checkout and the build: checks the `AS_*` variables,
+   logs in to Azure with OIDC (`azure/login`), and checks that a code-signing
+   token can be issued. A configuration problem fails the run in seconds.
+3. after the build, signs `build/Release/BACnetExampleBSCHUB.exe` (SHA-256,
+   RFC 3161 timestamp from `http://timestamp.acs.microsoft.com`)
 4. checks the signature with `signtool verify /pa`
 
 The smoke test, metrics and release package all use the signed executable.
@@ -27,11 +29,15 @@ Windows binary can't be published by mistake.
 
 ### Azure
 
-Use the existing app registration that `chipkin-modbus-explorer` signs with.
-It already holds the signing role on the `chipkin-signing` account.
+Use the app registration **`github-trusted-signing-bacnet-explorer`**
+(client ID `8343d7c0-0263-44df-b5be-baab0d48ab48`), the one
+`chipkin-modbus-explorer` and `chipkin-bacnet-explorer` sign with. It holds the
+**Artifact Signing Certificate Profile Signer** role on
+`chipkin-signing/chipkin-public-trust`. (The similarly named
+`github-actions-artifact-signing` app has no Azure roles and can't sign.)
 
-1. Azure portal -> **Microsoft Entra ID** -> **App registrations** -> the
-   GitHub signing app.
+1. Azure portal -> **Microsoft Entra ID** -> **App registrations** ->
+   `github-trusted-signing-bacnet-explorer`.
 2. **Certificates & secrets** -> **Federated credentials** -> **Add
    credential**:
    - Scenario: **GitHub Actions deploying Azure resources**
@@ -42,12 +48,15 @@ It already holds the signing role on the `chipkin-signing` account.
    - Name: `bacnet-b-schub-release`
 
    The subject must read
-   `repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release`.
+   `repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release`. If
+   the portal asks for an Organization ID and Repository ID it builds an
+   ID-based subject (`repo:chipkin@14987761/...@1277739699:...`), which this
+   repository does not send - change the subject to the form above.
 
 Or with the Azure CLI:
 
 ```bash
-az ad app federated-credential create --id <AZURE_CLIENT_ID> --parameters '{
+az ad app federated-credential create --id 8343d7c0-0263-44df-b5be-baab0d48ab48 --parameters '{
   "name": "bacnet-b-schub-release",
   "issuer": "https://token.actions.githubusercontent.com",
   "subject": "repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release",
@@ -55,9 +64,7 @@ az ad app federated-credential create --id <AZURE_CLIENT_ID> --parameters '{
 }'
 ```
 
-No new role assignment is needed if the app already has **Artifact Signing
-Certificate Profile Signer** on the `chipkin-signing` account (or its
-`chipkin-public-trust` profile).
+No new role assignment is needed: the app already has the signing role.
 
 ### GitHub
 
@@ -66,13 +73,11 @@ In this repository's **Settings**:
 1. **Environments** -> **New environment** -> `release`. Under **Deployment
    branches and tags**, choose **Selected branches and tags** and add the tag
    rule `v*`, so only release tags can use the signing credential.
-2. **Secrets and variables** -> **Actions** -> **Secrets** (repository, or
-   on the `release` environment). Use the same values as
-   `chipkin-modbus-explorer`, found on the app registration's Overview page
-   and the subscription:
-   - `AZURE_CLIENT_ID`
-   - `AZURE_TENANT_ID`
-   - `AZURE_SUBSCRIPTION_ID`
+2. **Environments** -> `release` -> **Environment secrets**:
+   - `AZURE_CLIENT_ID` = `8343d7c0-0263-44df-b5be-baab0d48ab48`
+   - `AZURE_TENANT_ID` = the Directory (tenant) ID on the app's Overview page
+   - `AZURE_SUBSCRIPTION_ID` = `0f1f7ccd-01c1-4ee4-88c4-3fa5acc43114`
+     ("CodeSiging", the subscription holding `chipkin-signing`)
 3. **Variables**:
    - `AS_ENDPOINT` = `https://wus3.codesigning.azure.net/`
    - `AS_SIGNING_ACCOUNT_NAME` = `chipkin-signing`
@@ -83,9 +88,9 @@ With the GitHub CLI (secret values are prompted for, not echoed):
 ```bash
 R=chipkin/BACnetProfileExample-B-SCHUB-CPP
 gh api -X PUT repos/$R/environments/release
-gh secret set AZURE_CLIENT_ID -R $R
-gh secret set AZURE_TENANT_ID -R $R
-gh secret set AZURE_SUBSCRIPTION_ID -R $R
+gh secret set AZURE_CLIENT_ID -R $R --env release
+gh secret set AZURE_TENANT_ID -R $R --env release
+gh secret set AZURE_SUBSCRIPTION_ID -R $R --env release
 gh variable set AS_ENDPOINT -R $R --body "https://wus3.codesigning.azure.net/"
 gh variable set AS_SIGNING_ACCOUNT_NAME -R $R --body "chipkin-signing"
 gh variable set AS_CERTIFICATE_PROFILE_NAME -R $R --body "chipkin-public-trust"
@@ -114,6 +119,7 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 |---|---|
 | `Missing repo variable AS_...` | Add the three `AS_*` variables. |
 | `azure/login`: *No matching federated identity record found* | The federated credential's subject doesn't match. It must be `repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release`. |
+| `azure/login`: *No subscriptions found* | The app behind `AZURE_CLIENT_ID` has no role in `AZURE_SUBSCRIPTION_ID`. Use `github-trusted-signing-bacnet-explorer` and the CodeSiging subscription. |
 | `azure/login`: *Not all values are present* | A `AZURE_*` secret is missing, or it's an environment secret on an environment other than `release`. |
 | Signing: *403 Forbidden* | The app lacks the Artifact Signing Certificate Profile Signer role on the account or profile. |
 | The job waits for approval | The `release` environment has required reviewers. Approve the run, or remove the rule. |
