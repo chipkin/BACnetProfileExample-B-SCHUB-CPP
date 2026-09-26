@@ -19,7 +19,15 @@ leg of the `build` job:
 4. checks the signature with `signtool verify /pa`
 
 The smoke test, metrics and release package all use the signed executable.
-The `release` job also publishes `SHA256SUMS.txt` for every release asset.
+After the Windows installer is built, it is signed the same way and checked
+with `Get-AuthenticodeSignature`.
+
+The `release` job also publishes `SHA256SUMS.txt` for every release asset,
+and a **build-provenance attestation** for every asset
+(`actions/attest-build-provenance`): a keyless Sigstore signature, issued
+through GitHub OIDC, that records which workflow run and commit built the
+file. It covers the Linux archive and `.deb`, which have no Authenticode
+equivalent, and needs no key or secret.
 
 Pull requests and the Linux leg never sign and never use the `release`
 environment. A tag build **fails** if signing isn't configured, so an unsigned
@@ -100,10 +108,11 @@ The `v*` tag rule on the environment is easiest to add in the web UI.
 
 ## Checking a release
 
-Windows (PowerShell):
+Windows (PowerShell) - the program and the installer are Authenticode-signed:
 
 ```powershell
 Get-AuthenticodeSignature .\BACnetExampleBSCHUB.exe | Format-List Status, SignerCertificate
+Get-AuthenticodeSignature .\BACnetSCHub-1.3.0-setup.exe | Format-List Status, SignerCertificate
 Get-FileHash .\BACnetExampleBSCHUB.exe -Algorithm SHA256
 ```
 
@@ -111,6 +120,14 @@ Linux:
 
 ```bash
 sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+Any download, on any platform, with the GitHub CLI - checks the file's
+signed build provenance (it was built by this repository's release workflow,
+from a tagged commit):
+
+```bash
+gh attestation verify bacnet-schub-hub_1.3.0_amd64.deb --repo chipkin/BACnetProfileExample-B-SCHUB-CPP
 ```
 
 ## Troubleshooting

@@ -9,6 +9,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/rand.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -215,6 +216,52 @@ bool WritePem(const fs::path& path, EVP_PKEY* key, X509* cert) {
                         fs::perm_options::replace, ec);
     }
     return true;
+}
+
+// Writes `cert` in DER (binary) form - the ".cer" Windows tools expect.
+bool WriteDer(const fs::path& path, X509* cert) {
+    FILE* f = fopen(path.string().c_str(), "wb");
+    if (f == NULL) {
+        fprintf(stderr, "Error: could not create \"%s\".\n", path.string().c_str());
+        return false;
+    }
+    const bool ok = i2d_X509_fp(f, cert) == 1;
+    fclose(f);
+    if (!ok) {
+        PrintOpenSslError("could not write DER data");
+    }
+    return ok;
+}
+
+// Writes a PKCS#12 (.pfx) bundle: `cert`, its private `key`, and `issuer` as
+// the chain, under `friendlyName`, with an EMPTY password - YABE's BACnet/SC
+// channel file has no password field. So the .pfx is as private as
+// private-key.pem. 3DES and a SHA-1 MAC rather than OpenSSL 3's AES/SHA-256
+// defaults, so every Windows version can load it.
+bool WritePfx(const fs::path& path, EVP_PKEY* key, X509* cert, X509* issuer, const std::string& friendlyName) {
+    STACK_OF(X509)* chain = sk_X509_new_null();
+    sk_X509_push(chain, issuer);
+    PKCS12* p12 = PKCS12_create("", friendlyName.c_str(), key, cert, chain,
+                                NID_pbe_WithSHA1And3_Key_TripleDES_CBC, NID_pbe_WithSHA1And3_Key_TripleDES_CBC,
+                                2048, -1 /* MAC set below */, 0);
+    sk_X509_free(chain);  // the issuer itself stays owned by the caller
+    bool ok = p12 != NULL && PKCS12_set_mac(p12, "", -1, NULL, 0, 2048, EVP_sha1()) == 1;
+    FILE* f = ok ? fopen(path.string().c_str(), "wb") : NULL;
+    if (ok && f == NULL) {
+        fprintf(stderr, "Error: could not create \"%s\".\n", path.string().c_str());
+        ok = false;
+    }
+    if (f != NULL) {
+        ok = i2d_PKCS12_fp(f, p12) == 1;
+        fclose(f);
+        std::error_code ec;  // private, like private-key.pem
+        fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
+    }
+    PKCS12_free(p12);
+    if (!ok) {
+        PrintOpenSslError("could not write the PKCS#12 (.pfx) file");
+    }
+    return ok;
 }
 
 // Writes a PKCS#10 certificate signing request for `key` with the same
@@ -448,6 +495,21 @@ bacnetsc.config                                                   PUBLIC
     --sc-port - or whatever --cert-hub-uri said. Edit primaryHubURI (and
     failoverHubURI, if you have a second hub) if that changes.
 
+<label>.pfx                                                       PRIVATE
+    The same certificate and private key (plus the issuer) in one PKCS#12
+    file, for Windows tools such as YABE. It has an EMPTY password, so it is
+    as private as private-key.pem.
+
+issuer-certificate.cer                                            PUBLIC
+    issuer-certificate.pem in DER (binary) form, for Windows tools.
+
+yabe-bacnetsc.config                                              PUBLIC
+    A ready-to-use BACnet/SC channel file for YABE (Yet Another BACnet
+    Explorer): the hub URI, <label>.pfx and issuer-certificate.cer, by
+    absolute path. In YABE: Communication Channel -> BACnet/Secure Connect ->
+    Select this file -> Start. YABE uses Windows' TLS, which can't do the
+    TLS 1.3 BACnet/SC requires on Windows 10 - use Windows 11 or later.
+
 readme.txt                                                        PUBLIC
     A short note for whoever receives that folder.
 
@@ -467,6 +529,9 @@ HOW TO USE THESE FILES
 
    CAS BACnet Explorer: import clients/<label>/bacnetsc.config. It
    already names the hub URI and the three PEM files in the same folder.
+
+   YABE: select clients/<label>/yabe-bacnetsc.config as the BACnet/SC
+   channel's configuration file (Windows 11 or later - see above).
 
    Any other BACnet/SC device:
      - install operational-certificate.pem and private-key.pem as its
@@ -538,6 +603,14 @@ issuer-certificate.pem         PUBLIC   The certificate authority that signed th
 bacnetsc.config                PUBLIC   This device's BACnet/SC connection settings: hub URI
                                         %HUBURI% and the three files above.
                                         Import it into the CAS BACnet Explorer.
+%LABEL%.pfx                    PRIVATE  The certificate, private key and issuer in one PKCS#12
+                                        file for Windows tools. EMPTY password - keep it as
+                                        private as private-key.pem.
+issuer-certificate.cer         PUBLIC   issuer-certificate.pem in DER form.
+yabe-bacnetsc.config           PUBLIC   YABE's BACnet/SC channel file (hub URI, the .pfx and
+                                        the .cer by absolute path). In YABE: Communication
+                                        Channel -> BACnet/Secure Connect -> Select -> Start.
+                                        Needs Windows 11 or later (TLS 1.3).
 
 To connect from the CAS BACnet Explorer (https://store.chipkin.com/products/tools/cas-bacnet-explorer):
 import bacnetsc.config from this folder
@@ -603,6 +676,31 @@ std::string BacnetScConfig(const std::string& hubUri) {
     return xml;
 }
 
+// yabe-bacnetsc.config for one client folder: YABE's BACnet/SC channel file
+// (the format of BACnetSCConfig.config next to Yabe.exe). YABE resolves
+// relative names against its own folder, so the files are given by absolute
+// path; move the folder and re-select or edit the file.
+std::string YabeConfig(const std::string& hubUri, const fs::path& pfxPath, const fs::path& issuerPath) {
+    // YABE's own example writes the URI without a trailing '/'.
+    std::string uri = hubUri;
+    while (!uri.empty() && uri.back() == '/') {
+        uri.pop_back();
+    }
+    std::error_code ec;
+    const std::string pfx = fs::absolute(pfxPath, ec).make_preferred().string();
+    const std::string ca = fs::absolute(issuerPath, ec).make_preferred().string();
+    std::string xml;
+    xml += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    xml += "<BACnetSCConfigChannel>\n";
+    xml += "  <primaryHubURI>" + XmlEscape(uri) + "</primaryHubURI>\n";
+    xml += "  <failoverHubURI>" + XmlEscape(uri) + "</failoverHubURI>\n";
+    xml += "  <OwnCertificateFile>" + XmlEscape(pfx) + "</OwnCertificateFile>\n";
+    xml += "  <HubCertificateFile>" + XmlEscape(ca) + "</HubCertificateFile>\n";
+    xml += "  <ValidateHubCertificate>true</ValidateHubCertificate>\n";
+    xml += "</BACnetSCConfigChannel>\n";
+    return xml;
+}
+
 // Refuses to write over an existing file.
 bool CheckNotExisting(const std::vector<fs::path>& paths) {
     for (const fs::path& p : paths) {
@@ -657,6 +755,14 @@ bool IssueClient(const fs::path& certDir, const Credential& issuer, const std::s
     X509Ptr cert = MakeCertificate(Role::Client, CN_PREFIX + label, key.get(), &issuer);
     if (!cert || !WritePem(keyPath, key.get(), NULL) || !WritePem(crtPath, NULL, cert.get()) ||
         !WritePem(issuerPath, NULL, issuer.cert.get())) {
+        return false;
+    }
+    // For Windows tools such as YABE (issue #38).
+    const fs::path pfxPath = dir / (label + CLIENT_PFX_EXTENSION);
+    const fs::path derPath = dir / ISSUER_CERTIFICATE_DER_FILE;
+    if (!WritePfx(pfxPath, key.get(), cert.get(), issuer.cert.get(), CN_PREFIX + label) ||
+        !WriteDer(derPath, issuer.cert.get()) ||
+        !WriteText(dir / YABE_CONFIG_FILE, YabeConfig(hubUri, pfxPath, derPath))) {
         return false;
     }
     if (!WriteText(dir / BACNETSC_CONFIG_FILE, BacnetScConfig(hubUri)) ||

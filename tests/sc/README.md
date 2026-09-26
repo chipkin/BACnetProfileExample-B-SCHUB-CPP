@@ -167,6 +167,18 @@ python tests/sc/http_test.py --http-port 18080 --token test-token-123 --cert-dir
 Without `--token` it only checks that the upload endpoint is disabled (503).
 Exit code 0 = every check passed.
 
+## `cert_files_test.py` (client files for Windows tools)
+
+Checks each `clients/<label>/` folder from `--generate-certs`: `<label>.pfx`
+loads with an empty password and holds the folder's certificate, matching key
+and issuer; `issuer-certificate.cer` is the issuer in DER; and
+`yabe-bacnetsc.config` names the hub URI and both files by absolute path.
+
+```
+BACnetExampleBSCHUB --sc-cert-dir certs --generate-certs 1
+python tests/sc/cert_files_test.py --cert-dir certs
+```
+
 ## CI
 
 `.github/workflows/release.yml` runs every script here on Windows and Linux

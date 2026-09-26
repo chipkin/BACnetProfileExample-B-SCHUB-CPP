@@ -44,6 +44,10 @@
 //       bacnetsc.config                   BACnet/SC connection settings (hub
 //                                         URI + the three files above) that
 //                                         the CAS BACnet Explorer imports
+//       <label>.pfx                       certificate + key + issuer (PKCS#12,
+//                                         empty password) for Windows tools
+//       issuer-certificate.cer            the issuer in DER
+//       yabe-bacnetsc.config              YABE's BACnet/SC channel file
 //       readme.txt
 //
 // Every certificate is LABELED twice: by its folder (clients/client-01/) and
@@ -88,6 +92,12 @@ static const char* const TRUSTED_ISSUERS_FILE = "trusted-issuers.pem";
 static const char* const ISSUER_CRL_FILE = "issuer-crl.pem";
 static const char* const CLIENTS_DIR = "clients";
 static const char* const BACNETSC_CONFIG_FILE = "bacnetsc.config";
+// Also in each client folder, for Windows tools such as YABE (issue #38):
+// <label>.pfx (PKCS#12: certificate, private key and issuer, empty password),
+// the issuer in DER, and a YABE BACnet/SC channel file pointing at both.
+static const char* const CLIENT_PFX_EXTENSION = ".pfx";
+static const char* const ISSUER_CERTIFICATE_DER_FILE = "issuer-certificate.cer";
+static const char* const YABE_CONFIG_FILE = "yabe-bacnetsc.config";
 
 // The older file names used by earlier releases (still read).
 static const char* const LEGACY_OPERATIONAL_CERTIFICATE_FILE = "hub.crt";

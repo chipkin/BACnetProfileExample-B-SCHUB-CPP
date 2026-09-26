@@ -1334,12 +1334,24 @@ void ScTransport::AuditSentFrame(PeerConnection* peer, const uint8_t* data, cons
             peer->certificateSubject.c_str());
     } else if (data[0] == kBvlcResult) {
         // A BVLC-Result to a peer that hasn't been accepted is the stack
-        // refusing its Connect-Request (duplicate VMAC, hub full, ...).
+        // refusing its Connect-Request. The NAK carries the stack's reason
+        // (135-2024 AB.2.4: result-for-function, result code 0x01, then error
+        // header marker, error class and error code - 2 octets each - and
+        // UTF-8 error details), so log that rather than guess (issue #40).
+        std::string reason = "no reason given";
+        const std::size_t offset = BvlcPayloadOffset(data, len);
+        if (offset != 0 && len >= offset + 7 && data[offset + 1] == 0x01) {
+            const unsigned errorClass = (static_cast<unsigned>(data[offset + 3]) << 8) | data[offset + 4];
+            const unsigned errorCode = (static_cast<unsigned>(data[offset + 5]) << 8) | data[offset + 6];
+            const std::string details(reinterpret_cast<const char*>(data) + offset + 7, len - (offset + 7));
+            reason = (details.empty() ? std::string("no details") : "\"" + details + "\"") +
+                     ", error class " + std::to_string(errorClass) + " code " + std::to_string(errorCode);
+        }
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "SC audit: peer \"%s\" (%s) - BACnet/SC device VMAC %s, UUID %s, certificate \"%s\" - "
-            "Connect-Request refused by the hub (duplicate VMAC, or the hub is full?)",
+            "Connect-Request refused by the hub: %s",
             peer->connectionString.c_str(), peer->peerAddress.c_str(), peer->vmac.c_str(), peer->uuid.c_str(),
-            peer->certificateSubject.c_str());
+            peer->certificateSubject.c_str(), reason.c_str());
     }
 }
 

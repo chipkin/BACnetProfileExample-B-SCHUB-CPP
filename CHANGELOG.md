@@ -11,6 +11,21 @@ Open work is tracked in
 
 ### Added
 
+- `--generate-certs` / `--add-client-certs` also write, in each client
+  folder, the files Windows tools such as YABE need: `<label>.pfx`
+  (certificate, key and issuer; empty password, private), the issuer as
+  `issuer-certificate.cer` (DER), and a ready-to-select YABE BACnet/SC
+  channel file, `yabe-bacnetsc.config`
+  ([#38](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/38)).
+- The Windows installer is code-signed like the program, and every release
+  download (the Linux archive and `.deb` included) has a signed
+  build-provenance attestation: `gh attestation verify <file> --repo
+  chipkin/BACnetProfileExample-B-SCHUB-CPP`
+  ([#34](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/34)).
+- On Windows 10 the hub logs a start-up warning: BACnet/SC tools on that
+  computer that use Windows' own TLS (such as YABE) can't connect, because
+  Windows 10 can't make the TLS 1.3 client connections BACnet/SC requires
+  ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
 - The Windows executable is code-signed, and each release includes
   `SHA256SUMS.txt`
   ([#34](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/34)).
@@ -84,6 +99,16 @@ Open work is tracked in
 
 ### Changed
 
+- When the hub refuses a BACnet/SC Connect-Request, the audit log gives the
+  CAS BACnet Stack's own reason (from the BVLC-Result NAK it sends, e.g.
+  "Connect messages require the Hello destination option") instead of
+  guessing; `hub_listener_test.py` checks a Connect-Request without Hello
+  gets that NAK
+  ([#40](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/40)).
+- `cert_procedure_test.py` checks `Changes_Pending` is FALSE after
+  ACTIVATE_CHANGES, and reports the start-up `Changes_Pending` = TRUE stack
+  bug as a known issue; the manual documents it
+  ([#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
 - `POST /certs/<slot>` validates an upload the same way as a certificate
   written over BACnet - a real X.509 parse, and the hub certificate must still
   match its key and chain to an issuer - before anything reaches disk, then

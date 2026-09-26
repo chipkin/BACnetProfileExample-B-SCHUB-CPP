@@ -79,4 +79,5 @@ EOF
 
 chmod 0755 "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/prerm" "$PKG/DEBIAN/postrm"
 mkdir -p "$OUT"
-dpkg-deb --root-owner-group --build "$PKG" "$OUT/bacnet-schub-hub_${VERSION}_amd64.deb"
+# xz, not dpkg-deb's newer zstd default, so older Debian/Ubuntu releases can install it too.
+dpkg-deb --root-owner-group -Zxz --build "$PKG" "$OUT/bacnet-schub-hub_${VERSION}_amd64.deb"

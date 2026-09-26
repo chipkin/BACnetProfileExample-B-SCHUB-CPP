@@ -107,12 +107,14 @@ empty, so the hub starts listening straight away; replace it for production
 (see [Certificates](#4-certificates)). Settings and certificates are kept
 when you upgrade or uninstall.
 
-**Signed downloads.** The Windows program in a release is code-signed by
-Chipkin (Azure Artifact Signing, SHA-256 with a timestamp). Check it with
-`Get-AuthenticodeSignature .\BACnetExampleBSCHUB.exe`, and check any download
-against `SHA256SUMS.txt` - see
-[code-signing.md](code-signing.md#checking-a-release). The installer itself
-isn't signed yet.
+**Signed downloads.** The Windows program and the Windows installer are
+code-signed by Chipkin (Azure Artifact Signing, SHA-256 with a timestamp);
+check them with `Get-AuthenticodeSignature <file>`. Every download - the
+Linux archive and `.deb` included - also has a signed build-provenance
+attestation: `gh attestation verify <file> --repo
+chipkin/BACnetProfileExample-B-SCHUB-CPP` confirms it was built by this
+project's release workflow. `SHA256SUMS.txt` lists every file's checksum. See
+[code-signing.md](code-signing.md#checking-a-release).
 
 ### Supported platforms
 
@@ -120,6 +122,13 @@ Windows 10/11 and Windows Server 2016 or later (x64). Linux x64: the release
 build is made on the current Ubuntu LTS, so it needs a distribution with that
 glibc version or newer; for an older distribution, build from source (see the
 README). The hub also builds from source on macOS.
+
+The hub runs fine on Windows 10, but BACnet/SC tools on a Windows 10
+computer that use Windows' own TLS (such as YABE) can't connect to it or to
+any other BACnet/SC hub: BACnet/SC requires TLS 1.3, and Windows 10 can't
+make TLS 1.3 client connections. The hub logs a warning about this when it
+starts on Windows 10
+([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
 
 ### Firewall
 
@@ -234,7 +243,7 @@ file names follow the Network Port properties that carry them (ANSI/ASHRAE
 | `certificate-signing-request.pem` | CSR for the hub's key (File 2, Certificate_Signing_Request_File). |
 | `issuer-certificate.pem` | The lab CA (File 3, Issuer_Certificate_Files). Every device needs a copy. |
 | `issuer-private-key.pem` | The CA's private key, only used to sign more devices. **Private.** Keep it off the network. |
-| `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem` and `bacnetsc.config`. |
+| `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem`, `bacnetsc.config` (CAS BACnet Explorer), and for Windows tools such as YABE `<label>.pfx` (certificate + key + issuer, empty password, **private**), `issuer-certificate.cer` (DER) and `yabe-bacnetsc.config`. |
 | `certificates.txt` | Every certificate's label, location, serial number, expiry and SHA-256 fingerprint. |
 | `readme.txt` | A walkthrough of the folder, including which files are private. |
 
@@ -397,7 +406,16 @@ For each BACnet/SC device:
    between devices: the hub couldn't tell them apart.
 2. **[CAS BACnet Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer):** import the folder's `bacnetsc.config`. It
    names the hub URI and the folder's three PEM files, so keep them together.
-3. **Any other BACnet/SC device:** install `operational-certificate.pem` and
+3. **YABE (Yet Another BACnet Explorer):** in *Communication Channel* ->
+   *BACnet/Secure Connect*, **Select** the folder's `yabe-bacnetsc.config`,
+   then **Start**. It points at the folder's `<label>.pfx` (certificate,
+   key and issuer, with an empty password - keep it private) and
+   `issuer-certificate.cer` by absolute path, so re-select it if you move
+   the folder. YABE uses Windows' own TLS, which can't make the TLS 1.3
+   connections BACnet/SC requires on Windows 10: use Windows 11 / Server
+   2022 or later
+   ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
+4. **Any other BACnet/SC device:** install `operational-certificate.pem` and
    `private-key.pem` as its operational certificate and key, and
    `issuer-certificate.pem` as its issuer certificate. Set its primary hub URI
    to `wss://<hub address>:47819/`.
@@ -451,6 +469,15 @@ nor `DISCARD_CHANGES`
 ([#29](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/29)).
 To drop staged writes, write the file's original contents back, or restart
 the hub (a restart discards staged writes).
+
+**Known issue:** right after the hub starts, Network Port 2 reads
+`Changes_Pending` = TRUE (and `Current_Health` may report
+`invalid-configuration-data`) although nothing has been written. The CAS
+BACnet Stack leaves the hub's own start-up certificate settings pending
+(cas-bacnet-stack#2866,
+[#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).
+The certificates in use are correct. The first ReinitializeDevice
+`ACTIVATE_CHANGES` clears it.
 
 If `dcc-password` is set, ReinitializeDevice requires it.
 
@@ -552,6 +579,7 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | `ERROR: TOO MANY BACnet/SC CONNECTIONS REQUESTED` and the hub exits | `sc-max-hub-connections` is above 4. Set it to 4 or less. See [Connection limit](#connection-limit). |
 | `/health` is `degraded` and BACnet/IP is off | BACnet/SC isn't listening, so the device is unreachable over BACnet. Fix the certificates, or run with `--bacnet-ip on`. |
 | Red `Error:` lines at start-up | Normal CAS BACnet Stack debug output (e.g. the hub hearing its own broadcast I-Am). |
+| A BACnet/SC tool on Windows 10 (e.g. YABE) fails with `A call to SSPI failed` / a TLS handshake error, and the hub logs nothing | Windows 10's own TLS can't do TLS 1.3, which BACnet/SC requires. The hub warns about this at start-up on Windows 10. Run the tool on Windows 11 / Server 2022 or later, or use a client with its own TLS 1.3 (CAS BACnet Explorer). See [#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39). |
 | The Windows service doesn't start | Check `log-file` in the service's `hub.conf`, and Windows Event Viewer > Windows Logs > System for Service Control Manager errors. |
 
 ## 11. The BACnet device
