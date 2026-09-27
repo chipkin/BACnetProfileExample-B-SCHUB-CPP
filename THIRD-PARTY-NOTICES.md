@@ -7,8 +7,8 @@ Building it, however, links two third-party libraries the BACnet/SC transport
 vcpkg builds for libwebsockets itself (libuv, zlib, and pthreads4w on
 Windows). All are fetched via [vcpkg](https://vcpkg.io/) (see `vcpkg.json`)
 and all are under permissive licences that allow this. Each release's
-software bill of materials (`sbom.cdx.json`, made by `tools/make-sbom.py`)
-lists the exact versions. None is vendored into this repository - vcpkg downloads, builds, and caches each
+software bills of materials (`sbom-windows.cdx.json` and `sbom-linux.cdx.json`,
+made by `tools/make-sbom.py`) list the exact versions. None is vendored into this repository - vcpkg downloads, builds, and caches each
 one's own source under `build/vcpkg_installed/` (gitignored) at configure
 time, and each package's own licence text ships alongside it there
 (`build/vcpkg_installed/<triplet>/share/<port>/copyright`) once you have built

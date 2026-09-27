@@ -46,8 +46,8 @@ removes it.
   changelog lists anything to change.
 
 The CAS BACnet Stack version each release is built with is printed by
-`--version` and listed in the release's software bill of materials
-(`sbom.cdx.json`), together with the OpenSSL, libwebsockets and other
+`--version` and listed in the release's software bills of materials
+(`sbom-windows.cdx.json`, `sbom-linux.cdx.json`), together with the OpenSSL, libwebsockets and other
 library versions.
 
 ## Security fixes

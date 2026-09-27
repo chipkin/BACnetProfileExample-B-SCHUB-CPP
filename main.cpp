@@ -848,15 +848,16 @@ bool GetPropertyOctetString(const uint32_t deviceInstance, const uint16_t object
 // B-BC). Returns "" for an object this device doesn't have.
 static std::string ObjectDescription(const uint16_t objectType, const uint32_t objectInstance) {
     if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
-        return std::string("Chipkin CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile) with an "
-                           "always-on BACnet/IP port. Source, manual and releases: ") + PROJECT_URL;
+        return std::string("Chipkin CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile)") +
+               (g_bacnetIpEnabled ? " with a BACnet/IP port" : ", BACnet/SC only") +
+               ". Source, manual and releases: " + PROJECT_URL;
     }
     if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
         return "Example sensor value in degrees C, showing a hub serving its own data. "
                "Change it with the up/down arrow keys in the console.";
     }
     if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
-        return "BACnet/IP port (UDP). Always on, so this hub can be found and managed over plain BACnet/IP.";
+        return "BACnet/IP port (UDP), so this hub can be found and managed over plain BACnet/IP.";
     }
     if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
         return "BACnet/SC port: the hub function (wss:// listener that devices connect to) and, if "
@@ -2172,7 +2173,7 @@ static int RunHub(int argc, char** argv) {
                 printf("                      127.0.0.1 (loopback only). Binding anywhere else (e.g.\n");
                 printf("                      0.0.0.0, or a LAN address) is a real security tradeoff -\n");
                 printf("                      GET /, /health and /metrics have NO authentication, and\n");
-                printf("                      without --http-tls it is plain HTTP - see README.md\n");
+                printf("                      without --http-tls it is plain HTTP - see docs/manual.md\n");
                 printf("                      \"Security\" before setting this to anything else.\n");
                 printf("  --http-tls [on|off] Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
                 printf("                      hub's operational-certificate.pem and private-key.pem\n");
