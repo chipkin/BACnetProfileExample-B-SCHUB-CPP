@@ -8,12 +8,12 @@
               "Firmware_Revision", "Application_Software_Version", "Description"],
       "enabled": ["Description"],
       "writable": [],
-      "accepted": ["System_Status", "Max_APDU_Length_Accepted", "Segmentation_Supported",
+      "accepted": ["System_Status", "Max_APDU_Length_Accepted",
                    "APDU_Timeout", "Number_Of_APDU_Retries", "Database_Revision"],
       "stack": ["Object_List", "Protocol_Version", "Protocol_Revision",
                 "Protocol_Services_Supported", "Protocol_Object_Types_Supported",
-                "Device_Address_Binding"],
-      "note": "vendor 389 (Chipkin Automation Systems); instance configurable with --deviceID and name with --device-name. The stack rows are device-wide facts only the stack knows - the protocol version and revision it implements, the services and object types it was configured with, the live object list and address-binding table. The accepted rows are the stack's configured defaults for APDU limits, segmentation, system status and database revision; an application that answered them from its own constants could contradict the stack, so this example does not"
+                "Device_Address_Binding", "Segmentation_Supported"],
+      "note": "vendor 389 (Chipkin Automation Systems); instance configurable with --deviceID and name with --device-name. The stack rows are device-wide facts only the stack knows - the protocol version and revision it implements, the services and object types it was configured with, the live object list and address-binding table. The accepted rows are the stack's configured defaults for APDU limits, segmentation, system status and database revision; an application that answered them from its own constants could contradict the stack, so this example does not Segmentation_Supported is segmented-both, the CAS BACnet Stack's segmentation configuration (6.x default, cas-bacnet-stack#2992); with it the stack also serves Max_Segments_Accepted (16) and APDU_Segment_Timeout (5000 ms) - see section 5"
     },
     {
       "type": "Analog Input",

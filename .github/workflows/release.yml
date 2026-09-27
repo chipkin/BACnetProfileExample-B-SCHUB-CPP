@@ -389,6 +389,9 @@ jobs:
       - name: ReadPropertyMultiple (DS-RPM-B)
         run: python tests/sc/rpm_test.py --target 127.0.0.1 --target-port 47822
 
+      - name: Segmentation, both directions (Segmentation_Supported = segmented-both)
+        run: python tests/sc/segmentation_test.py --target 127.0.0.1 --target-port 47822
+
       - name: HTTP endpoints - upload disabled without http-upload-token
         run: python tests/sc/http_test.py --http-port 8080 --cert-dir certs
 

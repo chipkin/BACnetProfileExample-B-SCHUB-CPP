@@ -120,6 +120,26 @@ Checks: a single `ReadPropertyMultiple` request for the Device object's
 
 Exit code 0 = every check passed.
 
+## `segmentation_test.py` (segmentation, both directions)
+
+The hub claims `Segmentation_Supported` = `segmented-both`. This checks it:
+
+- `Segmentation_Supported`, `Max_Segments_Accepted` (> 1) and
+  `APDU_Segment_Timeout` (> 0) on the Device.
+- **Transmit**: the client accepts only 128-octet APDUs, so the hub must
+  segment its ReadPropertyMultiple(Device, ALL) answer (2 or more segments).
+- **Receive**: a ReadPropertyMultiple request of 1000 property references,
+  longer than the hub's 1476-octet max APDU, sent segmented; the hub must
+  reassemble it and answer every reference.
+
+```
+./build/BACnetExampleBSCHUB.exe --port 47870
+# in a separate terminal:
+python tests/sc/segmentation_test.py --target 127.0.0.1 --target-port 47870
+```
+
+Exit code 0 = every check passed.
+
 ## `cert_procedure_test.py` (the clause 19.8.3 certificate procedures)
 
 Drives the hub the way a certificate tool (e.g. the CAS BACnet Explorer's
