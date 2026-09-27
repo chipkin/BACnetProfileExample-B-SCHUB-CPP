@@ -610,7 +610,14 @@ jobs:
           if (-not $ok) { throw "The BACnetSCHub service did not answer /health" }
           if ((Get-Service BACnetSCHub).Status -ne 'Running') { throw "The BACnetSCHub service is not running" }
           if ((Get-Service BACnetSCHub).StartType -ne 'Automatic') { throw "The service does not start automatically" }
-          if (-not (Select-String -Path "$data\logs\hub.log" -Pattern '\) ready\. Vendor ID' -Quiet)) { throw "hub.log has no start-up line" }
+          # /health can answer a moment before the start-up line reaches hub.log.
+          $ready = $false
+          foreach ($i in 1..30) {
+            if (Select-String -Path "$data\logs\hub.log" -Pattern '\) ready\. Vendor ID' -Quiet) { $ready = $true; break }
+            Start-Sleep 1
+          }
+          Get-Content "$data\logs\hub.log" -Tail 20
+          if (-not $ready) { throw "hub.log has no start-up line" }
           # The service runs as its virtual account, not LocalSystem.
           $account = (Get-CimInstance Win32_Service -Filter "Name='BACnetSCHub'").StartName
           if ($account -ne 'NT SERVICE\BACnetSCHub') { throw "The service runs as '$account', not NT SERVICE\BACnetSCHub" }

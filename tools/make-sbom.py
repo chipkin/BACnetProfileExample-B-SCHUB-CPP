@@ -90,6 +90,17 @@ def vcpkg_packages(build_dir):
     return result
 
 
+def installs_libraries(build_dir, name, pkg_version, triplet):
+    """True if vcpkg's file list for the package has anything under lib/ - i.e. something that
+    can be linked into the executable. Placeholder ports install no libraries."""
+    info = build_dir / "vcpkg_installed" / "vcpkg" / "info"
+    version = pkg_version.split("#")[0]
+    for listing in info.glob(f"{name}_{version}*_{triplet}.list"):
+        if any("/lib/" in line for line in listing.read_text(encoding="utf-8", errors="replace").splitlines()):
+            return True
+    return False
+
+
 def write_licence_texts(build_dir, out_path):
     """Concatenates vcpkg's copyright file of every library in the executable into one text
     file, so the MIT/Apache-2.0/Zlib texts actually reach whoever downloads a release.
@@ -98,6 +109,8 @@ def write_licence_texts(build_dir, out_path):
     for name, (pkg_version, triplet) in sorted(vcpkg_packages(build_dir).items()):
         copyright_file = build_dir / "vcpkg_installed" / triplet / "share" / name / "copyright"
         if not copyright_file.is_file():
+            if not installs_libraries(build_dir, name, pkg_version, triplet):
+                continue  # an empty placeholder port (e.g. pthreads on Linux uses the system's) - nothing linked
             raise SystemExit(f"make-sbom: no licence text for {name} ({copyright_file})")
         text = copyright_file.read_text(encoding="utf-8", errors="replace").strip()
         rule = "=" * 78
