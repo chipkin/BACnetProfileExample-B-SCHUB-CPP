@@ -45,6 +45,8 @@ int g_pipeRead = -1;
 int g_pipeWrite = -1;
 int g_consoleOut = -1;  // the original stdout, so output still reaches the console
 int g_consoleErr = -1;  // the original stderr
+int g_outFd = 1;        // the descriptors stdout/stderr write to (see Start: not always 1 and 2)
+int g_errFd = 2;
 std::thread g_thread;
 std::atomic<bool> g_running(false);
 
@@ -188,12 +190,27 @@ bool Start(const std::string& path, const uint64_t maxBytes, const unsigned maxF
 
     fflush(stdout);
     fflush(stderr);
-    g_consoleOut = LOG_DUP(1);
-    g_consoleErr = LOG_DUP(2);
+#if defined(_WIN32)
+    // A Windows service (or any process started without a console) has no
+    // standard handles: stdout and stderr then have no file descriptor at all
+    // (_fileno() < 0), so pointing descriptors 1 and 2 at the pipe would catch
+    // nothing and the log file would stay empty. Give them one first (NUL),
+    // and redirect whichever descriptor they actually got.
+    if (_fileno(stdout) < 0 && freopen("NUL", "w", stdout) != NULL) {
+        setvbuf(stdout, NULL, _IONBF, 0);  // freopen resets the unbuffered mode RunHub set
+    }
+    if (_fileno(stderr) < 0 && freopen("NUL", "w", stderr) != NULL) {
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+    g_outFd = _fileno(stdout) >= 0 ? _fileno(stdout) : 1;
+    g_errFd = _fileno(stderr) >= 0 ? _fileno(stderr) : 2;
+#endif
+    g_consoleOut = LOG_DUP(g_outFd);
+    g_consoleErr = LOG_DUP(g_errFd);
     // Both streams go to the one pipe, so the file keeps their order. The
     // copy thread writes everything to the console's stdout.
-    LOG_DUP2(g_pipeWrite, 1);
-    LOG_DUP2(g_pipeWrite, 2);
+    LOG_DUP2(g_pipeWrite, g_outFd);
+    LOG_DUP2(g_pipeWrite, g_errFd);
 
     g_running = true;
     g_thread = std::thread(CopyLoop);
@@ -220,14 +237,14 @@ void Stop() {
     // put back (a service can start without one, so the _dup in Start failed),
     // just close 1 and 2 - they are write ends of the pipe too.
     if (g_consoleOut >= 0) {
-        LOG_DUP2(g_consoleOut, 1);
+        LOG_DUP2(g_consoleOut, g_outFd);
     } else {
-        LOG_CLOSE(1);
+        LOG_CLOSE(g_outFd);
     }
     if (g_consoleErr >= 0) {
-        LOG_DUP2(g_consoleErr, 2);
+        LOG_DUP2(g_consoleErr, g_errFd);
     } else {
-        LOG_CLOSE(2);
+        LOG_CLOSE(g_errFd);
     }
     LOG_CLOSE(g_pipeWrite);
     g_pipeWrite = -1;
