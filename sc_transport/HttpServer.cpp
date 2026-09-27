@@ -3,6 +3,7 @@
 // Implementation of HttpServer. See HttpServer.h for the contract and the
 // safety reasoning behind every design choice made here.
 #include "HttpServer.h"
+#include "LogSafe.h"
 
 #include "CASExampleLog.h"
 
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <vector>
 
 namespace CASSc {
 
@@ -73,6 +75,9 @@ struct HttpServer::Session {
 };
 
 namespace {
+
+// Largest piece of a response body handed to one lws_write() call.
+const size_t kWriteChunk = 4096;
 
 int LwsHttpCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user, void* in, std::size_t len) {
     (void)user;
@@ -187,6 +192,11 @@ bool HttpServer::Start(const HttpServerConfig& config) {
         info.ssl_cert_filepath = m_config.tlsCertPath.c_str();
         info.ssl_private_key_filepath = m_config.tlsKeyPath.c_str();
         info.ssl_options_set = SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1;
+        // HTTP/1.1 only. The vcpkg libwebsockets is built with HTTP/2, and a TLS
+        // vhost offers "h2" by default; these endpoints don't need it, and the
+        // write path below (one response per connection, "connection: close")
+        // is written for HTTP/1.1.
+        info.alpn = "http/1.1";
     }
     info.user = this;
     info.gid = static_cast<gid_t>(-1);
@@ -308,7 +318,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - upload endpoint is disabled "
             "(http-upload-token is not configured).",
-            peer, session->slot.c_str());
+            peer, SafeForLog(session->slot).c_str());
         SendResponse(wsi, session, 503, "text/plain",
                     "certificate upload is disabled: no http-upload-token is configured.\n");
         return;
@@ -318,7 +328,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (session->rateLimited) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REFUSED from %s: slot=\"%s\" - %s limit reached (%u attempts a minute per client, "
-            "%u in total)", peer, session->slot.c_str(), session->rateLimitWhich, kUploadAttemptsPerClient,
+            "%u in total)", peer, SafeForLog(session->slot).c_str(), session->rateLimitWhich, kUploadAttemptsPerClient,
             kUploadAttemptsTotal);
         SendResponse(wsi, session, 429, "text/plain", "too many upload attempts; try again in a minute.\n");
         return;
@@ -326,7 +336,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (!session->authOk) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - missing/invalid bearer token.",
-            peer, session->slot.c_str());
+            peer, SafeForLog(session->slot).c_str());
         SendResponse(wsi, session, 401, "text/plain",
                     "missing or invalid Authorization: Bearer <http-upload-token> header.\n");
         return;
@@ -334,14 +344,14 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (!session->slotKnown) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: unknown slot \"%s\" (uri \"%s\").",
-            peer, session->slot.c_str(), session->uri.c_str());
+            peer, SafeForLog(session->slot).c_str(), SafeForLog(session->uri).c_str());
         SendResponse(wsi, session, 404, "text/plain", "unknown certificate slot.\n");
         return;
     }
     if (session->tooLarge || session->body.size() < kMinUploadBytes || session->body.size() > kMaxUploadBytes) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - size %zu bytes out of bounds (%zu..%zu).",
-            peer, session->slot.c_str(), session->body.size(), kMinUploadBytes, kMaxUploadBytes);
+            peer, SafeForLog(session->slot).c_str(), session->body.size(), kMinUploadBytes, kMaxUploadBytes);
         SendResponse(wsi, session, 413, "text/plain", "upload rejected: size out of bounds.\n");
         return;
     }
@@ -358,13 +368,13 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (status != 200) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" (%zu bytes) - %s",
-            peer, session->slot.c_str(), session->body.size(), message.c_str());
+            peer, SafeForLog(session->slot).c_str(), session->body.size(), message.c_str());
         SendResponse(wsi, session, status, "text/plain", "upload rejected: " + message + "\n");
         return;
     }
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
         "cert upload SUCCESS from %s: slot=\"%s\" (%zu bytes) - %s",
-        peer, session->slot.c_str(), session->body.size(), message.c_str());
+        peer, SafeForLog(session->slot).c_str(), session->body.size(), message.c_str());
     SendResponse(wsi, session, 200, "application/json",
                 "{\"status\":\"ok\",\"slot\":\"" + session->slot + "\",\"bytes\":" +
                 std::to_string(session->body.size()) + "}");
@@ -479,13 +489,18 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
                 }
                 break;
             }
-            const int written = lws_write(
-                wsi, reinterpret_cast<unsigned char*>(&session->response[session->responseSent]),
-                remaining, LWS_WRITE_HTTP);
+            // lws_write() may write protocol framing in the LWS_PRE bytes in
+            // front of the buffer it is given (an HTTP/2 frame header, for
+            // one), so it must never be handed a pointer into the middle of
+            // session->response: copy each chunk behind LWS_PRE bytes of our own.
+            const size_t chunk = remaining < kWriteChunk ? remaining : kWriteChunk;
+            std::vector<unsigned char> buf(LWS_PRE + chunk);
+            std::memcpy(&buf[LWS_PRE], &session->response[session->responseSent], chunk);
+            const int written = lws_write(wsi, &buf[LWS_PRE], chunk, LWS_WRITE_HTTP);
             if (written < 0) {
                 return -1;
             }
-            session->responseSent += static_cast<size_t>(written);
+            session->responseSent += chunk;
             if (session->responseSent < session->response.size()) {
                 lws_callback_on_writable(wsi);
             } else if (lws_http_transaction_completed(wsi)) {

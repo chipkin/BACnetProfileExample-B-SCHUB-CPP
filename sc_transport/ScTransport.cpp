@@ -2,6 +2,7 @@
 // Public-domain example code (CC0) - see ../LICENSE.
 // Implementation of ScTransport. See ScTransport.h for the contract.
 #include "ScTransport.h"
+#include "LogSafe.h"
 
 #include "CASExampleLog.h"
 
@@ -62,6 +63,9 @@ const std::size_t kMaxIngressBytes = 1600;
 // without a restart). The listener waits kListenRetryInterval between failed
 // attempts so a port that stays busy is not re-bound 30 times a second.
 const std::chrono::seconds kListenRetryInterval(5);
+
+// At most one "SC rate limit: refusing ..." line per this interval (issue #64).
+const std::chrono::seconds kRateLimitLogInterval(10);
 
 bool FileReadable(const std::string& path) {
     if (path.empty()) {
@@ -306,7 +310,7 @@ std::string PeerCertificateSubject(lws* wsi) {
         BIO_free(bio);
     }
     X509_free(cert);
-    return subject;
+    return SafeForLog(subject);  // the peer chose it - see LogSafe.h
 }
 
 // Diagnostic Item 1: makes a rejected mTLS handshake visible. Before this, a
@@ -381,7 +385,7 @@ int LogClientCertVerificationResult(void* user, void* in, std::size_t len) {
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
         "SC TLS handshake REJECTED - client certificate failed verification: \"%s\" (OpenSSL error code %d); "
         "presented cert subject CN=\"%s\" issuer CN=\"%s\"",
-        errorText, errorCode, subjectCn.c_str(), issuerCn.c_str());
+        errorText, errorCode, SafeForLog(subjectCn).c_str(), SafeForLog(issuerCn).c_str());
     return 1;  // fail the cert - mirrors OpenSSL's own preverify_ok=0 decision, does not override it
 }
 
@@ -816,6 +820,7 @@ void ScTransport::LogListenFailureOnce(const std::string& reason) {
 }
 
 bool ScTransport::StartListening(const std::string& uri) {
+    m_wantedListenUri = uri;
     if (!m_configured) {
         LogListenFailureOnce("StartListening called before Configure()");
         return false;
@@ -915,6 +920,9 @@ bool ScTransport::StartListening(const std::string& uri) {
     // disables every older negotiable version, leaving only 1.3).
     info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT;
     info.ssl_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_SSLv3;
+    // BACnet/SC is a WebSocket upgrade over HTTP/1.1; don't let a TLS peer
+    // negotiate HTTP/2 through lws's default "h2,http/1.1" ALPN list.
+    info.alpn = "http/1.1";
     info.user = this;
     info.gid = static_cast<gid_t>(-1);
     info.uid = static_cast<uid_t>(-1);
@@ -938,7 +946,10 @@ bool ScTransport::StartListening(const std::string& uri) {
 
     m_listenerContext = ctx;
     m_listenUri = uri;
-    m_nextClientId = 1;
+    // m_nextClientId is NOT reset: after a listener restart, "...|client=1"
+    // must not be issued again while a Disconnected event for the old
+    // client=1 may still be queued (sc_transport/README.md: a connection
+    // string is never reused; issue #63). It's a uint64_t.
     m_loggedListenFailure = false;
     m_lastListenCreateFailure = std::chrono::steady_clock::time_point();
     printf("BACnet/SC: listening for WebSocket/TLS connections on %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
@@ -970,6 +981,9 @@ void ScTransport::DestroyListenerContext() {
 }
 
 void ScTransport::StopListening(const std::string& uri) {
+    if (m_wantedListenUri == uri) {
+        m_wantedListenUri.clear();  // the stack no longer wants it - stop retrying too
+    }
     if (m_listenerContext == nullptr || m_listenUri != uri) {
         return;  // not listening on this URI - nothing to do
     }
@@ -978,12 +992,16 @@ void ScTransport::StopListening(const std::string& uri) {
 }
 
 void ScTransport::ReloadCredentials() {
-    if (m_listenerContext != nullptr) {
-        const std::string uri = m_listenUri;
+    // m_wantedListenUri, not m_listenUri: if an earlier restart failed, the
+    // listener is down but still wanted, and the new files may fix it.
+    if (!m_wantedListenUri.empty()) {
+        const std::string uri = m_wantedListenUri;
         printf("BACnet/SC: reloading certificates - restarting the listener on %s\n", uri.c_str());
         DestroyListenerContext();  // queues a Disconnected event per accepted peer
+        m_lastListenCreateFailure = std::chrono::steady_clock::time_point();  // try the new files now
         if (!StartListening(uri)) {
-            printf("BACnet/SC: could not restart the listener on %s with the new certificates\n", uri.c_str());
+            printf("BACnet/SC: could not restart the listener on %s with the new certificates - retrying "
+                   "every %d s\n", uri.c_str(), (int)kListenRetryInterval.count());
         }
     }
     for (auto& kv : m_clients) {
@@ -1077,6 +1095,14 @@ bool ScTransport::Connect(const std::string& uri) {
     // the stack's own retry/reconnect timer - asked for it again).
     auto existing = m_clients.find(uri);
     if (existing != m_clients.end()) {
+        // Detach the old attempt from its ClientConnection first, so tearing
+        // it down queues no Error/Disconnected event: those would carry the
+        // SAME URI as the attempt the stack is starting now, and could abort
+        // it or double-count a failover (issue #63). Its callbacks then see a
+        // null opaque_user_data and do nothing.
+        if (existing->second.wsi != nullptr) {
+            lws_set_opaque_user_data(existing->second.wsi, nullptr);
+        }
         DestroyClientContext(existing->second);
         m_clients.erase(existing);
     }
@@ -1184,9 +1210,13 @@ void ScTransport::RequestClose(lws* wsi, CloseRequest* closeRequest, const uint1
     lws_callback_on_writable(wsi);  // the close itself happens in the WRITEABLE callback
 }
 
-bool ScTransport::ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest) {
+bool ScTransport::ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest,
+                                      const std::deque<std::vector<uint8_t>>& txQueue) {
     if (!closeRequest.requested) {
         return false;
+    }
+    if (closeRequest.code != LWS_CLOSE_STATUS_POLICY_VIOLATION && !txQueue.empty()) {
+        return false;  // send what's queued first; the caller asks for another turn
     }
     lws_close_reason(wsi, static_cast<lws_close_status>(closeRequest.code),
                      reinterpret_cast<unsigned char*>(const_cast<char*>(closeRequest.reason.data())),
@@ -1251,6 +1281,13 @@ bool ScTransport::Send(const std::string& connStr, const uint8_t* data, uint16_t
 }
 
 void ScTransport::Service() {
+    // A listener the stack wants but that is down (a restart after a
+    // certificate/CRL reload failed): retry, at most every kListenRetryInterval
+    // (StartListening enforces that). The stack won't ask again by itself.
+    if (m_listenerContext == nullptr && !m_wantedListenUri.empty()) {
+        const std::string uri = m_wantedListenUri;
+        StartListening(uri);
+    }
     // Phase 1 spike mechanism (a) - see docs/bacnet-sc-transport-plan.md and
     // the class header comment. Confirmed non-blocking on Windows.
     if (m_listenerContext != nullptr) {
@@ -1344,7 +1381,7 @@ void ScTransport::AuditSentFrame(PeerConnection* peer, const uint8_t* data, cons
             const unsigned errorClass = (static_cast<unsigned>(data[offset + 3]) << 8) | data[offset + 4];
             const unsigned errorCode = (static_cast<unsigned>(data[offset + 5]) << 8) | data[offset + 6];
             const std::string details(reinterpret_cast<const char*>(data) + offset + 7, len - (offset + 7));
-            reason = (details.empty() ? std::string("no details") : "\"" + details + "\"") +
+            reason = (details.empty() ? std::string("no details") : "\"" + SafeForLog(details) + "\"") +
                      ", error class " + std::to_string(errorClass) + " code " + std::to_string(errorCode);
         }
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
@@ -1413,12 +1450,26 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             const char* limitHit = "";
             if (!AllowNewConnectionAttempt(address, &limitHit)) {
                 ++m_rateLimitRejections;
+                // One line per kRateLimitLogInterval at most: a flood from many
+                // addresses would otherwise write thousands of lines a second on
+                // the thread that runs the stack, and rotate the useful history
+                // out of --log-file (issue #64). /metrics counts every refusal.
+                const auto now = std::chrono::steady_clock::now();
+                if (m_lastRateLimitLog != std::chrono::steady_clock::time_point() &&
+                    now - m_lastRateLimitLog < kRateLimitLogInterval) {
+                    ++m_rateLimitLogSuppressed;
+                    return -1;
+                }
+                m_lastRateLimitLog = now;
+                const std::string more = m_rateLimitLogSuppressed == 0 ? std::string() :
+                    " (and " + std::to_string(m_rateLimitLogSuppressed) + " more refused since the last message)";
+                m_rateLimitLogSuppressed = 0;
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                     "SC rate limit: refusing a new connection from %s on %s - %s limit of %u attempt(s)/sec "
-                    "reached (refused before the TLS handshake; see --sc-rate-limit%s)",
+                    "reached (refused before the TLS handshake; see --sc-rate-limit%s)%s",
                     address.c_str(), m_listenUri.c_str(), limitHit,
                     (unsigned)(std::strcmp(limitHit, "total") == 0 ? m_totalRateLimit : m_perAddressRateLimit),
-                    std::strcmp(limitHit, "total") == 0 ? "-total" : "");
+                    std::strcmp(limitHit, "total") == 0 ? "-total" : "", more.c_str());
                 return -1;
             }
             break;
@@ -1445,7 +1496,8 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 const std::string peerAddress = PeerAddressPort(wsi);
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                     "BACnet/SC: refusing a WebSocket upgrade from %s - it asked for subprotocol(s) \"%s\", "
-                    "this hub speaks \"%s\" (HTTP 400)", peerAddress.c_str(), requested, m_acceptSubprotocol.c_str());
+                    "this hub speaks \"%s\" (HTTP 400)", peerAddress.c_str(), SafeForLog(requested).c_str(),
+                    m_acceptSubprotocol.c_str());
                 // Written by hand rather than with lws_return_http_status(): at
                 // this point lws hasn't recorded the request's HTTP version, so
                 // that helper answers "HTTP/1.0", which WebSocket clients
@@ -1489,7 +1541,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                     ? "direct-connect (dc.bsc.bacnet.org) not supported by this hub"
                     : "unsupported subprotocol";
                 fprintf(stderr, "BACnet/SC: rejecting connection - client asked for subprotocol(s) "
-                                "\"%s\", not \"%s\"\n", requested, m_acceptSubprotocol.c_str());
+                                "\"%s\", not \"%s\"\n", SafeForLog(requested).c_str(), m_acceptSubprotocol.c_str());
                 lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,
                                  (unsigned char*)closeReason, static_cast<unsigned int>(strlen(closeReason)));
                 return -1;
@@ -1548,11 +1600,14 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             if (peer == nullptr) {
                 break;
             }
-            if (ApplyRequestedClose(wsi, peer->closeRequest)) {
+            if (ApplyRequestedClose(wsi, peer->closeRequest, peer->txQueue)) {
                 return -1;  // Disconnect() or a full transmit queue asked for this close
             }
             if (FlushOneQueuedFrame(wsi, &peer->txQueue, "\"" + peer->connectionString + "\"")) {
                 return -1;
+            }
+            if (peer->closeRequest.requested) {
+                lws_callback_on_writable(wsi);  // close once the queue has gone out
             }
             break;
         }
@@ -1657,7 +1712,15 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
         // The connector's SSL_CTX (in `user`), as lws creates it, on a fake
         // wsi with only the context set - so handled before the per-connection
         // lookup below. Load the CRL so the hub we dial is checked too.
-        LoadRevocationList(static_cast<SSL_CTX*>(user), m_tls.crlPath, "connector");
+        // Fail closed like the listener: a CRL file that exists but can't be
+        // used must not silently skip revocation. lws ignores this callback's
+        // return value on the client side, so instead turn CRL checking on
+        // with no CRL loaded - OpenSSL then refuses every peer certificate
+        // ("unable to get certificate CRL") until the file is fixed or removed.
+        SSL_CTX* sslCtx = static_cast<SSL_CTX*>(user);
+        if (!LoadRevocationList(sslCtx, m_tls.crlPath, "connector") && sslCtx != nullptr) {
+            X509_STORE_set_flags(SSL_CTX_get_cert_store(sslCtx), X509_V_FLAG_CRL_CHECK);
+        }
         return 0;
     }
     // Every reason below fires on a wsi lws created from THIS connection's own
@@ -1745,11 +1808,14 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
             if (conn == nullptr) {
                 break;
             }
-            if (ApplyRequestedClose(wsi, conn->closeRequest)) {
+            if (ApplyRequestedClose(wsi, conn->closeRequest, conn->txQueue)) {
                 return -1;
             }
             if (FlushOneQueuedFrame(wsi, &conn->txQueue, "hub \"" + conn->uri + "\"")) {
                 return -1;
+            }
+            if (conn->closeRequest.requested) {
+                lws_callback_on_writable(wsi);  // close once the queue has gone out
             }
             break;
         }

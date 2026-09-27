@@ -56,12 +56,9 @@ BACnet/SC test tools:
 
 These are known and documented; record how the test plan treats each one:
 
-- The Network Port `Command` property isn't exposed on Network Port 2, so
-  `GENERATE_CSR_FILE`
-  ([#10](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/10))
-  and `DISCARD_CHANGES`
-  ([#29](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/29))
-  can't be written; both wait on CAS BACnet Stack changes.
+- The Network Port `Command` property accepts only `IDLE`,
+  `DISCARD_CHANGES` and (Network Port 2) `GENERATE_CSR_FILE`; other commands
+  are refused by the stack.
 - Network Port 2 reads `Changes_Pending` TRUE right after start-up with
   nothing written (cas-bacnet-stack#2866,
   [#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)).

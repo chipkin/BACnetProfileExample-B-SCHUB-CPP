@@ -67,11 +67,11 @@ hub's certificate.
 
 ## Getting the hub's certificate signed
 
-The hub can't generate a new key pair on request (the Network Port
-`GENERATE_CSR_FILE` command isn't available yet, see
-[#10](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/10)).
-So the key pair and CSR are made once, on the hub's own machine, and the key
-never leaves it:
+Either let a certificate tool ask the hub for a new key pair - it writes
+`GENERATE_CSR_FILE` to Network Port 2's `Command`, reads the new CSR from File
+2, and later writes the signed certificate back (see the manual, "Managing
+certificates over BACnet"); the key is made on the hub and never leaves it -
+or make the key pair and CSR yourself, once, on the hub's own machine:
 
 ```bash
 cd certs
@@ -226,8 +226,9 @@ and subjectAltName are mostly for people:
 - **The hub's key** (`private-key.pem`) must be readable only by the account
   that runs the hub:
   - Linux: `chown bacnethub: private-key.pem && chmod 600 private-key.pem`
-  - Windows: `icacls private-key.pem /inheritance:r /grant:r "%USERNAME%:F"`
-    (or the service account's name when the hub runs as a service).
+  - Windows: `icacls private-key.pem /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`
+    (SYSTEM - the account the Windows service runs as - and Administrators
+    keep access; name a different service account if you changed it).
 - **Keep the CA's key off the hub.** `issuer-private-key.pem` is only created
   by `--generate-certs` for lab use. A production CA key belongs on the CA,
   ideally offline or in an HSM.

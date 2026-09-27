@@ -80,6 +80,11 @@ static const char* const PRIVATE_KEY_FILE = "private-key.pem";
 static const char* const CERTIFICATE_SIGNING_REQUEST_FILE = "certificate-signing-request.pem";
 static const char* const ISSUER_CERTIFICATE_FILE = "issuer-certificate.pem";
 static const char* const ISSUER_PRIVATE_KEY_FILE = "issuer-private-key.pem";
+// Written by the hub when a client writes GENERATE_CSR_FILE to Network Port
+// 2's Command (issue #10): the new key behind the new Certificate Signing
+// Request. The hub keeps using private-key.pem until a certificate signed for
+// the new key is activated; then this file replaces it.
+static const char* const PENDING_PRIVATE_KEY_FILE = "private-key-pending.pem";
 // Issuer Certificate Slot 2's own file. Absent until a client writes a second
 // issuer over BACnet (clause 19.8.3); until then File 4 serves slot 1's file.
 static const char* const ISSUER_CERTIFICATE_2_FILE = "issuer-certificate-2.pem";

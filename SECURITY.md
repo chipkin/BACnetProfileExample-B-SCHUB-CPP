@@ -51,8 +51,8 @@ are fixed in the stack and picked up here with a stack update. Problems in
 OpenSSL, libwebsockets and the other third-party libraries (see
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)) belong with those projects;
 we update the versions this example is built with when they publish a fix.
-Each release's software bill of materials (`sbom.cdx.json`) lists the exact
-versions.
+Each release's software bills of materials (`sbom-windows.cdx.json` and
+`sbom-linux.cdx.json`) list the exact versions.
 
 Known limitations that are by design - for example, the hub doesn't check a
 peer's host name, because BACnet/SC certificates identify devices, not DNS

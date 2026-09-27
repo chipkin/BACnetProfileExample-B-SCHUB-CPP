@@ -41,6 +41,9 @@
 // to override its own compile-time default, the same way a CLI flag's mere
 // presence (not its value) is what makes ParsePortArg() etc. override theirs.
 struct ExampleConfig {
+    // Set (and LoadExampleConfig returns false) when a setting is invalid.
+    std::string error;
+
     bool hasDeviceId = false;
     uint32_t deviceId = 0;
 
@@ -164,15 +167,21 @@ struct ExampleConfig {
 // given.
 std::string ParseConfigPathArg(int argc, char** argv);
 
-// Loads a "key = value" config file (one key per line; "#" starts a comment
-// to end-of-line; blank lines ignored; no [sections] - see the file header
+// Longest dcc-password BACnet allows (DeviceCommunicationControl and
+// ReinitializeDevice passwords are CharacterString SIZE(1..20)).
+static const size_t kMaxDccPasswordLength = 20;
+
+// Loads a "key = value" config file (one key per line; a line starting with
+// "#" is a comment - a "#" later in a line is part of the value; blank lines
+// ignored; no [sections] - see the file header
 // for why; leading/trailing whitespace around key and value is trimmed, and
 // "key=value" with no spaces is also accepted). Recognised keys: device-id,
 // port, sc-port, sc-cert-dir, sc-hub-uri, sc-failover-uri, dcc-password,
 // http-port, http-bind, sc-max-hub-connections, sc-rate-limit, sc-rate-limit-total,
 // sc-accept-hub-without-hello, sc-accept-device-without-hello, http-upload-token, http-tls, http-tls-cert, http-tls-key,
 // bacnet-ip, device-name, ip-network-number, sc-network-number, log-file,
-// log-max-size-mb, log-max-files.
+// log-max-size-mb, log-max-files. Returns false if the file can't be opened,
+// or with outConfig->error set if a setting is invalid.
 // An unrecognised key or an
 // unparsable numeric value is WARNED about (via CASExampleHelper::Log) and
 // otherwise skipped, never fatal - a config file is a convenience, not a

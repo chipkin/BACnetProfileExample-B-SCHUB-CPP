@@ -37,18 +37,24 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Read-only by default (issue #58); each job asks for only what it needs.
 permissions:
-  contents: write
-  # SC-TRANSPORT:BEGIN - Windows code signing: azure/login uses GitHub OIDC, which needs
-  # an ID token. Only the tag build of the Windows leg requests one (see "Code signing").
-  id-token: write
-  # SC-TRANSPORT:END
-  packages: write  # the vcpkg NuGet binary cache on GitHub Packages (issue #17)
+  contents: read
 
 jobs:
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The build runs this repository's CMake and Python, including a pull
+    # request's, so it gets no contents write (only the release job publishes).
+    permissions:
+      contents: read
+      # SC-TRANSPORT:BEGIN - Windows code signing: azure/login uses GitHub OIDC, which needs
+      # an ID token. Only the tag build of the Windows leg requests one (see "Code signing"),
+      # and the Azure federated credential only trusts the "release" environment.
+      id-token: write
+      # SC-TRANSPORT:END
+      packages: write  # the vcpkg NuGet binary cache (issue #17); pull requests only read it
     # SC-TRANSPORT:BEGIN - code signing. The Windows leg of a vX.Y.Z tag build runs in the
     # "release" environment, which the Azure federated credential trusts (subject
     # repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release). Every other
@@ -263,13 +269,17 @@ jobs:
 
       - name: Smoke test + metrics (starts, binds, stays up; measures time to 'ready')
         shell: bash
+        env:
+          # Through the environment, not ${{ }} inside the script: a branch name
+          # (workflow_dispatch) must never be pasted into shell code (issue #58).
+          GIT_REF_NAME: ${{ github.ref_name }}
         run: |
           start=$(date +%s%3N)
           "${{ matrix.exe }}" --port 47821 > smoke.log 2>&1 &
           PID=$!
           ready_ms=""
           for i in $(seq 1 100); do
-            if grep -q "ready" smoke.log; then ready_ms=$(( $(date +%s%3N) - start )); break; fi
+            if grep -qE '") ready\. Vendor ID' smoke.log; then ready_ms=$(( $(date +%s%3N) - start )); break; fi
             sleep 0.1
           done
           sleep 2
@@ -300,7 +310,7 @@ jobs:
             "startup_ms_to_ready": $ready_ms,
             "compiler": "$compiler",
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "git_ref": "${{ github.ref_name }}"
+            "git_ref": "$GIT_REF_NAME"
           }
           EOF
           cat "${{ matrix.metrics }}"
@@ -397,7 +407,7 @@ jobs:
           done
           rc=0
           python tests/sc/http_test.py --http-port 18084 --token ci-upload-token --cert-dir certs --device-name "CI Hub 7" || rc=1
-          grep -q "ready" ci-hub.log || { echo "FAIL: ci-hub.log does not have the start-up lines"; rc=1; }
+          grep -qE '") ready\. Vendor ID' ci-hub.log || { echo "FAIL: ci-hub.log does not have the start-up lines"; rc=1; }
           kill "$pid" 2>/dev/null || true
           [ "$rc" -eq 0 ] || { cat ci-http.out; cat ci-hub.log; exit 1; }
 
@@ -481,19 +491,23 @@ jobs:
         run: |
           mkdir -p dist
           cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
-          cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
-          cp docs/PICS.md dist/ 2>/dev/null || true
+          # No "|| true": a renamed or missing document must fail the build, not
+          # silently drop out of every package.
+          cp README.md TUTORIAL.md LICENSE dist/
+          cp docs/PICS.md dist/
           # SC-TRANSPORT:BEGIN - this example's package also ships the PICS as a PDF and
           # its third-party-dependency notices (libwebsockets, OpenSSL) - no other
           # example in the series has either.
-          cp docs/PICS.pdf docs/manual.pdf docs/fact-sheet.pdf dist/ 2>/dev/null || true
-          cp THIRD-PARTY-NOTICES.md dist/ 2>/dev/null || true
-          cp docs/production-certificates.md dist/ 2>/dev/null || true
-          cp SECURITY.md docs/SUPPORT.md dist/ 2>/dev/null || true
+          cp docs/PICS.pdf docs/manual.pdf docs/fact-sheet.pdf dist/
+          cp THIRD-PARTY-NOTICES.md dist/
+          cp docs/production-certificates.md dist/
+          cp SECURITY.md docs/SUPPORT.md dist/
           # Software bill of materials (issue #32): this example, the CAS BACnet
           # Stack and every vcpkg library in the executable, with versions and
           # licences. One per platform (the vcpkg libraries differ).
-          python tools/make-sbom.py --build-dir build --out "dist/sbom-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.cdx.json"
+          # ...and the full licence text of each of those libraries (issue #59).
+          python tools/make-sbom.py --build-dir build --out "dist/sbom-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.cdx.json" \
+            --licenses-out "dist/THIRD-PARTY-LICENSES-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.txt"
           cp example.conf dist/
           # SC-TRANSPORT:END
 
@@ -546,7 +560,7 @@ jobs:
           version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
           stage="BACnetSCHub-$version-linux-x64"
           mkdir -p "$stage"
-          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/LICENSE dist/example.conf "$stage/" 2>/dev/null || true
+          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/*.txt dist/LICENSE dist/example.conf "$stage/"
           cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/bacnet-schub-hub.service "$stage/"
           chmod +x "$stage/install.sh" "$stage/uninstall.sh" "$stage/BACnetExampleBSCHUB"
           tar -czf "dist/$stage.tar.gz" "$stage"
@@ -572,7 +586,7 @@ jobs:
           [ "$ok" = 1 ] || { echo "FAIL: the bacnet-schub-hub service did not answer /health"; exit 1; }
           curl -s http://127.0.0.1:8080/health; echo
           # /var/log/bacnet-schub is 0750 bacnethub (like the certificates), so check it as root.
-          sudo grep -q "ready" /var/log/bacnet-schub/hub.log || { echo "FAIL: /var/log/bacnet-schub/hub.log missing or has no start-up lines"; sudo ls -la /var/log/bacnet-schub; exit 1; }
+          sudo grep -qE '") ready\. Vendor ID' /var/log/bacnet-schub/hub.log || { echo "FAIL: /var/log/bacnet-schub/hub.log missing or has no start-up lines"; sudo ls -la /var/log/bacnet-schub; exit 1; }
           sudo apt-get purge -y -qq bacnet-schub-hub > /dev/null
           ! systemctl is-active bacnet-schub-hub
 
@@ -580,6 +594,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Earlier steps' test instances also serve 8080: make sure none is left to
+          # answer /health for a service that didn't start.
+          Get-Process BACnetExampleBSCHUB -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 1
           $setup = Get-ChildItem dist -Filter "*-setup.exe" | Select-Object -First 1
           Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
           $ok = $false
@@ -587,9 +605,32 @@ jobs:
             try { Invoke-RestMethod http://127.0.0.1:8080/health | ConvertTo-Json -Compress; $ok = $true; break } catch { Start-Sleep 1 }
           }
           Get-Service BACnetSCHub | Format-List Name, Status, StartType
-          Get-Content "$env:ProgramData\Chipkin\BACnetSCHub\logs\hub.log" -Tail 20 -ErrorAction SilentlyContinue
+          $data = "$env:ProgramData\Chipkin\BACnetSCHub"
+          Get-Content "$data\logs\hub.log" -Tail 20
           if (-not $ok) { throw "The BACnetSCHub service did not answer /health" }
+          if ((Get-Service BACnetSCHub).Status -ne 'Running') { throw "The BACnetSCHub service is not running" }
           if ((Get-Service BACnetSCHub).StartType -ne 'Automatic') { throw "The service does not start automatically" }
+          # /health can answer a moment before the start-up line reaches hub.log.
+          $ready = $false
+          foreach ($i in 1..30) {
+            if (Select-String -Path "$data\logs\hub.log" -Pattern '\) ready\. Vendor ID' -Quiet) { $ready = $true; break }
+            Start-Sleep 1
+          }
+          Get-Content "$data\logs\hub.log" -Tail 20
+          if (-not $ready) { throw "hub.log has no start-up line" }
+          # The service runs as its virtual account, not LocalSystem.
+          $account = (Get-CimInstance Win32_Service -Filter "Name='BACnetSCHub'").StartName
+          if ($account -ne 'NT SERVICE\BACnetSCHub') { throw "The service runs as '$account', not NT SERVICE\BACnetSCHub" }
+          $serviceSid = ([System.Security.Principal.NTAccount]'NT SERVICE\BACnetSCHub').Translate([System.Security.Principal.SecurityIdentifier]).Value
+          # The data folder holds private keys: only SYSTEM, Administrators and the service may have access.
+          foreach ($item in @($data, "$data\hub.conf", "$data\certs\private-key.pem", "$data\certs\issuer-private-key.pem")) {
+            $acl = Get-Acl $item
+            $acl.Access | Format-Table IdentityReference, FileSystemRights, IsInherited -AutoSize | Out-String | Write-Host
+            $sids = $acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+            $others = $sids | Where-Object { $_ -notin @('S-1-5-18', 'S-1-5-32-544', $serviceSid) }
+            if ($others) { throw "$item is accessible to more than SYSTEM, Administrators and the service: $($others -join ', ')" }
+            if (-not ($sids -contains $serviceSid)) { throw "$item is not accessible to the service account" }
+          }
           $uninstaller = Get-ChildItem "${env:ProgramFiles}\Chipkin\BACnet SC Hub" -Filter "unins*.exe" | Select-Object -First 1
           Start-Process -FilePath $uninstaller.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait
           if (Get-Service BACnetSCHub -ErrorAction SilentlyContinue) { throw "Uninstall left the BACnetSCHub service behind" }
@@ -653,7 +694,8 @@ jobs:
         with:
           subject-path: release/*
       # SC-TRANSPORT:END
-      - uses: softprops/action-gh-release@v2
+      # Pinned to a commit (issue #58): this job can write releases and attestations.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true

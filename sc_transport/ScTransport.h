@@ -439,7 +439,12 @@ private:
 
     // Called at the top of each WRITEABLE callback: if a close was requested,
     // sets lws's close reason and returns true - the caller then returns -1.
-    static bool ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest);
+    // A normal close waits until `txQueue` is empty, so a frame the stack sent
+    // just before asking for the close (a Connect-Request NAK, a
+    // Disconnect-ACK) still reaches the peer (issue #62); a 1008 close (the
+    // queue overflowed) happens at once.
+    static bool ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest,
+                                    const std::deque<std::vector<uint8_t>>& txQueue);
 
     ScTlsFiles m_tls;
     std::string m_acceptSubprotocol;
@@ -447,6 +452,15 @@ private:
 
     lws_context* m_listenerContext = nullptr;
     std::string m_listenUri;
+    // The URI the stack asked us to listen on (StartListening) and hasn't
+    // asked us to stop (StopListening) - kept even while the listener is down,
+    // so Service() can bring it back after a failed restart (issue #61): the
+    // stack still believes it is listening and won't ask again.
+    std::string m_wantedListenUri;
+    // Rate-limit refusals: when the last one was logged, and how many were
+    // refused without a log line since then (issue #64).
+    std::chrono::steady_clock::time_point m_lastRateLimitLog;
+    uint64_t m_rateLimitLogSuppressed = 0;
     uint64_t m_nextClientId = 1;
 
     // Heap-allocated (not a fixed-size member array) so this header does not

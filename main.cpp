@@ -190,6 +190,10 @@ static const uint32_t VENDOR_IDENTIFIER = 389;
 // only what an unconfigured unit calls itself.
 static const char* DEVICE_NAME_DEFAULT = "Chipkin Example B-SCHUB";
 static std::string g_deviceName = DEVICE_NAME_DEFAULT;
+// Longest --device-name accepted, in UTF-8 bytes. Object_Name has no fixed
+// limit in the standard, but the stack reads it into a 256-byte buffer and
+// fails one that fills it (issue #52); 128 leaves plenty of room.
+static const size_t MAX_DEVICE_NAME_BYTES = 128;
 
 // Each Network Port's Network_Number (1..65534) - --ip-network-number /
 // --sc-network-number or the config file's ip-network-number /
@@ -391,6 +395,10 @@ static const uint32_t SERVICE_ATOMIC_WRITE_FILE = 7;     // BACnetServicesSuppor
 // BACnetReinitializedStateOfDevice activateChanges (WARMSTART comes from common/).
 static const uint32_t REINITIALIZE_STATE_ACTIVATE_CHANGES = 7;
 static const uint32_t ERROR_CODE_INVALID_CONFIGURATION_DATA = 46;
+// BACnetNetworkPortCommand values the stack forwards to NetworkPortCommand
+// (cl. 12.56.16) - the rest it executes itself.
+static const uint32_t NETWORK_PORT_COMMAND_DISCARD_CHANGES = 1;
+static const uint32_t NETWORK_PORT_COMMAND_GENERATE_CSR_FILE = 9;
 
 // Set by the ReinitializeDevice callback once new certificates are committed;
 // the main loop then reloads the TLS contexts (see ScTransport::ReloadCredentials).
@@ -840,15 +848,16 @@ bool GetPropertyOctetString(const uint32_t deviceInstance, const uint16_t object
 // B-BC). Returns "" for an object this device doesn't have.
 static std::string ObjectDescription(const uint16_t objectType, const uint32_t objectInstance) {
     if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
-        return std::string("Chipkin CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile) with an "
-                           "always-on BACnet/IP port. Source, manual and releases: ") + PROJECT_URL;
+        return std::string("Chipkin CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile)") +
+               (g_bacnetIpEnabled ? " with a BACnet/IP port" : ", BACnet/SC only") +
+               ". Source, manual and releases: " + PROJECT_URL;
     }
     if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
         return "Example sensor value in degrees C, showing a hub serving its own data. "
                "Change it with the up/down arrow keys in the console.";
     }
     if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
-        return "BACnet/IP port (UDP). Always on, so this hub can be found and managed over plain BACnet/IP.";
+        return "BACnet/IP port (UDP), so this hub can be found and managed over plain BACnet/IP.";
     }
     if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
         return "BACnet/SC port: the hub function (wss:// listener that devices connect to) and, if "
@@ -875,14 +884,50 @@ static std::string ObjectDescription(const uint16_t objectType, const uint32_t o
     return std::string();
 }
 
+// True if `text` is well-formed UTF-8 (the encoding Object_Name is served in).
+static bool IsValidUtf8(const std::string& text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char lead = (unsigned char)text[i];
+        size_t extra;
+        if (lead < 0x80) {
+            extra = 0;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= text.size()) {
+            return false;  // truncated sequence
+        }
+        for (size_t k = 1; k <= extra; ++k) {
+            if ((((unsigned char)text[i + k]) & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
 static bool ReturnCharacterString(const char* text, char* value,
                                   uint32_t* valueElementCount,
                                   const uint32_t maxElementCount,
                                   uint8_t* encodingType) {
     uint32_t length = (uint32_t)strlen(text);
-    if (length > maxElementCount) {
-        length = maxElementCount; // see the equivalent B-SS comment: this never
-                                   // trips at the default MAX_CHARACTER_STRING_SIZE
+    // The stack fails a string that fills its whole buffer (stack issue
+    // #2487), so leave at least one byte free - and never cut a multi-byte
+    // UTF-8 character in half. Start-up limits the user-set strings
+    // (MAX_DEVICE_NAME_BYTES), so this only guards against surprises.
+    if (maxElementCount > 0 && length >= maxElementCount) {
+        length = maxElementCount - 1;
+        while (length > 0 && (((unsigned char)text[length]) & 0xC0) == 0x80) {
+            --length;  // text[length] is a continuation byte: back up to a character start
+        }
     }
     memcpy(value, text, length);
     *valueElementCount = length;
@@ -1156,7 +1201,8 @@ bool CallbackReadFile(const uint32_t deviceInstance, const uint32_t fileInstance
 // -----------------------------------------------------------------------------
 
 // Only the operational certificate and the two issuer slots are writable; the
-// Certificate Signing Request (File 2) is read-only - GENERATE_CSR_FILE isn't available (issue #10).
+// Certificate Signing Request (File 2) is read-only - the hub writes it itself
+// on GENERATE_CSR_FILE (NetworkPortCommand below).
 static bool IsWritableScCertFileInstance(const uint32_t fileInstance) {
     return fileInstance == FILE_OPERATIONAL_CERT_INSTANCE ||
            fileInstance == FILE_ISSUER_CERT_1_INSTANCE ||
@@ -1267,6 +1313,54 @@ bool ReinitializeDevice(const uint32_t deviceInstance, const uint32_t reinitiali
                           "ReinitializeDevice: new certificates saved; reloading BACnet/SC TLS");
     g_scReloadCredentialsRequested = true;  // done in the main loop, outside the stack's callback
     return true;
+}
+
+// Network Port Command (cl. 12.56.16), IFC-061. The stack executes the
+// Command property itself and asks the application about the two commands
+// that touch data only the application holds:
+//   DISCARD_CHANGES (1) - any port, before the stack reverts its own pending
+//     changes. On the BACnet/SC port the staged certificate writes are thrown
+//     away (cl. 12.56.100/.101 "revert the file data"); the BACnet/IP port has
+//     nothing of ours staged. Answering true lets the stack finish the revert.
+//   GENERATE_CSR_FILE (9) - the BACnet/SC port, only when Changes_Pending is
+//     FALSE. A new key pair and Certificate Signing Request (File 2); the new
+//     key stays pending until a certificate for it is activated - see
+//     cert_store.h. Synchronous: P-256 generation takes milliseconds.
+bool NetworkPortCommand(const uint32_t deviceInstance, const uint32_t networkPortInstance,
+                        const uint32_t command, uint32_t* errorCode) {
+    if (deviceInstance != g_deviceInstance) {
+        *errorCode = ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+        return false;
+    }
+    if (command == NETWORK_PORT_COMMAND_DISCARD_CHANGES) {
+        if (networkPortInstance == SC_NETWORK_PORT_INSTANCE && CertStore::HasStagedChanges()) {
+            CertStore::DiscardStaged();
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                                  "Network Port %u Command DISCARD_CHANGES: staged certificate writes discarded",
+                                  networkPortInstance);
+        } else {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                                  "Network Port %u Command DISCARD_CHANGES", networkPortInstance);
+        }
+        return true;
+    }
+    if (command == NETWORK_PORT_COMMAND_GENERATE_CSR_FILE && networkPortInstance == SC_NETWORK_PORT_INSTANCE) {
+        std::string reason;
+        if (!CertStore::GenerateKeyAndCsr(&reason)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                                  "Network Port %u Command GENERATE_CSR_FILE: FAILED: %s",
+                                  networkPortInstance, reason.c_str());
+            *errorCode = ERROR_CODE_INVALID_CONFIGURATION_DATA;
+            return false;
+        }
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                              "Network Port %u Command GENERATE_CSR_FILE: new key pair and certificate signing "
+                              "request (File %u) - the hub keeps its current key until a certificate for the new "
+                              "one is activated", networkPortInstance, FILE_CSR_INSTANCE);
+        return true;
+    }
+    *errorCode = ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+    return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -1634,22 +1728,28 @@ static const char* const WINDOWS10_ISSUE_URL = "https://github.com/chipkin/BACne
 
 static void WarnIfWindows10() {
 #if defined(_WIN32)
-    typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOW*);
+    typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOEXW*);
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     const RtlGetVersionFn rtlGetVersion =
         ntdll != NULL ? reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion")) : NULL;
-    OSVERSIONINFOW version;
+    OSVERSIONINFOEXW version;
     memset(&version, 0, sizeof(version));
     version.dwOSVersionInfoSize = sizeof(version);
-    if (rtlGetVersion == NULL || rtlGetVersion(&version) != 0) {
-        return;  // can't tell - say nothing rather than guess
+    if (rtlGetVersion == NULL || rtlGetVersion(&version) != 0 || version.dwMajorVersion != 10) {
+        return;  // can't tell (or not a 10.x kernel) - say nothing rather than guess
     }
-    if (version.dwMajorVersion == 10 && version.dwBuildNumber < 22000) {
+    // Windows 10 and 11 share major version 10; so do Windows Server
+    // 2016/2019/2022/2025. TLS 1.3 client support arrived with Windows 11
+    // (build 22000) and Windows Server 2022 (build 20348).
+    const bool isServer = version.wProductType != VER_NT_WORKSTATION;
+    const DWORD firstBuildWithTls13 = isServer ? 20348 : 22000;
+    if (version.dwBuildNumber < firstBuildWithTls13) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "This computer runs Windows 10 (build %lu). The hub works, but BACnet/SC tools on this computer "
+            "This computer runs %s (build %lu). The hub works, but BACnet/SC tools on this computer "
             "that use Windows' own TLS (for example YABE) can't connect: BACnet/SC requires TLS 1.3, and "
-            "Windows 10 can't make TLS 1.3 client connections. Use Windows 11 / Server 2022 or later for "
-            "those tools, or a client with its own TLS 1.3 (CAS BACnet Explorer). See %s",
+            "this Windows version can't make TLS 1.3 client connections. Use Windows 11 / Server 2022 or "
+            "later for those tools, or a client with its own TLS 1.3 (CAS BACnet Explorer). See %s",
+            isServer ? "a Windows Server version older than 2022" : "Windows 10",
             version.dwBuildNumber, WINDOWS10_ISSUE_URL);
     }
 #endif
@@ -1851,6 +1951,99 @@ static bool HasFlag(const int argc, char** argv, const char* flagName) {
 
 // The hub itself. main() (at the end of this file) runs it directly, or as a
 // Windows service - see service.h.
+// -----------------------------------------------------------------------------
+// Command-line check (issue #54). Every option the hub knows, so a typo or a
+// value left off is an error instead of being silently ignored - the old
+// "--dcc-password secret" in particular must not leave a device running with
+// no password while its operator thinks otherwise.
+// -----------------------------------------------------------------------------
+static const char* const kValueOptions[] = {
+    "--port", "--deviceID", "--sc-port", "--sc-cert-dir", "--sc-hub-uri", "--sc-failover-uri",
+    "--http-port", "--http-bind", "--http-tls-cert", "--http-tls-key", "--sc-max-hub-connections",
+    "--sc-rate-limit", "--sc-rate-limit-total", "--bacnet-ip", "--device-name", "--ip-network-number",
+    "--sc-network-number", "--log-file", "--log-max-size-mb", "--log-max-files", "--config",
+    "--cert-label", "--cert-hub-uri"};
+// Switches; the first group also takes an optional on/off (see ParseSwitchArg).
+static const char* const kOnOffSwitches[] = {"--http-tls", "--sc-accept-hub-without-hello",
+                                             "--sc-accept-device-without-hello"};
+static const char* const kSwitches[] = {"--force", "--xml", "--xmlLog", "--service", "--install-service",
+                                        "--uninstall-service", "--help", "-h", "/?", "--version"};
+static const char* const kOptionalCountOptions[] = {"--generate-certs", "--add-client-certs"};
+
+static bool IsOneOf(const char* arg, const char* const* list, const size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (strcmp(arg, list[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// "on"/"off" and friends, case-insensitively. Returns false if `text` is none of them.
+static bool ParseOnOff(std::string text, bool* out) {
+    for (char& c : text) {
+        c = (char)tolower((unsigned char)c);
+    }
+    if (text == "on" || text == "true" || text == "yes" || text == "1") {
+        *out = true;
+        return true;
+    }
+    if (text == "off" || text == "false" || text == "no" || text == "0") {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+// "<flag>" alone means on; "<flag> on|off" sets it either way, so the command
+// line can turn off something the config file turned on. Absent: fallback.
+static bool ParseSwitchArg(const int argc, char** argv, const char* flagName, const bool fallback) {
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], flagName) == 0) {
+            bool value = true;
+            if (i + 1 < argc && ParseOnOff(argv[i + 1], &value)) {
+                return value;
+            }
+            return true;
+        }
+    }
+    return fallback;
+}
+
+// False (after printing why) if argv has an unknown option, a stray argument,
+// or an option missing its value.
+static bool ValidateCommandLine(const int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        bool unused = false;
+        if (strcmp(arg, "--dcc-password") == 0) {
+            fprintf(stderr, "Error: --dcc-password is not accepted on the command line (it would show in process "
+                            "listings). Set dcc-password in a --config file instead.\n");
+            return false;
+        }
+        if (IsOneOf(arg, kValueOptions, sizeof(kValueOptions) / sizeof(kValueOptions[0]))) {
+            if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
+                fprintf(stderr, "Error: %s needs a value.\n", arg);
+                return false;
+            }
+            ++i;
+        } else if (IsOneOf(arg, kOnOffSwitches, sizeof(kOnOffSwitches) / sizeof(kOnOffSwitches[0]))) {
+            if (i + 1 < argc && ParseOnOff(argv[i + 1], &unused)) {
+                ++i;
+            }
+        } else if (IsOneOf(arg, kOptionalCountOptions,
+                           sizeof(kOptionalCountOptions) / sizeof(kOptionalCountOptions[0]))) {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                ++i;  // the count - ParseOptionalCountArg checks it
+            }
+        } else if (!IsOneOf(arg, kSwitches, sizeof(kSwitches) / sizeof(kSwitches[0]))) {
+            fprintf(stderr, "Error: unknown %s \"%s\" - see --help.\n", arg[0] == '-' ? "option" : "argument", arg);
+            return false;
+        }
+    }
+    return true;
+}
+
 static int RunHub(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1861,6 +2054,9 @@ static int RunHub(int argc, char** argv) {
                 CASBACnetStackAdapter_LastError());
         return 1;
     }
+
+    // --xml / --xmlLog: XML frame logging, as common/'s --help advertises.
+    CASExampleHelper::ParseXmlLogArg(argc, argv);
 
     // g_firmwareRevision (Device object property 44) - see its own doc
     // comment above for why this is the STACK's version, not this example's
@@ -1890,7 +2086,8 @@ static int RunHub(int argc, char** argv) {
                 printf("\nDevice and logging:\n");
                 printf("  --device-name <name>\n");
                 printf("                      The Device's Object_Name - must be unique on the BACnet\n");
-                printf("                      internetwork. Default \"%s\".\n", DEVICE_NAME_DEFAULT);
+                printf("                      internetwork; 1 to %u bytes of UTF-8. Default \"%s\".\n",
+                       (unsigned)MAX_DEVICE_NAME_BYTES, DEVICE_NAME_DEFAULT);
                 printf("  --ip-network-number <n>, --sc-network-number <n>\n");
                 printf("                      Network_Number (1..65534) of Network Port 1 (BACnet/IP) /\n");
                 printf("                      2 (BACnet/SC), reported as configured. Default: not set.\n");
@@ -1929,12 +2126,12 @@ static int RunHub(int argc, char** argv) {
                 printf("                      Max NEW BACnet/SC connection attempts/second for the whole\n");
                 printf("                      listener, all addresses together. 0 = no limit. Default %u.\n",
                        (unsigned)SC_RATE_LIMIT_TOTAL_DEFAULT);
-                printf("  --sc-accept-hub-without-hello\n");
+                printf("  --sc-accept-hub-without-hello [on|off]\n");
                 printf("                      Compatibility, off by default: let the hub connector\n");
                 printf("                      (--sc-hub-uri) accept a hub whose Connect-Accept omits\n");
                 printf("                      the Hello option the standard requires. Deviates from\n");
                 printf("                      ANSI/ASHRAE 135 - see docs/manual.md \"BACnet/SC compatibility\".\n");
-                printf("  --sc-accept-device-without-hello\n");
+                printf("  --sc-accept-device-without-hello [on|off]\n");
                 printf("                      Compatibility, off by default: accept a device whose\n");
                 printf("                      Connect-Request omits the Hello option (e.g. YABE).\n");
                 printf("                      Deviates from ANSI/ASHRAE 135 - see the manual as above.\n");
@@ -1976,9 +2173,9 @@ static int RunHub(int argc, char** argv) {
                 printf("                      127.0.0.1 (loopback only). Binding anywhere else (e.g.\n");
                 printf("                      0.0.0.0, or a LAN address) is a real security tradeoff -\n");
                 printf("                      GET /, /health and /metrics have NO authentication, and\n");
-                printf("                      without --http-tls it is plain HTTP - see README.md\n");
+                printf("                      without --http-tls it is plain HTTP - see docs/manual.md\n");
                 printf("                      \"Security\" before setting this to anything else.\n");
-                printf("  --http-tls          Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
+                printf("  --http-tls [on|off] Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
                 printf("                      hub's operational-certificate.pem and private-key.pem\n");
                 printf("                      unless --http-tls-cert/--http-tls-key say otherwise.\n");
                 printf("  --http-tls-cert <file>, --http-tls-key <file>\n");
@@ -2015,7 +2212,11 @@ static int RunHub(int argc, char** argv) {
         const std::string configPath = ParseConfigPathArg(argc, argv);
         if (!configPath.empty()) {
             if (!LoadExampleConfig(configPath, &fileConfig)) {
-                fprintf(stderr, "Error: could not open --config file \"%s\".\n", configPath.c_str());
+                if (!fileConfig.error.empty()) {
+                    fprintf(stderr, "Error: %s\n", fileConfig.error.c_str());
+                } else {
+                    fprintf(stderr, "Error: could not open --config file \"%s\".\n", configPath.c_str());
+                }
                 return 1;
             }
         }
@@ -2049,6 +2250,13 @@ static int RunHub(int argc, char** argv) {
         } else if (fileConfig.hasDeviceName) {
             g_deviceName = fileConfig.deviceName;
         }
+        if (g_deviceName.empty() || g_deviceName.size() > MAX_DEVICE_NAME_BYTES || !IsValidUtf8(g_deviceName)) {
+            printf("Error: the device name must be 1 to %u bytes of UTF-8 text (got %u bytes%s).\n",
+                   (unsigned)MAX_DEVICE_NAME_BYTES, (unsigned)g_deviceName.size(),
+                   IsValidUtf8(g_deviceName) ? "" : ", not valid UTF-8 - for a non-ASCII name, set device-name in a "
+                                                    "config file saved as UTF-8");
+            return 1;
+        }
         g_ipNetworkNumber = (uint16_t)ParseUIntArg(argc, argv, "--ip-network-number", 1, 65534,
             fileConfig.hasIpNetworkNumber ? fileConfig.ipNetworkNumber : 0);
         g_scNetworkNumber = (uint16_t)ParseUIntArg(argc, argv, "--sc-network-number", 1, 65534,
@@ -2057,11 +2265,7 @@ static int RunHub(int argc, char** argv) {
     {
         g_bacnetIpEnabled = fileConfig.hasBacnetIp ? fileConfig.bacnetIp : true;
         const std::string bacnetIpArg = ParseStringArg(argc, argv, "--bacnet-ip");
-        if (bacnetIpArg == "off" || bacnetIpArg == "false" || bacnetIpArg == "no" || bacnetIpArg == "0") {
-            g_bacnetIpEnabled = false;
-        } else if (bacnetIpArg == "on" || bacnetIpArg == "true" || bacnetIpArg == "yes" || bacnetIpArg == "1") {
-            g_bacnetIpEnabled = true;
-        } else if (!bacnetIpArg.empty()) {
+        if (!bacnetIpArg.empty() && !ParseOnOff(bacnetIpArg, &g_bacnetIpEnabled)) {
             fprintf(stderr, "Error: --bacnet-ip expects on or off, got \"%s\".\n", bacnetIpArg.c_str());
             return 1;
         }
@@ -2081,6 +2285,13 @@ static int RunHub(int argc, char** argv) {
     }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
+    if (g_scCertDir.empty()) {
+        // Every path is built as g_scCertDir + "/<file>", so "" would mean the
+        // filesystem root (and --generate-certs would write there).
+        fprintf(stderr, "Error: the certificate folder (--sc-cert-dir / sc-cert-dir) is empty. Use \".\" for "
+                        "the current folder.\n");
+        return 1;
+    }
 
     // --- Lab certificate generation (--generate-certs / --add-client-certs) --
     // A one-shot tool mode: write the certificates, then exit without starting
@@ -2151,10 +2362,10 @@ static int RunHub(int argc, char** argv) {
         fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
     g_scRateLimitTotal = ParseScRateLimitArg(argc, argv, "--sc-rate-limit-total",
         fileConfig.hasScRateLimitTotal ? fileConfig.scRateLimitTotal : SC_RATE_LIMIT_TOTAL_DEFAULT);
-    g_scAcceptHubWithoutHello = HasFlag(argc, argv, "--sc-accept-hub-without-hello") ||
-                                (fileConfig.hasScAcceptHubWithoutHello && fileConfig.scAcceptHubWithoutHello);
-    g_scAcceptDeviceWithoutHello = HasFlag(argc, argv, "--sc-accept-device-without-hello") ||
-                                   (fileConfig.hasScAcceptDeviceWithoutHello && fileConfig.scAcceptDeviceWithoutHello);
+    g_scAcceptHubWithoutHello = ParseSwitchArg(argc, argv, "--sc-accept-hub-without-hello",
+        fileConfig.hasScAcceptHubWithoutHello && fileConfig.scAcceptHubWithoutHello);
+    g_scAcceptDeviceWithoutHello = ParseSwitchArg(argc, argv, "--sc-accept-device-without-hello",
+        fileConfig.hasScAcceptDeviceWithoutHello && fileConfig.scAcceptDeviceWithoutHello);
     g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
     {
         const std::string httpBindArg = ParseStringArg(argc, argv, "--http-bind");
@@ -2165,7 +2376,7 @@ static int RunHub(int argc, char** argv) {
         }
         // else: g_httpBindAddress keeps its "127.0.0.1" built-in default.
     }
-    g_httpTls = HasFlag(argc, argv, "--http-tls") || (fileConfig.hasHttpTls && fileConfig.httpTls);
+    g_httpTls = ParseSwitchArg(argc, argv, "--http-tls", fileConfig.hasHttpTls && fileConfig.httpTls);
     g_httpTlsCert = ParseStringArg(argc, argv, "--http-tls-cert");
     if (g_httpTlsCert.empty() && fileConfig.hasHttpTlsCert) {
         g_httpTlsCert = fileConfig.httpTlsCert;
@@ -2227,12 +2438,20 @@ static int RunHub(int argc, char** argv) {
         for (const uint32_t instance : certInstances) {
             layout.paths[instance] = ScCertFilePath(instance);
         }
-        layout.readFallbacks[FILE_ISSUER_CERT_2_INSTANCE] = issuer1Path;
+        layout.readFallbackInstances[FILE_ISSUER_CERT_2_INSTANCE] = FILE_ISSUER_CERT_1_INSTANCE;
         layout.operationalInstance = FILE_OPERATIONAL_CERT_INSTANCE;
         layout.issuerInstances = {FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE};
         layout.privateKeyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
             g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+        layout.pendingPrivateKeyPath = g_scCertDir + "/" + CertTool::PENDING_PRIVATE_KEY_FILE;
+        layout.csrInstance = FILE_CSR_INSTANCE;
         CertStore::SetLayout(layout);
+        std::string reconcileMessage;
+        if (!CertStore::ReconcilePendingKey(&reconcileMessage)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Error, "certificates: %s", reconcileMessage.c_str());
+        } else if (!reconcileMessage.empty()) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, "certificates: %s", reconcileMessage.c_str());
+        }
 
         // TLS trusts every issuer in both slots. With no certificates yet, fall
         // back to slot 1's path so the "certificates missing" message names it.
@@ -2283,6 +2502,8 @@ static int RunHub(int argc, char** argv) {
     BACnetStack_RegisterCallbackWriteFile(CallbackWriteFile);
     BACnetStack_RegisterCallbackSetPropertyUnsignedInteger(SetPropertyUnsignedInteger);
     BACnetStack_RegisterCallbackReinitializeDevice(ReinitializeDevice);
+    // Network Port Command DISCARD_CHANGES / GENERATE_CSR_FILE (IFC-061) - see 2d-ii.
+    BACnetStack_RegisterCallbackNetworkPortCommand(NetworkPortCommand);
 
     // --- Create the device --------------------------------------------------
     if (!BACnetStack_AddDevice(g_deviceInstance)) {
@@ -2698,6 +2919,9 @@ static int RunHub(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     int exitCode = 0;
+    if (!ValidateCommandLine(argc, argv)) {
+        return 1;
+    }
     if (Service::HandleServiceCommand(argc, argv, &exitCode)) {  // --install-service / --uninstall-service
         return exitCode;
     }

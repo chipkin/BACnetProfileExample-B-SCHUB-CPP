@@ -167,13 +167,11 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
     while (std::getline(file, line)) {
         ++lineNumber;
 
-        // "#" starts a comment to end-of-line (see config.h's format note).
-        const size_t commentPos = line.find('#');
-        if (commentPos != std::string::npos) {
-            line = line.substr(0, commentPos);
-        }
+        // A line whose first non-blank character is "#" is a comment. A "#"
+        // anywhere else is part of the value, so a password or token can
+        // contain one (see config.h's format note).
         line = Trim(line);
-        if (line.empty()) {
+        if (line.empty() || line[0] == '#') {
             continue;
         }
 
@@ -246,6 +244,17 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
             outConfig->scFailoverUri = value;
             outConfig->hasScFailoverUri = true;
         } else if (key == "dcc-password") {
+            // BACnet caps the DeviceCommunicationControl and ReinitializeDevice
+            // password at 20 characters, and the stack refuses longer ones in a
+            // request - a longer password here could never be matched, locking
+            // out DCC and the certificate procedures' ACTIVATE_CHANGES.
+            if (value.size() > kMaxDccPasswordLength) {
+                outConfig->error = "config file " + path + ":" + std::to_string(lineNumber) +
+                                   ": dcc-password is " + std::to_string(value.size()) +
+                                   " characters; BACnet allows at most " + std::to_string(kMaxDccPasswordLength) +
+                                   " (DeviceCommunicationControl / ReinitializeDevice password).";
+                return false;
+            }
             outConfig->dccPassword = value;
             outConfig->hasDccPassword = true;
         } else if (key == "http-upload-token") {
@@ -310,13 +319,26 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
     // ConfigFileHasBroadPermissions()'s own comment for what this check does
     // and does not catch, and docs/manual.md "Configuration file" for the
     // icacls/chmod remediation this warning points at.
+    // A secret key that is present but empty turns its protection OFF (no
+    // DCC password; upload disabled) - say so, in case that wasn't meant.
+    if (outConfig->hasDccPassword && outConfig->dccPassword.empty()) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "config file \"%s\": dcc-password is empty, so DeviceCommunicationControl and "
+            "ReinitializeDevice need no password.", path.c_str());
+    }
+    if (outConfig->hasHttpUploadToken && outConfig->httpUploadToken.empty()) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "config file \"%s\": http-upload-token is empty, so POST /certs/<slot> stays disabled.",
+            path.c_str());
+    }
     const bool hasSecret = (outConfig->hasDccPassword && !outConfig->dccPassword.empty()) ||
                            (outConfig->hasHttpUploadToken && !outConfig->httpUploadToken.empty());
     if (hasSecret && ConfigFileHasBroadPermissions(path)) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "config file \"%s\" sets a password or token and appears readable by more than "
             "its owner/Administrators. Restrict its permissions: Windows - "
-            "\"icacls %s /inheritance:r /grant:r %%USERNAME%%:F\"; Linux/macOS - \"chmod 600 %s\". "
+            "\"icacls %s /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F %%USERNAME%%:F\" (keeps SYSTEM, "
+            "the service account, and Administrators); Linux/macOS - \"chmod 600 %s\". "
             "See docs/manual.md \"Configuration file\".",
             path.c_str(), path.c_str(), path.c_str());
     }

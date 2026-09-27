@@ -311,6 +311,33 @@ async def v2_connect_request_without_hello(uri: str, cert_dir: Path, expect_acce
         return False
 
 
+async def v2_duplicate_vmac_gets_nak(uri: str, cert_dir: Path):
+    """Issue #62: when the hub refuses a Connect-Request (here: a second device with the same VMAC),
+    the stack sends a BVLC-Result NAK and closes at once. The NAK must still reach the device
+    before the close - not a bare WebSocket close with no reason."""
+    ctx = make_ssl_context(cert_dir, use_client_cert=True)
+    vmac = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+    name = "V2: duplicate VMAC -> BVLC-Result NAK before the close"
+    try:
+        async with websockets.connect(uri, ssl=ctx, subprotocols=[SUBPROTOCOL], open_timeout=5) as first:
+            await first.send(build_connect_request(vmac, bytes(range(0x10, 0x20)), message_id=4250))
+            await asyncio.wait_for(first.recv(), timeout=5)
+            async with websockets.connect(uri, ssl=ctx, subprotocols=[SUBPROTOCOL], open_timeout=5) as second:
+                await second.send(build_connect_request(vmac, bytes(range(0x30, 0x40)), message_id=4251))
+                try:
+                    reply = await asyncio.wait_for(second.recv(), timeout=5)
+                except websockets.exceptions.ConnectionClosed as exc:
+                    record(name, False, f"closed without a NAK: {exc}")
+                    return False
+                ok = isinstance(reply, bytes) and len(reply) >= 6 and reply[0] == 0x00 and reply[5] == 0x01
+                details = reply[11:].decode("utf-8", "replace") if ok and len(reply) > 11 else ""
+                record(name, ok, f"{len(reply)} bytes" + (f' - "{details}"' if details else ""))
+                return ok
+    except Exception as exc:
+        record(name, False, f"{type(exc).__name__}: {exc}")
+        return False
+
+
 async def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1")
@@ -345,6 +372,7 @@ async def main():
     await v1_text_frame_closes_1003(uri, cert_dir)
     await v2_connect_request_gets_accept(uri, cert_dir)
     await v2_connect_request_without_hello(uri, cert_dir, args.expect_no_hello_accepted)
+    await v2_duplicate_vmac_gets_nak(uri, cert_dir)
 
     print()
     failed = [name for name, passed, _ in RESULTS if not passed]

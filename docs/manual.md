@@ -296,7 +296,7 @@ BACnetExampleBSCHUB [options]
 | `--port <n>` | `47808` | BACnet/IP UDP port. |
 | `--bacnet-ip <on/off>` | `on` | `off` runs BACnet/SC only - see [BACnet/SC only](#bacnetsc-only). |
 | `--deviceID <n>` | `389022` | BACnet device instance. |
-| `--device-name <name>` | `Chipkin Example B-SCHUB` | The Device's `Object_Name`. Must be unique on the BACnet internetwork, so name each hub. |
+| `--device-name <name>` | `Chipkin Example B-SCHUB` | The Device's `Object_Name`. Must be unique on the BACnet internetwork, so name each hub. 1 to 128 bytes of UTF-8; for a non-ASCII name use `device-name` in a config file saved as UTF-8. |
 | `--ip-network-number <n>`, `--sc-network-number <n>` | not set | `Network_Number` of Network Port 1 / 2 (1..65534), reported with quality `configured`. Unset ports report 0, quality `unknown`. |
 | `--log-file <path>` | none | Also write everything the hub prints to this file (see [Logging](#logging)). |
 | `--log-max-size-mb <n>`, `--log-max-files <n>` | `10`, `5` | Rotate the log file at this size, keeping this many old files (`<path>.1`, `.2`, ...). |
@@ -322,9 +322,16 @@ BACnetExampleBSCHUB [options]
 | `--install-service`, `--uninstall-service` | - | Windows: set up or remove the BACnetSCHub service (see [Running as a service](#running-as-a-service)). |
 | `--help`, `--version` | - | Usage, or version information. |
 
+An unknown option, a stray argument or an option missing its value is an
+error. The on/off switches (`--http-tls`, `--sc-accept-hub-without-hello`,
+`--sc-accept-device-without-hello`) mean "on" alone and also take `on` or
+`off`, so the command line can turn off what the config file turned on.
+
 ### Configuration file
 
-`--config <path>` reads `key = value` lines (`#` starts a comment).
+`--config <path>` reads `key = value` lines. A line starting with `#` is a
+comment; a `#` later in a line is part of the value, so passwords and tokens
+may contain one.
 `example.conf` (shipped with the program) lists every key with its default:
 `device-id`, `device-name`, `ip-network-number`, `sc-network-number`,
 `log-file`, `log-max-size-mb`, `log-max-files`, `port`, `bacnet-ip`,
@@ -343,8 +350,12 @@ file**, so they never show up in process listings or shell history.
 `http-upload-token` is the separate secret for the HTTP certificate upload
 (use a different value - the hub warns if they match). Both are compared in
 constant time. Restrict the file's permissions (`chmod 600 hub.conf`, or on
-Windows `icacls hub.conf /inheritance:r /grant:r "%USERNAME%:F"`); the hub
-warns at start-up if the file looks readable by other users.
+Windows `icacls hub.conf /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`,
+which keeps access for SYSTEM and Administrators; if the installer set up the
+service, also add `"NT SERVICE\BACnetSCHub:R"`, the account it runs as); the
+hub warns at start-up if the file looks readable by other users. The Windows
+installer already restricts `C:\ProgramData\Chipkin\BACnetSCHub` to SYSTEM,
+Administrators and the service's own account, `NT SERVICE\BACnetSCHub`.
 
 ### Logging
 
@@ -470,13 +481,25 @@ Supported procedures:
 - **Replace the hub certificate** - read the CSR (File 2), have your CA sign
   it, write the result to File 1, activate.
 
-Not yet supported: the Network Port `Command` property, so neither key-pair
-regeneration (`GENERATE_CSR_FILE`, waiting on
-[cas-bacnet-stack#2976](https://github.com/chipkin/cas-bacnet-stack/issues/2976))
-nor `DISCARD_CHANGES`
-([#29](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/29)).
-To drop staged writes, write the file's original contents back, or restart
-the hub (a restart discards staged writes).
+- **Replace the hub certificate with a new key pair** - write
+  `GENERATE_CSR_FILE` (9) to Network Port 2's `Command`. The hub makes a new
+  key pair and a new CSR (File 2) with the same subject, saving the new key as
+  `private-key-pending.pem`; it keeps using its current key and certificate
+  meanwhile. Have the new CSR signed, write the result to File 1 and activate:
+  the new key then replaces `private-key.pem`. Refused with
+  `INVALID_VALUE_IN_THIS_STATE` while certificate writes are staged - and,
+  until [#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)
+  is fixed, on a freshly started hub, which reads `Changes_Pending` TRUE with
+  nothing staged: send ReinitializeDevice `ACTIVATE_CHANGES` once first. If
+  the hub stops between saving the new certificate and swapping the key, it
+  finishes the swap at the next start.
+- **Discard staged writes** - write `DISCARD_CHANGES` (1) to Network Port 2's
+  `Command`. The staged certificate writes are dropped, the File objects read
+  the files on disk again, and `Changes_Pending` goes back to FALSE. A restart
+  also discards staged writes. Until #41 is fixed, don't send it to a freshly
+  started hub: it also reverts the stack's start-up state, after which
+  `Changes_Pending` no longer follows certificate writes (restart the hub to
+  recover).
 
 **Known issue:** right after the hub starts, Network Port 2 reads
 `Changes_Pending` = TRUE (and `Current_Health` may report

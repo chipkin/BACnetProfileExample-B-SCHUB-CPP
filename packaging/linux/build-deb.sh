@@ -20,10 +20,25 @@ trap 'rm -rf "$PKG"' EXIT
 install -d "$PKG/DEBIAN" "$PKG/opt/bacnet-schub" "$PKG/lib/systemd/system"
 install -m 0755 "$SRC/BACnetExampleBSCHUB" "$PKG/opt/bacnet-schub/"
 for doc in README.md TUTORIAL.md LICENSE THIRD-PARTY-NOTICES.md SECURITY.md SUPPORT.md PICS.md PICS.pdf \
-           production-certificates.md example.conf manual.pdf fact-sheet.pdf; do
+           production-certificates.md example.conf manual.pdf fact-sheet.pdf THIRD-PARTY-LICENSES-linux.txt; do
     [ -f "$SRC/$doc" ] && install -m 0644 "$SRC/$doc" "$PKG/opt/bacnet-schub/"
 done
 install -m 0644 "$HERE/bacnet-schub-hub.service" "$PKG/lib/systemd/system/"
+
+# The executable links this build machine's glibc/libstdc++/libgcc
+# dynamically. Declare them (with the minimum versions it actually needs), so
+# apt refuses the package on a release that's too old instead of installing a
+# service that can't start. dpkg-shlibdeps wants a debian/control to exist.
+SHLIBS=$(mktemp -d)
+mkdir -p "$SHLIBS/debian"
+printf 'Source: bacnet-schub-hub\n\nPackage: bacnet-schub-hub\nArchitecture: amd64\n' > "$SHLIBS/debian/control"
+DEPENDS=$(cd "$SHLIBS" && dpkg-shlibdeps -O "$PKG/opt/bacnet-schub/BACnetExampleBSCHUB" | sed -n 's/^shlibs:Depends=//p')
+rm -rf "$SHLIBS"
+if [ -z "$DEPENDS" ]; then
+    echo "Error: dpkg-shlibdeps found no dependencies for the executable" >&2
+    exit 1
+fi
+echo "Depends: $DEPENDS"
 
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: bacnet-schub-hub
@@ -31,6 +46,7 @@ Version: $VERSION
 Section: net
 Priority: optional
 Architecture: amd64
+Depends: $DEPENDS
 Maintainer: Chipkin Automation Systems <support@chipkin.com>
 Homepage: https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP
 Description: BACnet/SC hub (B-SCHUB) built on the CAS BACnet Stack
@@ -54,10 +70,15 @@ if [ "$1" = "configure" ]; then
         chmod 0600 /etc/bacnet-schub/hub.conf
     fi
     if [ -z "$(ls -A /etc/bacnet-schub/certs 2>/dev/null)" ]; then
-        su -s /bin/sh bacnethub -c "/opt/bacnet-schub/BACnetExampleBSCHUB --sc-cert-dir /etc/bacnet-schub/certs --generate-certs" || true
+        # No "|| true": if the executable can't even run here, the install must fail
+        # rather than report success and leave a service that crash-loops.
+        su -s /bin/sh bacnethub -c "/opt/bacnet-schub/BACnetExampleBSCHUB --sc-cert-dir /etc/bacnet-schub/certs --generate-certs"
     fi
+    # "|| true" only because a container may have no systemd. restart (not
+    # enable --now) so an upgrade runs the new binary.
     systemctl daemon-reload || true
-    systemctl enable --now bacnet-schub-hub || true
+    systemctl enable bacnet-schub-hub || true
+    systemctl restart bacnet-schub-hub || true
 fi
 EOF
 

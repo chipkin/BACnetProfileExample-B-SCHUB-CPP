@@ -18,6 +18,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <cerrno>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <regex>
@@ -152,7 +154,9 @@ X509Ptr MakeCertificate(Role role, const std::string& commonName, EVP_PKEY* subj
     BN_free(serialBn);
 
     const long days = (role == Role::Ca) ? CA_VALID_DAYS : LEAF_VALID_DAYS;
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0);
+    // Valid from an hour ago, so a device whose clock is a little behind this
+    // computer's doesn't reject a freshly made certificate as "not yet valid".
+    X509_gmtime_adj(X509_getm_notBefore(cert.get()), -60L * 60L);
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), days * 24L * 60L * 60L);
 
     X509_NAME* name = X509_get_subject_name(cert.get());
@@ -430,7 +434,16 @@ certificate-signing-request.pem                                   PUBLIC
     new operational certificate. BACnetExampleBSCHUB serves it as File 2
     ("Certificate Signing Request"). To move the hub onto your own PKI, give
     this file to your CA and install the certificate it returns as
-    operational-certificate.pem.
+    operational-certificate.pem. A configuration tool can also have the hub
+    make a new key pair and a new request (the Network Port's Command
+    GENERATE_CSR_FILE); the request here is then for the new key.
+
+private-key-pending.pem                                           PRIVATE
+    Only present after a GENERATE_CSR_FILE: the new key behind
+    certificate-signing-request.pem. The hub keeps using private-key.pem
+    until a certificate signed for this key is installed and activated;
+    then this file replaces private-key.pem. Keep it as private as
+    private-key.pem.
 
 issuer-certificate.pem                                            PUBLIC
     The certificate of the issuer (certificate authority) that signed every
@@ -785,7 +798,14 @@ unsigned HighestClientNumber(const fs::path& certDir, const std::string& label) 
         std::smatch m;
         const std::string name = entry.path().filename().string();
         if (entry.is_directory() && std::regex_match(name, m, pattern)) {
-            const unsigned n = (unsigned)std::stoul(m[1].str());
+            // strtoul, not stoul: a folder like "client-99999999999999999999"
+            // must not throw. Out-of-range numbers are ignored.
+            errno = 0;
+            const unsigned long parsed = std::strtoul(m[1].str().c_str(), nullptr, 10);
+            if (errno == ERANGE || parsed > 99999) {
+                continue;
+            }
+            const unsigned n = (unsigned)parsed;
             if (n > highest) {
                 highest = n;
             }
@@ -844,10 +864,13 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
     // Every file a certificate set owns, in both namings.
     const char* const setFiles[] = {
         ISSUER_CERTIFICATE_FILE, ISSUER_PRIVATE_KEY_FILE, OPERATIONAL_CERTIFICATE_FILE,
-        PRIVATE_KEY_FILE, CERTIFICATE_SIGNING_REQUEST_FILE,
+        PRIVATE_KEY_FILE, PENDING_PRIVATE_KEY_FILE, CERTIFICATE_SIGNING_REQUEST_FILE,
         LEGACY_ISSUER_CERTIFICATE_FILE, LEGACY_ISSUER_PRIVATE_KEY_FILE,
         LEGACY_OPERATIONAL_CERTIFICATE_FILE, LEGACY_PRIVATE_KEY_FILE,
         LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE, ISSUER_CERTIFICATE_2_FILE, TRUSTED_ISSUERS_FILE,
+        // The CRL is the OLD issuer's: left behind, it makes the hub refuse every
+        // certificate from a new issuer ("unable to get certificate CRL").
+        ISSUER_CRL_FILE,
         "ca.srl", "node.crt", "node.key", MANIFEST_FILE, README_FILE};
     if (!force) {
         for (const char* name : setFiles) {

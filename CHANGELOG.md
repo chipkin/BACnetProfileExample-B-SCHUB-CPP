@@ -17,6 +17,71 @@ Open work is tracked in
   Stack's new compatibility flag 0x02 (cas-bacnet-stack#3097); it combines with
   `--sc-accept-hub-without-hello` (0x01). The hub logs a warning at start-up
   while it is on.
+- Network Port `Command` (cl. 12.56.16) on both Network Ports, writable
+  (CAS BACnet Stack `issues/runbook` 9533157d: cas-bacnet-stack#2552/#3095,
+  #2557, #2976):
+  - `DISCARD_CHANGES` drops staged certificate writes; the File objects read
+    the files on disk again and `Changes_Pending` goes back to FALSE (#29).
+  - `GENERATE_CSR_FILE` on Network Port 2 makes a new P-256 key pair and a new
+    Certificate Signing Request (File 2) with the same subject. The new key
+    waits in `private-key-pending.pem` and replaces `private-key.pem` when a
+    certificate signed for it is activated (#10).
+- `tests/sc/cert_procedure_test.py` covers both commands and the checks
+  below (35 checks); `hub_listener_test.py` checks that a refused device gets
+  its NAK (9 checks).
+- Each release ships `THIRD-PARTY-LICENSES-<os>.txt`, the full licence text of
+  every linked library (#59).
+
+### Security
+
+- `--http-tls`: an HTTP/2 request could corrupt the heap and crash the hub.
+  The HTTP and BACnet/SC listeners now offer HTTP/1.1 only, and responses are
+  written with the headroom libwebsockets needs.
+- Windows installer: `C:\ProgramData\Chipkin\BACnetSCHub` (private keys,
+  `hub.conf`) was readable by every local user. It is now limited to SYSTEM,
+  Administrators and the service; upgrading repairs existing installs.
+- The hub connector skipped revocation checking when `issuer-crl.pem` couldn't
+  be parsed; it now refuses to connect, like the listener.
+- A certificate upload holding a private key (a combined cert + key file) was
+  accepted and then served over AtomicReadFile. Certificate files may now hold
+  only certificates; the CSR slot exactly one request.
+- Log lines no longer carry control characters from peers (certificate names,
+  headers): an unauthenticated peer could forge log lines (#64).
+
+### Changed
+
+- Certificate validation checks the operational certificate's TLS purpose and
+  refuses a CA certificate; a root + intermediate issuer set is accepted (#45).
+- The config file treats `#` as a comment only at the start of a line;
+  `dcc-password` is limited to BACnet's 20 characters (#51).
+- The command line refuses unknown options and options missing a value; the
+  on/off switches take `on`/`off`; `--xml` works (#54).
+- The device name is limited to 128 bytes of UTF-8 (#52).
+- The Windows service runs as `NT SERVICE\BACnetSCHub`; the systemd unit is
+  more tightly sandboxed (#60).
+- CI: least-privilege workflow permissions, the release action pinned (#58).
+
+### Fixed
+
+- Emptying issuer slot 1 passed validation and locked the hub out after a
+  restart (#44).
+- Saving certificates is all-or-nothing, and an interrupted key swap is
+  finished at the next start (#46).
+- `--generate-certs --force` left the old CRL behind (#47); smaller
+  certificate-file fixes (#48).
+- With `--log-file`, an early exit aborted the process (#49); log rotation
+  could delete the archives when the live file was held open (#50).
+- The Windows TLS 1.3 warning fired on Windows Server 2022 (#53).
+- Docs and messages pointing at moved sections; the `icacls` advice locked the
+  service out of `hub.conf` (#55).
+- Linux upgrades kept the old binary running; the `.deb` declares its library
+  dependencies (#56). CI checks that could pass while broken (#57).
+- A listener that failed to restart after a certificate/CRL reload stayed down
+  until restart (#61).
+- A refused device (duplicate VMAC, hub full) got a bare close instead of the
+  NAK with the reason (#62).
+- Stale connector status after a re-dial; connection strings reused after a
+  listener restart (#63).
 
 ## [1.3.0] - 2026-09-26
 
