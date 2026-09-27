@@ -2068,7 +2068,11 @@ static int RunHub(int argc, char** argv) {
         const std::string configPath = ParseConfigPathArg(argc, argv);
         if (!configPath.empty()) {
             if (!LoadExampleConfig(configPath, &fileConfig)) {
-                fprintf(stderr, "Error: could not open --config file \"%s\".\n", configPath.c_str());
+                if (!fileConfig.error.empty()) {
+                    fprintf(stderr, "Error: %s\n", fileConfig.error.c_str());
+                } else {
+                    fprintf(stderr, "Error: could not open --config file \"%s\".\n", configPath.c_str());
+                }
                 return 1;
             }
         }

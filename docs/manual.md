@@ -324,7 +324,9 @@ BACnetExampleBSCHUB [options]
 
 ### Configuration file
 
-`--config <path>` reads `key = value` lines (`#` starts a comment).
+`--config <path>` reads `key = value` lines. A line starting with `#` is a
+comment; a `#` later in a line is part of the value, so passwords and tokens
+may contain one.
 `example.conf` (shipped with the program) lists every key with its default:
 `device-id`, `device-name`, `ip-network-number`, `sc-network-number`,
 `log-file`, `log-max-size-mb`, `log-max-files`, `port`, `bacnet-ip`,
