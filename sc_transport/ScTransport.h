@@ -447,6 +447,11 @@ private:
 
     lws_context* m_listenerContext = nullptr;
     std::string m_listenUri;
+    // The URI the stack asked us to listen on (StartListening) and hasn't
+    // asked us to stop (StopListening) - kept even while the listener is down,
+    // so Service() can bring it back after a failed restart (issue #61): the
+    // stack still believes it is listening and won't ask again.
+    std::string m_wantedListenUri;
     uint64_t m_nextClientId = 1;
 
     // Heap-allocated (not a fixed-size member array) so this header does not

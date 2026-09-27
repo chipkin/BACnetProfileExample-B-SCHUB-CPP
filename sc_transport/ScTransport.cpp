@@ -816,6 +816,7 @@ void ScTransport::LogListenFailureOnce(const std::string& reason) {
 }
 
 bool ScTransport::StartListening(const std::string& uri) {
+    m_wantedListenUri = uri;
     if (!m_configured) {
         LogListenFailureOnce("StartListening called before Configure()");
         return false;
@@ -973,6 +974,9 @@ void ScTransport::DestroyListenerContext() {
 }
 
 void ScTransport::StopListening(const std::string& uri) {
+    if (m_wantedListenUri == uri) {
+        m_wantedListenUri.clear();  // the stack no longer wants it - stop retrying too
+    }
     if (m_listenerContext == nullptr || m_listenUri != uri) {
         return;  // not listening on this URI - nothing to do
     }
@@ -981,12 +985,16 @@ void ScTransport::StopListening(const std::string& uri) {
 }
 
 void ScTransport::ReloadCredentials() {
-    if (m_listenerContext != nullptr) {
-        const std::string uri = m_listenUri;
+    // m_wantedListenUri, not m_listenUri: if an earlier restart failed, the
+    // listener is down but still wanted, and the new files may fix it.
+    if (!m_wantedListenUri.empty()) {
+        const std::string uri = m_wantedListenUri;
         printf("BACnet/SC: reloading certificates - restarting the listener on %s\n", uri.c_str());
         DestroyListenerContext();  // queues a Disconnected event per accepted peer
+        m_lastListenCreateFailure = std::chrono::steady_clock::time_point();  // try the new files now
         if (!StartListening(uri)) {
-            printf("BACnet/SC: could not restart the listener on %s with the new certificates\n", uri.c_str());
+            printf("BACnet/SC: could not restart the listener on %s with the new certificates - retrying "
+                   "every %d s\n", uri.c_str(), (int)kListenRetryInterval.count());
         }
     }
     for (auto& kv : m_clients) {
@@ -1254,6 +1262,13 @@ bool ScTransport::Send(const std::string& connStr, const uint8_t* data, uint16_t
 }
 
 void ScTransport::Service() {
+    // A listener the stack wants but that is down (a restart after a
+    // certificate/CRL reload failed): retry, at most every kListenRetryInterval
+    // (StartListening enforces that). The stack won't ask again by itself.
+    if (m_listenerContext == nullptr && !m_wantedListenUri.empty()) {
+        const std::string uri = m_wantedListenUri;
+        StartListening(uri);
+    }
     // Phase 1 spike mechanism (a) - see docs/bacnet-sc-transport-plan.md and
     // the class header comment. Confirmed non-blocking on Windows.
     if (m_listenerContext != nullptr) {
