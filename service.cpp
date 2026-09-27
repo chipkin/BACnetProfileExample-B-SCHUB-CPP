@@ -63,6 +63,8 @@ void ReportStatus(const DWORD state, const DWORD exitCode, const DWORD waitHintM
     g_status.dwCurrentState = state;
     g_status.dwControlsAccepted = (state == SERVICE_RUNNING) ? (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN) : 0;
     g_status.dwWin32ExitCode = exitCode;
+    // With ERROR_SERVICE_SPECIFIC_ERROR, the event log shows this code.
+    g_status.dwServiceSpecificExitCode = exitCode == ERROR_SERVICE_SPECIFIC_ERROR ? (DWORD)g_exitCode : 0;
     g_status.dwWaitHint = waitHintMs;
     SetServiceStatus(g_statusHandle, &g_status);
 }

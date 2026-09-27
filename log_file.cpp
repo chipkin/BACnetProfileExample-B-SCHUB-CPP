@@ -6,9 +6,11 @@
 #include "log_file.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <thread>
 
@@ -46,6 +48,22 @@ int g_consoleErr = -1;  // the original stderr
 std::thread g_thread;
 std::atomic<bool> g_running(false);
 
+// When rotating or reopening fails (another program holds the file open, the
+// disk is full), wait this long before trying again rather than on every
+// write - retrying immediately would shift away the archives one by one.
+const std::chrono::seconds kRetryInterval(30);
+std::chrono::steady_clock::time_point g_nextRetry;
+
+// A problem with the log file itself goes to the console only (writing it to
+// stdout would loop straight back into the pipe).
+void ReportToConsole(const std::string& message) {
+    const int fd = g_consoleErr >= 0 ? g_consoleErr : g_consoleOut;
+    if (fd >= 0) {
+        const std::string line = "[log-file] " + message + "\n";
+        LOG_WRITE(fd, line.data(), (unsigned)line.size());
+    }
+}
+
 bool OpenFile() {
     g_file = fopen(g_path.c_str(), "ab");
     if (g_file == nullptr) {
@@ -58,19 +76,31 @@ bool OpenFile() {
 }
 
 // <path>.N -> <path>.N+1 (dropping the oldest), <path> -> <path>.1, new <path>.
+// The live file is moved aside FIRST: if that fails (on Windows, another
+// program has it open), nothing else is touched - the archives are kept, the
+// file keeps growing for now, and rotation is retried after kRetryInterval.
 void Rotate() {
     fclose(g_file);
     g_file = nullptr;
-    if (g_maxFiles == 0) {
-        remove(g_path.c_str());
+    const std::string aside = g_path + ".rotating";
+    remove(aside.c_str());
+    if (rename(g_path.c_str(), aside.c_str()) != 0) {
+        ReportToConsole("could not rotate \"" + g_path + "\" (is another program holding it open?); "
+                        "will retry - the file grows past log-max-size-mb until then");
+        g_nextRetry = std::chrono::steady_clock::now() + kRetryInterval;
+    } else if (g_maxFiles == 0) {
+        remove(aside.c_str());
     } else {
         remove((g_path + "." + std::to_string(g_maxFiles)).c_str());
         for (unsigned n = g_maxFiles; n > 1; --n) {
             rename((g_path + "." + std::to_string(n - 1)).c_str(), (g_path + "." + std::to_string(n)).c_str());
         }
-        rename(g_path.c_str(), (g_path + ".1").c_str());
+        rename(aside.c_str(), (g_path + ".1").c_str());
     }
-    OpenFile();
+    if (!OpenFile()) {
+        ReportToConsole("could not reopen \"" + g_path + "\"; will retry");
+        g_nextRetry = std::chrono::steady_clock::now() + kRetryInterval;
+    }
 }
 
 void Append(const char* data, const size_t length) {
@@ -85,10 +115,17 @@ void Append(const char* data, const size_t length) {
 // cut is made after the last complete line that still fits, so no line is
 // split between two files.
 void WriteToFile(const char* data, const size_t length) {
+    const bool retryDue = std::chrono::steady_clock::now() >= g_nextRetry;
     if (g_file == nullptr) {
-        return;
+        if (!retryDue || !OpenFile()) {
+            if (retryDue) {
+                g_nextRetry = std::chrono::steady_clock::now() + kRetryInterval;
+            }
+            return;  // the console still gets everything
+        }
+        ReportToConsole("logging to \"" + g_path + "\" again");
     }
-    if (g_maxBytes == 0 || g_fileBytes + length <= g_maxBytes) {
+    if (g_maxBytes == 0 || g_fileBytes + length <= g_maxBytes || !retryDue) {
         Append(data, length);
         return;
     }
@@ -160,6 +197,14 @@ bool Start(const std::string& path, const uint64_t maxBytes, const unsigned maxF
 
     g_running = true;
     g_thread = std::thread(CopyLoop);
+    // Every way out of the process - a "return 1" from an early error, exit(),
+    // the normal shutdown - must stop the copy thread first: a std::thread
+    // still joinable when static destructors run calls std::terminate.
+    static bool registered = false;
+    if (!registered) {
+        registered = true;
+        atexit(Stop);
+    }
     return true;
 }
 
@@ -171,9 +216,19 @@ void Stop() {
     fflush(stdout);
     fflush(stderr);
     // Put the console back on 1 and 2, then close every write end of the pipe
-    // so the copy thread reads end-of-file and finishes.
-    LOG_DUP2(g_consoleOut, 1);
-    LOG_DUP2(g_consoleErr, 2);
+    // so the copy thread reads end-of-file and finishes. With no console to
+    // put back (a service can start without one, so the _dup in Start failed),
+    // just close 1 and 2 - they are write ends of the pipe too.
+    if (g_consoleOut >= 0) {
+        LOG_DUP2(g_consoleOut, 1);
+    } else {
+        LOG_CLOSE(1);
+    }
+    if (g_consoleErr >= 0) {
+        LOG_DUP2(g_consoleErr, 2);
+    } else {
+        LOG_CLOSE(2);
+    }
     LOG_CLOSE(g_pipeWrite);
     g_pipeWrite = -1;
     if (g_thread.joinable()) {
@@ -181,8 +236,12 @@ void Stop() {
     }
     LOG_CLOSE(g_pipeRead);
     g_pipeRead = -1;
-    LOG_CLOSE(g_consoleOut);
-    LOG_CLOSE(g_consoleErr);
+    if (g_consoleOut >= 0) {
+        LOG_CLOSE(g_consoleOut);
+    }
+    if (g_consoleErr >= 0) {
+        LOG_CLOSE(g_consoleErr);
+    }
     g_consoleOut = g_consoleErr = -1;
     if (g_file != nullptr) {
         fclose(g_file);
