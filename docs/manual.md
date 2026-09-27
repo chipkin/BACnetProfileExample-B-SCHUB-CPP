@@ -322,6 +322,11 @@ BACnetExampleBSCHUB [options]
 | `--install-service`, `--uninstall-service` | - | Windows: set up or remove the BACnetSCHub service (see [Running as a service](#running-as-a-service)). |
 | `--help`, `--version` | - | Usage, or version information. |
 
+An unknown option, a stray argument or an option missing its value is an
+error. The on/off switches (`--http-tls`, `--sc-accept-hub-without-hello`,
+`--sc-accept-device-without-hello`) mean "on" alone and also take `on` or
+`off`, so the command line can turn off what the config file turned on.
+
 ### Configuration file
 
 `--config <path>` reads `key = value` lines. A line starting with `#` is a

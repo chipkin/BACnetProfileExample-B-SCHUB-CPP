@@ -1950,6 +1950,99 @@ static bool HasFlag(const int argc, char** argv, const char* flagName) {
 
 // The hub itself. main() (at the end of this file) runs it directly, or as a
 // Windows service - see service.h.
+// -----------------------------------------------------------------------------
+// Command-line check (issue #54). Every option the hub knows, so a typo or a
+// value left off is an error instead of being silently ignored - the old
+// "--dcc-password secret" in particular must not leave a device running with
+// no password while its operator thinks otherwise.
+// -----------------------------------------------------------------------------
+static const char* const kValueOptions[] = {
+    "--port", "--deviceID", "--sc-port", "--sc-cert-dir", "--sc-hub-uri", "--sc-failover-uri",
+    "--http-port", "--http-bind", "--http-tls-cert", "--http-tls-key", "--sc-max-hub-connections",
+    "--sc-rate-limit", "--sc-rate-limit-total", "--bacnet-ip", "--device-name", "--ip-network-number",
+    "--sc-network-number", "--log-file", "--log-max-size-mb", "--log-max-files", "--config",
+    "--cert-label", "--cert-hub-uri"};
+// Switches; the first group also takes an optional on/off (see ParseSwitchArg).
+static const char* const kOnOffSwitches[] = {"--http-tls", "--sc-accept-hub-without-hello",
+                                             "--sc-accept-device-without-hello"};
+static const char* const kSwitches[] = {"--force", "--xml", "--xmlLog", "--service", "--install-service",
+                                        "--uninstall-service", "--help", "-h", "/?", "--version"};
+static const char* const kOptionalCountOptions[] = {"--generate-certs", "--add-client-certs"};
+
+static bool IsOneOf(const char* arg, const char* const* list, const size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (strcmp(arg, list[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// "on"/"off" and friends, case-insensitively. Returns false if `text` is none of them.
+static bool ParseOnOff(std::string text, bool* out) {
+    for (char& c : text) {
+        c = (char)tolower((unsigned char)c);
+    }
+    if (text == "on" || text == "true" || text == "yes" || text == "1") {
+        *out = true;
+        return true;
+    }
+    if (text == "off" || text == "false" || text == "no" || text == "0") {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+// "<flag>" alone means on; "<flag> on|off" sets it either way, so the command
+// line can turn off something the config file turned on. Absent: fallback.
+static bool ParseSwitchArg(const int argc, char** argv, const char* flagName, const bool fallback) {
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], flagName) == 0) {
+            bool value = true;
+            if (i + 1 < argc && ParseOnOff(argv[i + 1], &value)) {
+                return value;
+            }
+            return true;
+        }
+    }
+    return fallback;
+}
+
+// False (after printing why) if argv has an unknown option, a stray argument,
+// or an option missing its value.
+static bool ValidateCommandLine(const int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        bool unused = false;
+        if (strcmp(arg, "--dcc-password") == 0) {
+            fprintf(stderr, "Error: --dcc-password is not accepted on the command line (it would show in process "
+                            "listings). Set dcc-password in a --config file instead.\n");
+            return false;
+        }
+        if (IsOneOf(arg, kValueOptions, sizeof(kValueOptions) / sizeof(kValueOptions[0]))) {
+            if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
+                fprintf(stderr, "Error: %s needs a value.\n", arg);
+                return false;
+            }
+            ++i;
+        } else if (IsOneOf(arg, kOnOffSwitches, sizeof(kOnOffSwitches) / sizeof(kOnOffSwitches[0]))) {
+            if (i + 1 < argc && ParseOnOff(argv[i + 1], &unused)) {
+                ++i;
+            }
+        } else if (IsOneOf(arg, kOptionalCountOptions,
+                           sizeof(kOptionalCountOptions) / sizeof(kOptionalCountOptions[0]))) {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                ++i;  // the count - ParseOptionalCountArg checks it
+            }
+        } else if (!IsOneOf(arg, kSwitches, sizeof(kSwitches) / sizeof(kSwitches[0]))) {
+            fprintf(stderr, "Error: unknown %s \"%s\" - see --help.\n", arg[0] == '-' ? "option" : "argument", arg);
+            return false;
+        }
+    }
+    return true;
+}
+
 static int RunHub(int argc, char** argv) {
     // Show printf output immediately, even when stdout is piped to a file.
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1960,6 +2053,9 @@ static int RunHub(int argc, char** argv) {
                 CASBACnetStackAdapter_LastError());
         return 1;
     }
+
+    // --xml / --xmlLog: XML frame logging, as common/'s --help advertises.
+    CASExampleHelper::ParseXmlLogArg(argc, argv);
 
     // g_firmwareRevision (Device object property 44) - see its own doc
     // comment above for why this is the STACK's version, not this example's
@@ -2029,12 +2125,12 @@ static int RunHub(int argc, char** argv) {
                 printf("                      Max NEW BACnet/SC connection attempts/second for the whole\n");
                 printf("                      listener, all addresses together. 0 = no limit. Default %u.\n",
                        (unsigned)SC_RATE_LIMIT_TOTAL_DEFAULT);
-                printf("  --sc-accept-hub-without-hello\n");
+                printf("  --sc-accept-hub-without-hello [on|off]\n");
                 printf("                      Compatibility, off by default: let the hub connector\n");
                 printf("                      (--sc-hub-uri) accept a hub whose Connect-Accept omits\n");
                 printf("                      the Hello option the standard requires. Deviates from\n");
                 printf("                      ANSI/ASHRAE 135 - see docs/manual.md \"BACnet/SC compatibility\".\n");
-                printf("  --sc-accept-device-without-hello\n");
+                printf("  --sc-accept-device-without-hello [on|off]\n");
                 printf("                      Compatibility, off by default: accept a device whose\n");
                 printf("                      Connect-Request omits the Hello option (e.g. YABE).\n");
                 printf("                      Deviates from ANSI/ASHRAE 135 - see the manual as above.\n");
@@ -2078,7 +2174,7 @@ static int RunHub(int argc, char** argv) {
                 printf("                      GET /, /health and /metrics have NO authentication, and\n");
                 printf("                      without --http-tls it is plain HTTP - see README.md\n");
                 printf("                      \"Security\" before setting this to anything else.\n");
-                printf("  --http-tls          Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
+                printf("  --http-tls [on|off] Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
                 printf("                      hub's operational-certificate.pem and private-key.pem\n");
                 printf("                      unless --http-tls-cert/--http-tls-key say otherwise.\n");
                 printf("  --http-tls-cert <file>, --http-tls-key <file>\n");
@@ -2168,11 +2264,7 @@ static int RunHub(int argc, char** argv) {
     {
         g_bacnetIpEnabled = fileConfig.hasBacnetIp ? fileConfig.bacnetIp : true;
         const std::string bacnetIpArg = ParseStringArg(argc, argv, "--bacnet-ip");
-        if (bacnetIpArg == "off" || bacnetIpArg == "false" || bacnetIpArg == "no" || bacnetIpArg == "0") {
-            g_bacnetIpEnabled = false;
-        } else if (bacnetIpArg == "on" || bacnetIpArg == "true" || bacnetIpArg == "yes" || bacnetIpArg == "1") {
-            g_bacnetIpEnabled = true;
-        } else if (!bacnetIpArg.empty()) {
+        if (!bacnetIpArg.empty() && !ParseOnOff(bacnetIpArg, &g_bacnetIpEnabled)) {
             fprintf(stderr, "Error: --bacnet-ip expects on or off, got \"%s\".\n", bacnetIpArg.c_str());
             return 1;
         }
@@ -2192,6 +2284,13 @@ static int RunHub(int argc, char** argv) {
     }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
+    if (g_scCertDir.empty()) {
+        // Every path is built as g_scCertDir + "/<file>", so "" would mean the
+        // filesystem root (and --generate-certs would write there).
+        fprintf(stderr, "Error: the certificate folder (--sc-cert-dir / sc-cert-dir) is empty. Use \".\" for "
+                        "the current folder.\n");
+        return 1;
+    }
 
     // --- Lab certificate generation (--generate-certs / --add-client-certs) --
     // A one-shot tool mode: write the certificates, then exit without starting
@@ -2262,10 +2361,10 @@ static int RunHub(int argc, char** argv) {
         fileConfig.hasScRateLimit ? fileConfig.scRateLimit : SC_RATE_LIMIT_DEFAULT);
     g_scRateLimitTotal = ParseScRateLimitArg(argc, argv, "--sc-rate-limit-total",
         fileConfig.hasScRateLimitTotal ? fileConfig.scRateLimitTotal : SC_RATE_LIMIT_TOTAL_DEFAULT);
-    g_scAcceptHubWithoutHello = HasFlag(argc, argv, "--sc-accept-hub-without-hello") ||
-                                (fileConfig.hasScAcceptHubWithoutHello && fileConfig.scAcceptHubWithoutHello);
-    g_scAcceptDeviceWithoutHello = HasFlag(argc, argv, "--sc-accept-device-without-hello") ||
-                                   (fileConfig.hasScAcceptDeviceWithoutHello && fileConfig.scAcceptDeviceWithoutHello);
+    g_scAcceptHubWithoutHello = ParseSwitchArg(argc, argv, "--sc-accept-hub-without-hello",
+        fileConfig.hasScAcceptHubWithoutHello && fileConfig.scAcceptHubWithoutHello);
+    g_scAcceptDeviceWithoutHello = ParseSwitchArg(argc, argv, "--sc-accept-device-without-hello",
+        fileConfig.hasScAcceptDeviceWithoutHello && fileConfig.scAcceptDeviceWithoutHello);
     g_httpPort = ParseHttpPortArg(argc, argv, fileConfig.hasHttpPort ? fileConfig.httpPort : g_httpPort);
     {
         const std::string httpBindArg = ParseStringArg(argc, argv, "--http-bind");
@@ -2276,7 +2375,7 @@ static int RunHub(int argc, char** argv) {
         }
         // else: g_httpBindAddress keeps its "127.0.0.1" built-in default.
     }
-    g_httpTls = HasFlag(argc, argv, "--http-tls") || (fileConfig.hasHttpTls && fileConfig.httpTls);
+    g_httpTls = ParseSwitchArg(argc, argv, "--http-tls", fileConfig.hasHttpTls && fileConfig.httpTls);
     g_httpTlsCert = ParseStringArg(argc, argv, "--http-tls-cert");
     if (g_httpTlsCert.empty() && fileConfig.hasHttpTlsCert) {
         g_httpTlsCert = fileConfig.httpTlsCert;
@@ -2819,6 +2918,9 @@ static int RunHub(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     int exitCode = 0;
+    if (!ValidateCommandLine(argc, argv)) {
+        return 1;
+    }
     if (Service::HandleServiceCommand(argc, argv, &exitCode)) {  // --install-service / --uninstall-service
         return exitCode;
     }
