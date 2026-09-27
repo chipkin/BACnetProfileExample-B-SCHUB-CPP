@@ -14,6 +14,7 @@ a Windows installer, a Debian/Ubuntu package, a Linux archive, or the bare
 program - or [build it yourself](#build). The Windows executable is
 code-signed by Chipkin, and each release lists SHA-256 checksums in
 `SHA256SUMS.txt` ([how to check](docs/code-signing.md#checking-a-release)).
+This README and the documentation below describe **version 1.4.0**.
 
 ## Quick start
 
