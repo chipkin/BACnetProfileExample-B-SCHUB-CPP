@@ -479,11 +479,19 @@ Supported procedures:
   `private-key-pending.pem`; it keeps using its current key and certificate
   meanwhile. Have the new CSR signed, write the result to File 1 and activate:
   the new key then replaces `private-key.pem`. Refused with
-  `INVALID_VALUE_IN_THIS_STATE` while certificate writes are staged.
+  `INVALID_VALUE_IN_THIS_STATE` while certificate writes are staged - and,
+  until [#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)
+  is fixed, on a freshly started hub, which reads `Changes_Pending` TRUE with
+  nothing staged: send ReinitializeDevice `ACTIVATE_CHANGES` once first. If
+  the hub stops between saving the new certificate and swapping the key, it
+  finishes the swap at the next start.
 - **Discard staged writes** - write `DISCARD_CHANGES` (1) to Network Port 2's
   `Command`. The staged certificate writes are dropped, the File objects read
   the files on disk again, and `Changes_Pending` goes back to FALSE. A restart
-  also discards staged writes.
+  also discards staged writes. Until #41 is fixed, don't send it to a freshly
+  started hub: it also reverts the stack's start-up state, after which
+  `Changes_Pending` no longer follows certificate writes (restart the hub to
+  recover).
 
 **Known issue:** right after the hub starts, Network Port 2 reads
 `Changes_Pending` = TRUE (and `Current_Health` may report

@@ -21,7 +21,11 @@
 #include <set>
 
 #if defined(_WIN32)
+#include <io.h>       // _commit - flush a file to disk
 #include <windows.h>  // MoveFileExA - an atomic replace that works over an existing file
+#else
+#include <fcntl.h>    // open(O_CREAT | O_EXCL, 0600) - private temp files
+#include <unistd.h>   // fsync, close
 #endif
 
 namespace fs = std::filesystem;
@@ -243,27 +247,78 @@ EVP_PKEY* LoadKey(const std::string& path) {
     return key;
 }
 
-bool AtomicWriteFileToDisk(const std::string& path, const std::string& bytes, std::string* reason) {
+// Writes `bytes` to "<path>.tmp" and flushes it to disk. A private file (a
+// key) is created owner read/write only from the start on POSIX, so the key
+// is never readable by others, even for a moment or if the rename fails. On
+// Windows the file inherits the folder's ACL (the installer restricts it).
+bool WriteTempFile(const std::string& path, const std::string& bytes, bool privateFile, std::string* reason) {
     const std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
-    if (f == NULL || fwrite(bytes.data(), 1, bytes.size(), f) != bytes.size()) {
-        if (f != NULL) {
-            fclose(f);
-        }
-        *reason = "could not write \"" + tmp + "\"";
-        return false;
-    }
-    fclose(f);
+    std::remove(tmp.c_str());  // a leftover from an interrupted write
 #if defined(_WIN32)
-    const bool ok = MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+    (void)privateFile;
+    FILE* f = fopen(tmp.c_str(), "wb");
+#else
+    const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, privateFile ? 0600 : 0644);
+    FILE* f = fd >= 0 ? fdopen(fd, "wb") : NULL;
+    if (f == NULL && fd >= 0) {
+        close(fd);
+    }
+#endif
+    bool ok = f != NULL && fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size() && fflush(f) == 0;
+#if defined(_WIN32)
+    ok = ok && _commit(_fileno(f)) == 0;
+#else
+    ok = ok && fsync(fileno(f)) == 0;
+#endif
+    if (f != NULL && fclose(f) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        std::remove(tmp.c_str());
+        *reason = "could not write \"" + tmp + "\"";
+    }
+    return ok;
+}
+
+// Replaces `path` with "<path>.tmp" (from WriteTempFile) in one step.
+bool ReplaceWithTemp(const std::string& path, std::string* reason) {
+    const std::string tmp = path + ".tmp";
+#if defined(_WIN32)
+    const bool ok = MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
     const bool ok = std::rename(tmp.c_str(), path.c_str()) == 0;
 #endif
     if (!ok) {
         *reason = "could not replace \"" + path + "\"";
+    }
+    return ok;
+}
+
+bool AtomicWriteFileToDisk(const std::string& path, const std::string& bytes, std::string* reason,
+                           bool privateFile = false) {
+    if (!WriteTempFile(path, bytes, privateFile, reason)) {
+        return false;
+    }
+    if (!ReplaceWithTemp(path, reason)) {
+        std::remove((path + ".tmp").c_str());
         return false;
     }
     return true;
+}
+
+// Moves the pending key (GENERATE_CSR_FILE) over the hub's key.
+bool PromotePendingKey(std::string* reason) {
+#if defined(_WIN32)
+    const bool moved = MoveFileExA(g_layout.pendingPrivateKeyPath.c_str(), g_layout.privateKeyPath.c_str(),
+                                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    const bool moved = std::rename(g_layout.pendingPrivateKeyPath.c_str(), g_layout.privateKeyPath.c_str()) == 0;
+#endif
+    if (!moved) {
+        *reason = "could not replace \"" + g_layout.privateKeyPath + "\" with the pending key \"" +
+                  g_layout.pendingPrivateKeyPath + "\"";
+    }
+    return moved;
 }
 
 }  // namespace
@@ -437,29 +492,71 @@ bool ValidateStaged(std::string* reason) {
 }
 
 bool CommitStaged(std::string* reason) {
+    // All or nothing, as far as the filesystem allows: every file is written
+    // and flushed to a temp file first (a failure there changes nothing and
+    // keeps the stage), then each is renamed into place.
+    std::vector<std::string> paths;
     for (const auto& kv : g_staged) {
         const auto path = g_layout.paths.find(kv.first);
-        if (path == g_layout.paths.end() || !AtomicWriteFileToDisk(path->second, kv.second.bytes, reason)) {
+        if (path == g_layout.paths.end() || !WriteTempFile(path->second, kv.second.bytes, false, reason)) {
+            for (const std::string& written : paths) {
+                std::remove((written + ".tmp").c_str());
+            }
             return false;
+        }
+        paths.push_back(path->second);
+    }
+    for (const std::string& path : paths) {
+        if (!ReplaceWithTemp(path, reason)) {
+            return false;  // keeps the stage, so activating again retries
         }
     }
     g_staged.clear();
     if (g_commitPromotesPendingKey) {
         // The new certificate is on disk; its key goes in next, so TLS (reloaded
-        // after this returns) loads a matching pair.
-        g_commitPromotesPendingKey = false;
-#if defined(_WIN32)
-        const bool moved = MoveFileExA(g_layout.pendingPrivateKeyPath.c_str(), g_layout.privateKeyPath.c_str(),
-                                       MOVEFILE_REPLACE_EXISTING) != 0;
-#else
-        const bool moved = std::rename(g_layout.pendingPrivateKeyPath.c_str(), g_layout.privateKeyPath.c_str()) == 0;
-#endif
-        if (!moved) {
-            *reason = "could not replace \"" + g_layout.privateKeyPath + "\" with the pending key \"" +
-                      g_layout.pendingPrivateKeyPath + "\"";
+        // after this returns) loads a matching pair. If this fails (or the
+        // process stops here), ReconcilePendingKey() at the next start sees a
+        // certificate for the pending key and finishes the swap.
+        if (!PromotePendingKey(reason)) {
             return false;
         }
+        g_commitPromotesPendingKey = false;
     }
+    return true;
+}
+
+bool ReconcilePendingKey(std::string* message) {
+    message->clear();
+    std::error_code ec;
+    if (g_layout.pendingPrivateKeyPath.empty() || !fs::exists(g_layout.pendingPrivateKeyPath, ec)) {
+        return true;
+    }
+    std::vector<X509*> operational;
+    std::string why;
+    std::string bytes;
+    const auto opPath = g_layout.paths.find(g_layout.operationalInstance);
+    if (opPath == g_layout.paths.end() || !ReadDisk(opPath->second, &bytes) ||
+        !ParseCertificates(bytes, &operational, &why) || operational.empty()) {
+        FreeAll(&operational);
+        return true;  // nothing to compare with - leave both keys alone
+    }
+    EVP_PKEY* key = LoadKey(g_layout.privateKeyPath);
+    EVP_PKEY* pendingKey = LoadKey(g_layout.pendingPrivateKeyPath);
+    const bool certForCurrent = key != nullptr && X509_check_private_key(operational[0], key) == 1;
+    const bool certForPending = pendingKey != nullptr && X509_check_private_key(operational[0], pendingKey) == 1;
+    EVP_PKEY_free(key);
+    EVP_PKEY_free(pendingKey);
+    FreeAll(&operational);
+    ERR_clear_error();
+    if (certForCurrent || !certForPending) {
+        return true;  // the usual case: a CSR is out for signing, or the pending key is unrelated
+    }
+    if (!PromotePendingKey(message)) {
+        return false;
+    }
+    *message = "the operational certificate is for the pending key from GENERATE_CSR_FILE (an earlier "
+               "activation didn't finish): \"" + g_layout.pendingPrivateKeyPath + "\" now replaces \"" +
+               g_layout.privateKeyPath + "\"";
     return true;
 }
 
@@ -518,14 +615,22 @@ bool GenerateKeyAndCsr(std::string* reason) {
         *reason = "OpenSSL could not generate the key pair or the request";
         return false;
     }
-    // The key first: a CSR on disk without its key could never be used.
-    if (!AtomicWriteFileToDisk(g_layout.pendingPrivateKeyPath, keyPem, reason)) {
+    // Both written and flushed before either replaces anything, so a failed
+    // write leaves the old pending key and its CSR matching each other. Then
+    // the key first: a CSR on disk without its key could never be used.
+    if (!WriteTempFile(g_layout.pendingPrivateKeyPath, keyPem, true, reason)) {
         return false;
     }
-    std::error_code ec;
-    fs::permissions(g_layout.pendingPrivateKeyPath, fs::perms::owner_read | fs::perms::owner_write,
-                    fs::perm_options::replace, ec);  // like private-key.pem - see cert_tool.cpp WritePem
-    return AtomicWriteFileToDisk(csrPath->second, csrPem, reason);
+    if (!WriteTempFile(csrPath->second, csrPem, false, reason)) {
+        std::remove((g_layout.pendingPrivateKeyPath + ".tmp").c_str());
+        return false;
+    }
+    if (!ReplaceWithTemp(g_layout.pendingPrivateKeyPath, reason)) {
+        std::remove((g_layout.pendingPrivateKeyPath + ".tmp").c_str());
+        std::remove((csrPath->second + ".tmp").c_str());
+        return false;
+    }
+    return ReplaceWithTemp(csrPath->second, reason);
 }
 
 bool StageWholeFile(uint32_t fileInstance, const std::string& bytes, uint32_t* errorCode) {

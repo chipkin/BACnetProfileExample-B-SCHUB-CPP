@@ -2288,6 +2288,12 @@ static int RunHub(int argc, char** argv) {
         layout.pendingPrivateKeyPath = g_scCertDir + "/" + CertTool::PENDING_PRIVATE_KEY_FILE;
         layout.csrInstance = FILE_CSR_INSTANCE;
         CertStore::SetLayout(layout);
+        std::string reconcileMessage;
+        if (!CertStore::ReconcilePendingKey(&reconcileMessage)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Error, "certificates: %s", reconcileMessage.c_str());
+        } else if (!reconcileMessage.empty()) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, "certificates: %s", reconcileMessage.c_str());
+        }
 
         // TLS trusts every issuer in both slots. With no certificates yet, fall
         // back to slot 1's path so the "certificates missing" message names it.

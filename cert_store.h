@@ -98,6 +98,12 @@ bool ValidateStaged(std::string* reason);
 // replaces the private key.
 bool CommitStaged(std::string* reason);
 
+// At start-up: if the operational certificate on disk is for the pending key
+// (GENERATE_CSR_FILE) and not the current one - an activation that stopped
+// between writing the certificate and swapping the key - finish the swap.
+// *message says what was done (empty if nothing). False if the swap failed.
+bool ReconcilePendingKey(std::string* message);
+
 // Throws away the staged writes.
 void DiscardStaged();
 
