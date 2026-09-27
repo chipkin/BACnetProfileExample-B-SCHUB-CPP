@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <vector>
 
 namespace CASSc {
 
@@ -73,6 +74,9 @@ struct HttpServer::Session {
 };
 
 namespace {
+
+// Largest piece of a response body handed to one lws_write() call.
+const size_t kWriteChunk = 4096;
 
 int LwsHttpCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user, void* in, std::size_t len) {
     (void)user;
@@ -187,6 +191,11 @@ bool HttpServer::Start(const HttpServerConfig& config) {
         info.ssl_cert_filepath = m_config.tlsCertPath.c_str();
         info.ssl_private_key_filepath = m_config.tlsKeyPath.c_str();
         info.ssl_options_set = SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1;
+        // HTTP/1.1 only. The vcpkg libwebsockets is built with HTTP/2, and a TLS
+        // vhost offers "h2" by default; these endpoints don't need it, and the
+        // write path below (one response per connection, "connection: close")
+        // is written for HTTP/1.1.
+        info.alpn = "http/1.1";
     }
     info.user = this;
     info.gid = static_cast<gid_t>(-1);
@@ -479,13 +488,18 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
                 }
                 break;
             }
-            const int written = lws_write(
-                wsi, reinterpret_cast<unsigned char*>(&session->response[session->responseSent]),
-                remaining, LWS_WRITE_HTTP);
+            // lws_write() may write protocol framing in the LWS_PRE bytes in
+            // front of the buffer it is given (an HTTP/2 frame header, for
+            // one), so it must never be handed a pointer into the middle of
+            // session->response: copy each chunk behind LWS_PRE bytes of our own.
+            const size_t chunk = remaining < kWriteChunk ? remaining : kWriteChunk;
+            std::vector<unsigned char> buf(LWS_PRE + chunk);
+            std::memcpy(&buf[LWS_PRE], &session->response[session->responseSent], chunk);
+            const int written = lws_write(wsi, &buf[LWS_PRE], chunk, LWS_WRITE_HTTP);
             if (written < 0) {
                 return -1;
             }
-            session->responseSent += static_cast<size_t>(written);
+            session->responseSent += chunk;
             if (session->responseSent < session->response.size()) {
                 lws_callback_on_writable(wsi);
             } else if (lws_http_transaction_completed(wsi)) {
