@@ -942,7 +942,10 @@ bool ScTransport::StartListening(const std::string& uri) {
 
     m_listenerContext = ctx;
     m_listenUri = uri;
-    m_nextClientId = 1;
+    // m_nextClientId is NOT reset: after a listener restart, "...|client=1"
+    // must not be issued again while a Disconnected event for the old
+    // client=1 may still be queued (sc_transport/README.md: a connection
+    // string is never reused; issue #63). It's a uint64_t.
     m_loggedListenFailure = false;
     m_lastListenCreateFailure = std::chrono::steady_clock::time_point();
     printf("BACnet/SC: listening for WebSocket/TLS connections on %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
@@ -1088,6 +1091,14 @@ bool ScTransport::Connect(const std::string& uri) {
     // the stack's own retry/reconnect timer - asked for it again).
     auto existing = m_clients.find(uri);
     if (existing != m_clients.end()) {
+        // Detach the old attempt from its ClientConnection first, so tearing
+        // it down queues no Error/Disconnected event: those would carry the
+        // SAME URI as the attempt the stack is starting now, and could abort
+        // it or double-count a failover (issue #63). Its callbacks then see a
+        // null opaque_user_data and do nothing.
+        if (existing->second.wsi != nullptr) {
+            lws_set_opaque_user_data(existing->second.wsi, nullptr);
+        }
         DestroyClientContext(existing->second);
         m_clients.erase(existing);
     }
