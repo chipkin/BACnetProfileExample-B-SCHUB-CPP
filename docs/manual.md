@@ -351,10 +351,11 @@ file**, so they never show up in process listings or shell history.
 (use a different value - the hub warns if they match). Both are compared in
 constant time. Restrict the file's permissions (`chmod 600 hub.conf`, or on
 Windows `icacls hub.conf /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`,
-which keeps access for SYSTEM - the account the Windows service runs as - and
-Administrators); the hub warns at start-up if the file looks readable by other
-users. The Windows installer already restricts
-`C:\ProgramData\Chipkin\BACnetSCHub` to SYSTEM and Administrators.
+which keeps access for SYSTEM and Administrators; if the installer set up the
+service, also add `"NT SERVICE\BACnetSCHub:R"`, the account it runs as); the
+hub warns at start-up if the file looks readable by other users. The Windows
+installer already restricts `C:\ProgramData\Chipkin\BACnetSCHub` to SYSTEM,
+Administrators and the service's own account, `NT SERVICE\BACnetSCHub`.
 
 ### Logging
 

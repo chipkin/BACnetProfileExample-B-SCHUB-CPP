@@ -611,14 +611,18 @@ jobs:
           if ((Get-Service BACnetSCHub).Status -ne 'Running') { throw "The BACnetSCHub service is not running" }
           if ((Get-Service BACnetSCHub).StartType -ne 'Automatic') { throw "The service does not start automatically" }
           if (-not (Select-String -Path "$data\logs\hub.log" -Pattern '\) ready\. Vendor ID' -Quiet)) { throw "hub.log has no start-up line" }
-          # The data folder holds private keys: only SYSTEM and Administrators may have access.
+          # The service runs as its virtual account, not LocalSystem.
+          $account = (Get-CimInstance Win32_Service -Filter "Name='BACnetSCHub'").StartName
+          if ($account -ne 'NT SERVICE\BACnetSCHub') { throw "The service runs as '$account', not NT SERVICE\BACnetSCHub" }
+          $serviceSid = ([System.Security.Principal.NTAccount]'NT SERVICE\BACnetSCHub').Translate([System.Security.Principal.SecurityIdentifier]).Value
+          # The data folder holds private keys: only SYSTEM, Administrators and the service may have access.
           foreach ($item in @($data, "$data\hub.conf", "$data\certs\private-key.pem", "$data\certs\issuer-private-key.pem")) {
             $acl = Get-Acl $item
             $acl.Access | Format-Table IdentityReference, FileSystemRights, IsInherited -AutoSize | Out-String | Write-Host
             $sids = $acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }
-            $others = $sids | Where-Object { $_ -notin @('S-1-5-18', 'S-1-5-32-544') }
-            if ($others) { throw "$item is accessible to more than SYSTEM and Administrators: $($others -join ', ')" }
-            if (-not ($sids -contains 'S-1-5-18')) { throw "$item is not accessible to SYSTEM (the service account)" }
+            $others = $sids | Where-Object { $_ -notin @('S-1-5-18', 'S-1-5-32-544', $serviceSid) }
+            if ($others) { throw "$item is accessible to more than SYSTEM, Administrators and the service: $($others -join ', ')" }
+            if (-not ($sids -contains $serviceSid)) { throw "$item is not accessible to the service account" }
           }
           $uninstaller = Get-ChildItem "${env:ProgramFiles}\Chipkin\BACnet SC Hub" -Filter "unins*.exe" | Select-Object -First 1
           Start-Process -FilePath $uninstaller.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES' -Wait

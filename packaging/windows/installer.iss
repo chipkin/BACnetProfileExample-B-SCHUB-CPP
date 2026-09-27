@@ -17,7 +17,9 @@
 ; lab CA's) and hub.conf's secrets, so it is NOT left with ProgramData's
 ; inherited ACL (which lets every local user read files and create new ones):
 ; the first [Run] entry makes it SYSTEM + Administrators only, and repairs the
-; ACL of an existing install on upgrade. The service runs as LocalSystem.
+; ACL of an existing install on upgrade. The service runs as its own virtual
+; account, NT SERVICE\BACnetSCHub (not LocalSystem), which gets Modify on that
+; folder and nothing else.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -106,6 +108,10 @@ Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Chipkin\BACnetSCHub
 ; A lab certificate set if certs\ is empty (the hub refuses to replace an existing one).
 Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--sc-cert-dir ""{commonappdata}\Chipkin\BACnetSCHub\certs"" --generate-certs"; Flags: runhidden waituntilterminated; StatusMsg: "Making lab certificates..."; Check: not FileExists(ExpandConstant('{commonappdata}\Chipkin\BACnetSCHub\certs\issuer-certificate.pem'))
 Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--install-service --config ""{commonappdata}\Chipkin\BACnetSCHub\hub.conf"""; Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Installing the service..."
+; Run it as the virtual account NT SERVICE\BACnetSCHub instead of LocalSystem, and
+; let only that account (besides SYSTEM and Administrators) into the data folder.
+Filename: "{sys}\sc.exe"; Parameters: "config BACnetSCHub obj= ""NT SERVICE\BACnetSCHub"""; Flags: runhidden waituntilterminated; Tasks: service
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Chipkin\BACnetSCHub"" /grant ""NT SERVICE\BACnetSCHub:(OI)(CI)M"" /Q"; Flags: runhidden waituntilterminated; Tasks: service
 Filename: "{sys}\sc.exe"; Parameters: "start BACnetSCHub"; Flags: runhidden waituntilterminated; Tasks: service
 ; netsh doesn't de-duplicate by name, so remove any rule from an earlier install first.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BACnet SC Hub (BACnet/IP)"""; Flags: runhidden waituntilterminated; Tasks: firewall
