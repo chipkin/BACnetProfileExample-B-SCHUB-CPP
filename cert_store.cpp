@@ -11,6 +11,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
+#include <openssl/x509v3.h>  // X509_check_ca, X509_PURPOSE_*
 
 #include <stdio.h>
 #include <string.h>
@@ -177,6 +178,47 @@ bool ParseCertificates(const std::string& pem, std::vector<X509*>* out, std::str
         out->push_back(cert);
     }
     return true;
+}
+
+// True if `leaf` verifies for `purpose` against the issuer certificates.
+// Each issuer is tried on its own first: two issuers can share a subject name
+// (two lab CAs, or a renewed CA), and a certificate without an Authority Key
+// Identifier then can't tell them apart - verifying against both at once lets
+// OpenSSL pick the wrong one and report a signature failure. Then all of them
+// together, which is what TLS trusts (trusted-issuers.pem): a root in one slot
+// and an intermediate in the other only verifies that way.
+bool ChainsToIssuers(X509* leaf, const std::vector<X509*>& intermediates, const std::vector<X509*>& issuers,
+                     int purpose, std::string* why) {
+    STACK_OF(X509)* chain = sk_X509_new_null();
+    for (X509* c : intermediates) {
+        sk_X509_push(chain, c);  // intermediates in the operational certificate's own file
+    }
+    *why = "no issuer certificate";
+    bool chained = false;
+    for (size_t attempt = 0; !chained && attempt <= issuers.size(); ++attempt) {
+        if (attempt == issuers.size() && issuers.size() < 2) {
+            break;  // "all together" is the same as the single try
+        }
+        X509_STORE* store = X509_STORE_new();
+        for (size_t i = 0; i < issuers.size(); ++i) {
+            if (attempt == issuers.size() || i == attempt) {
+                X509_STORE_add_cert(store, issuers[i]);
+            }
+        }
+        X509_STORE_CTX* ctx = X509_STORE_CTX_new();
+        X509_STORE_CTX_init(ctx, store, leaf, chain);
+        X509_STORE_CTX_set_purpose(ctx, purpose);
+        if (X509_verify_cert(ctx) == 1) {
+            chained = true;
+        } else {
+            *why = X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx));
+        }
+        X509_STORE_CTX_free(ctx);
+        X509_STORE_free(store);
+    }
+    sk_X509_free(chain);
+    ERR_clear_error();
+    return chained;
 }
 
 // A file's contents as they would be after commit.
@@ -365,39 +407,27 @@ bool ValidateStaged(std::string* reason) {
     EVP_PKEY_free(pendingKey);
     ERR_clear_error();
 
-    // ...and chain to one of the issuers, or no peer would accept this hub.
-    // Each issuer is tried on its own: two issuers can share a subject name
-    // (two lab CAs, or a renewed CA), and a certificate without an Authority
-    // Key Identifier then can't tell them apart - verifying against both at
-    // once lets OpenSSL pick the wrong one and report a signature failure.
+    // It must be an end-entity certificate: a CA certificate as the hub's own
+    // would be refused by every peer.
+    if (ok && X509_check_ca(operational[0]) != 0) {
+        *reason = "the operational certificate is a CA certificate (basicConstraints CA:TRUE or keyCertSign), "
+                  "not the hub's own";
+        ok = false;
+    }
+
+    // ...and chain to the issuers, for both TLS roles the hub plays (server to
+    // connecting devices, client when it dials another hub), or peers refuse it.
     if (ok) {
-        STACK_OF(X509)* chain = sk_X509_new_null();
-        for (size_t i = 1; i < operational.size(); ++i) {
-            sk_X509_push(chain, operational[i]);  // intermediates in the same file
-        }
-        bool chained = false;
-        std::string lastError = "no issuer certificate";
-        for (X509* ca : issuers) {
-            X509_STORE* store = X509_STORE_new();
-            X509_STORE_add_cert(store, ca);
-            X509_STORE_CTX* ctx = X509_STORE_CTX_new();
-            X509_STORE_CTX_init(ctx, store, operational[0], chain);
-            if (X509_verify_cert(ctx) == 1) {
-                chained = true;
-            } else {
-                lastError = X509_verify_cert_error_string(X509_STORE_CTX_get_error(ctx));
+        std::vector<X509*> intermediates(operational.begin() + 1, operational.end());
+        const char* const roles[2] = {"TLS server", "TLS client"};
+        const int purposes[2] = {X509_PURPOSE_SSL_SERVER, X509_PURPOSE_SSL_CLIENT};
+        for (int i = 0; ok && i < 2; ++i) {
+            std::string why;
+            if (!ChainsToIssuers(operational[0], intermediates, issuers, purposes[i], &why)) {
+                *reason = "the operational certificate does not verify as a " + std::string(roles[i]) +
+                          " certificate against the issuer certificates (" + why + ")";
+                ok = false;
             }
-            X509_STORE_CTX_free(ctx);
-            X509_STORE_free(store);
-            if (chained) {
-                break;
-            }
-        }
-        sk_X509_free(chain);
-        ERR_clear_error();
-        if (!chained) {
-            *reason = "the operational certificate does not chain to an issuer certificate (" + lastError + ")";
-            ok = false;
         }
     }
 

@@ -30,6 +30,10 @@ over plain BACnet/IP:
       private-key.pem is unchanged and the new key waits in private-key-pending.pem
     - sign the new CSR, write it into File 1, ACTIVATE_CHANGES -> the pending key replaces
       private-key.pem and the hub presents the newest certificate
+  Certificates peers would refuse, and a root + intermediate set (issue #45):
+    - a CA certificate, or one with EKU clientAuth only, as File 1 -> invalid-configuration-data
+    - root CA in File 3, an intermediate CA in File 4, a leaf from the intermediate in File 1
+      -> ACTIVATE_CHANGES acknowledged
 
 Setup (two certificate sets from the example itself):
     BACnetExampleBSCHUB --sc-cert-dir hub-certs --generate-certs 1
@@ -65,7 +69,8 @@ from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Enumerated, ObjectIdentifier, Unsigned
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.x509.oid import ExtendedKeyUsageOID
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 # The nested choice classes aren't exported at module level - recover them from the Choice
 # classes' own default field instances (same trick as file_object_test.py).
@@ -170,22 +175,48 @@ def tls_handshake(host, port, cert_dir_of_client, label, ca_file=None):
             return tls.getpeercert(binary_form=True)
 
 
-def sign_csr(csr_pem, ca_dir):
-    """Signs the hub's CSR with another lab CA - what a site CA does in the procedure."""
+def sign_csr(csr_pem, ca_dir, ca=None, is_ca=False, eku=None):
+    """Signs the hub's CSR with another lab CA - what a site CA does in the procedure.
+    `ca` = (certificate, key) overrides ca_dir; is_ca/eku make deliberately wrong certificates."""
     csr = x509.load_pem_x509_csr(csr_pem)
-    ca_cert = x509.load_pem_x509_certificate((Path(ca_dir) / "issuer-certificate.pem").read_bytes())
-    ca_key = serialization.load_pem_private_key((Path(ca_dir) / "issuer-private-key.pem").read_bytes(), None)
+    if ca is None:
+        ca = (x509.load_pem_x509_certificate((Path(ca_dir) / "issuer-certificate.pem").read_bytes()),
+              serialization.load_pem_private_key((Path(ca_dir) / "issuer-private-key.pem").read_bytes(), None))
+    ca_cert, ca_key = ca
+    if eku is None:
+        eku = [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (x509.CertificateBuilder()
             .subject_name(csr.subject).issuer_name(ca_cert.subject).public_key(csr.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - datetime.timedelta(minutes=5)).not_valid_after(now + datetime.timedelta(days=30))
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=False)
+            .add_extension(x509.BasicConstraints(ca=is_ca, path_length=None), critical=is_ca)
             .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
-            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
+            .add_extension(x509.ExtendedKeyUsage(eku), critical=False)
             .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
             .sign(ca_key, hashes.SHA256()))
     return cert.public_bytes(serialization.Encoding.PEM), cert.public_bytes(serialization.Encoding.DER)
+
+
+def make_intermediate(ca_dir):
+    """An intermediate CA signed by ca_dir's lab CA: (certificate, key, certificate PEM)."""
+    root = x509.load_pem_x509_certificate((Path(ca_dir) / "issuer-certificate.pem").read_bytes())
+    root_key = serialization.load_pem_private_key((Path(ca_dir) / "issuer-private-key.pem").read_bytes(), None)
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "cert_procedure_test intermediate CA")])
+    cert = (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(root.subject).public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5)).not_valid_after(now + datetime.timedelta(days=30))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=False, content_commitment=False, key_encipherment=False,
+                                         data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                                         crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), critical=False)
+            .sign(root_key, hashes.SHA256()))
+    return cert, key, cert.public_bytes(serialization.Encoding.PEM)
 
 
 async def main():
@@ -337,6 +368,23 @@ async def main():
             record("hub presents the certificate for its NEW key", presented == newest_der)
         except Exception as e:
             record("hub presents the certificate for its NEW key", False, str(e))
+
+        # --- certificates peers would refuse, and a root + intermediate set (issue #45) --------
+        for label, kwargs in (("a CA certificate", {"is_ca": True}),
+                              ("EKU clientAuth only", {"eku": [ExtendedKeyUsageOID.CLIENT_AUTH]})):
+            bad_pem, _ = sign_csr(new_csr, other_dir, **kwargs)
+            await write_file(app, device, FILE_OPERATIONAL, bad_pem)
+            response = await reinitialize(app, device, "activateChanges")
+            record(f"ACTIVATE_CHANGES with {label} as the operational certificate refused",
+                   "invalid-configuration-data" in error_text(response), error_text(response))
+        inter_cert, inter_key, inter_pem = make_intermediate(other_dir)
+        leaf_pem, _ = sign_csr(new_csr, None, ca=(inter_cert, inter_key))
+        await write_file(app, device, FILE_ISSUER_1, (other_dir / "issuer-certificate.pem").read_bytes())
+        await write_file(app, device, FILE_ISSUER_2, inter_pem)
+        await write_file(app, device, FILE_OPERATIONAL, leaf_pem)
+        response = await reinitialize(app, device, "activateChanges")
+        record("ACTIVATE_CHANGES with root (slot 1) + intermediate (slot 2) + leaf acknowledged",
+               isinstance(response, SimpleAckPDU), error_text(response))
     finally:
         app.close()
 
