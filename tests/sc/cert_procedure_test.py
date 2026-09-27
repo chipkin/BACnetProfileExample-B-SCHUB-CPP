@@ -7,6 +7,9 @@ over plain BACnet/IP:
   Negative checks:
     - WriteProperty File_Size on the Certificate Signing Request (File 2) -> write-access-denied
     - ReinitializeDevice COLDSTART -> optional-functionality-not-supported
+  Removing the only issuer (issue #44):
+    - with slot 2 still serving slot 1, empty File 3 and ACTIVATE_CHANGES -> refused
+      (invalid-configuration-data); then write the original issuer back into File 3
   Add issuer (cl. 19.8.3 "add issuer"):
     - WriteProperty File 4 File_Size = 0, AtomicWriteFile a second CA into it, read it back,
       Network Port 2 Changes_Pending = TRUE, ReinitializeDevice ACTIVATE_CHANGES
@@ -71,6 +74,7 @@ AtomicWriteFileStreamAccess = type(AtomicWriteFileRequestAccessMethodChoice.stre
 
 FILE_OPERATIONAL = 1
 FILE_CSR = 2
+FILE_ISSUER_1 = 3
 FILE_ISSUER_2 = 4
 SC_NETWORK_PORT = 2
 PROPERTY_FILE_SIZE = "file-size"
@@ -218,6 +222,20 @@ async def main():
                   "(#41, cas-bacnet-stack#2866) - not counted as a failure")
         else:
             record("Network Port 2 Changes_Pending FALSE before any write (cas-bacnet-stack#2866 fixed)", True)
+
+        # --- removing the only issuer (issue #44) ----------------------------------------------
+        # Slot 2 has no file of its own yet, so it serves slot 1. Emptying slot 1 must not pass
+        # validation on the strength of slot 1's OLD contents seen through slot 2.
+        await app.write_property(device, ObjectIdentifier(("file", FILE_ISSUER_1)), PROPERTY_FILE_SIZE, Unsigned(0))
+        record("File 4 follows the staged (empty) slot 1", await read_file(app, device, FILE_ISSUER_2) == b"")
+        response = await reinitialize(app, device, "activateChanges")
+        record("ACTIVATE_CHANGES with no issuer left refused",
+               "invalid-configuration-data" in error_text(response), error_text(response))
+        record("issuer-certificate.pem unchanged", (hub_dir / "issuer-certificate.pem").stat().st_size > 0)
+        # Put the original back (staged; activated with the next step). Not DISCARD_CHANGES here:
+        # on a fresh hub it also reverts the stack's own start-up pending state (#41,
+        # cas-bacnet-stack#2866), after which Changes_Pending no longer follows certificate writes.
+        await write_file(app, device, FILE_ISSUER_1, (hub_dir / "issuer-certificate.pem").read_bytes())
 
         # --- add issuer -----------------------------------------------------------------------
         new_ca = (other_dir / "issuer-certificate.pem").read_bytes()

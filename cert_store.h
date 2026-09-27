@@ -54,7 +54,10 @@ static const uint32_t MAX_FILE_BYTES = 64 * 1024;
 // in from --sc-cert-dir (see cert_tool.h for the file names).
 struct Layout {
     std::map<uint32_t, std::string> paths;  // File object instance -> file on disk
-    std::map<uint32_t, std::string> readFallbacks;  // instance -> file served until its own exists
+    // instance -> the File object whose contents it serves until it has a file
+    // of its own (Issuer Certificate slot 2 serves slot 1). Follows the other
+    // object's STAGED contents too, so validation sees what a commit would give.
+    std::map<uint32_t, uint32_t> readFallbackInstances;
     uint32_t operationalInstance = 0;        // Operational_Certificate_File
     std::vector<uint32_t> issuerInstances;   // Issuer_Certificate_Files
     std::string privateKeyPath;              // the operational certificate's key

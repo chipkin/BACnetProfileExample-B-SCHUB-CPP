@@ -60,22 +60,26 @@ bool ReadDisk(const std::string& path, std::string* out) {
     return true;
 }
 
-// The path a File object's bytes are read from right now: its own file, or
-// its fallback until its own file exists (Issuer Certificate Slot 2 serves
-// slot 1's file until something is written to it).
-std::string ReadPath(uint32_t fileInstance) {
+// The file a File object's bytes live in, or "" if it isn't one we manage.
+std::string OwnPath(uint32_t fileInstance) {
     auto it = g_layout.paths.find(fileInstance);
-    if (it == g_layout.paths.end()) {
-        return std::string();
+    return it == g_layout.paths.end() ? std::string() : it->second;
+}
+
+// The File object this one serves instead, while it has no staged copy and
+// no file of its own (Issuer Certificate slot 2 serves slot 1 until something
+// is written to it), or 0.
+uint32_t FallbackInstance(uint32_t fileInstance) {
+    if (g_staged.count(fileInstance) != 0) {
+        return 0;
     }
     std::error_code ec;
-    if (!fs::exists(it->second, ec)) {
-        auto fb = g_layout.readFallbacks.find(fileInstance);
-        if (fb != g_layout.readFallbacks.end()) {
-            return fb->second;
-        }
+    const std::string path = OwnPath(fileInstance);
+    if (path.empty() || fs::exists(path, ec)) {
+        return 0;
     }
-    return it->second;
+    auto fb = g_layout.readFallbackInstances.find(fileInstance);
+    return fb == g_layout.readFallbackInstances.end() ? 0 : fb->second;
 }
 
 // The staged copy of a File object, created from its current contents on the
@@ -89,7 +93,9 @@ Staged* Stage(uint32_t fileInstance) {
         return nullptr;
     }
     Staged s;
-    ReadDisk(ReadPath(fileInstance), &s.bytes);  // a missing file stages as empty
+    if (!Read(fileInstance, &s.bytes)) {  // a missing file stages as empty
+        s.bytes.clear();
+    }
     s.modified = time(NULL);
     return &(g_staged[fileInstance] = s);
 }
@@ -231,7 +237,11 @@ bool Read(uint32_t fileInstance, std::string* bytes) {
         *bytes = it->second.bytes;
         return true;
     }
-    const std::string path = ReadPath(fileInstance);
+    const uint32_t fallback = FallbackInstance(fileInstance);
+    if (fallback != 0) {
+        return Read(fallback, bytes);
+    }
+    const std::string path = OwnPath(fileInstance);
     return !path.empty() && ReadDisk(path, bytes);
 }
 
@@ -242,7 +252,11 @@ bool Stat(uint32_t fileInstance, long* size, time_t* mtime) {
         *mtime = it->second.modified;
         return true;
     }
-    const std::string path = ReadPath(fileInstance);
+    const uint32_t fallback = FallbackInstance(fileInstance);
+    if (fallback != 0) {
+        return Stat(fallback, size, mtime);
+    }
+    const std::string path = OwnPath(fileInstance);
     std::error_code ec;
     if (path.empty() || !fs::exists(path, ec)) {
         return false;

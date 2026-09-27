@@ -2280,7 +2280,7 @@ static int RunHub(int argc, char** argv) {
         for (const uint32_t instance : certInstances) {
             layout.paths[instance] = ScCertFilePath(instance);
         }
-        layout.readFallbacks[FILE_ISSUER_CERT_2_INSTANCE] = issuer1Path;
+        layout.readFallbackInstances[FILE_ISSUER_CERT_2_INSTANCE] = FILE_ISSUER_CERT_1_INSTANCE;
         layout.operationalInstance = FILE_OPERATIONAL_CERT_INSTANCE;
         layout.issuerInstances = {FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE};
         layout.privateKeyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
