@@ -1727,22 +1727,28 @@ static const char* const WINDOWS10_ISSUE_URL = "https://github.com/chipkin/BACne
 
 static void WarnIfWindows10() {
 #if defined(_WIN32)
-    typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOW*);
+    typedef LONG(WINAPI * RtlGetVersionFn)(OSVERSIONINFOEXW*);
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     const RtlGetVersionFn rtlGetVersion =
         ntdll != NULL ? reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion")) : NULL;
-    OSVERSIONINFOW version;
+    OSVERSIONINFOEXW version;
     memset(&version, 0, sizeof(version));
     version.dwOSVersionInfoSize = sizeof(version);
-    if (rtlGetVersion == NULL || rtlGetVersion(&version) != 0) {
-        return;  // can't tell - say nothing rather than guess
+    if (rtlGetVersion == NULL || rtlGetVersion(&version) != 0 || version.dwMajorVersion != 10) {
+        return;  // can't tell (or not a 10.x kernel) - say nothing rather than guess
     }
-    if (version.dwMajorVersion == 10 && version.dwBuildNumber < 22000) {
+    // Windows 10 and 11 share major version 10; so do Windows Server
+    // 2016/2019/2022/2025. TLS 1.3 client support arrived with Windows 11
+    // (build 22000) and Windows Server 2022 (build 20348).
+    const bool isServer = version.wProductType != VER_NT_WORKSTATION;
+    const DWORD firstBuildWithTls13 = isServer ? 20348 : 22000;
+    if (version.dwBuildNumber < firstBuildWithTls13) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-            "This computer runs Windows 10 (build %lu). The hub works, but BACnet/SC tools on this computer "
+            "This computer runs %s (build %lu). The hub works, but BACnet/SC tools on this computer "
             "that use Windows' own TLS (for example YABE) can't connect: BACnet/SC requires TLS 1.3, and "
-            "Windows 10 can't make TLS 1.3 client connections. Use Windows 11 / Server 2022 or later for "
-            "those tools, or a client with its own TLS 1.3 (CAS BACnet Explorer). See %s",
+            "this Windows version can't make TLS 1.3 client connections. Use Windows 11 / Server 2022 or "
+            "later for those tools, or a client with its own TLS 1.3 (CAS BACnet Explorer). See %s",
+            isServer ? "a Windows Server version older than 2022" : "Windows 10",
             version.dwBuildNumber, WINDOWS10_ISSUE_URL);
     }
 #endif
