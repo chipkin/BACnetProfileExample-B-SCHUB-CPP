@@ -63,6 +63,7 @@ Name: "{commonappdata}\Chipkin\BACnetSCHub\logs"
 Source: "{#SourceDir}\BACnetExampleBSCHUB.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\*.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SourceDir}\*.pdf"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\THIRD-PARTY-LICENSES-windows.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\example.conf"; DestDir: "{app}"; Flags: ignoreversion
 

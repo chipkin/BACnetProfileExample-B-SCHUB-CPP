@@ -20,7 +20,7 @@ trap 'rm -rf "$PKG"' EXIT
 install -d "$PKG/DEBIAN" "$PKG/opt/bacnet-schub" "$PKG/lib/systemd/system"
 install -m 0755 "$SRC/BACnetExampleBSCHUB" "$PKG/opt/bacnet-schub/"
 for doc in README.md TUTORIAL.md LICENSE THIRD-PARTY-NOTICES.md SECURITY.md SUPPORT.md PICS.md PICS.pdf \
-           production-certificates.md example.conf manual.pdf fact-sheet.pdf; do
+           production-certificates.md example.conf manual.pdf fact-sheet.pdf THIRD-PARTY-LICENSES-linux.txt; do
     [ -f "$SRC/$doc" ] && install -m 0644 "$SRC/$doc" "$PKG/opt/bacnet-schub/"
 done
 install -m 0644 "$HERE/bacnet-schub-hub.service" "$PKG/lib/systemd/system/"

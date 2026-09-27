@@ -505,7 +505,9 @@ jobs:
           # Software bill of materials (issue #32): this example, the CAS BACnet
           # Stack and every vcpkg library in the executable, with versions and
           # licences. One per platform (the vcpkg libraries differ).
-          python tools/make-sbom.py --build-dir build --out "dist/sbom-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.cdx.json"
+          # ...and the full licence text of each of those libraries (issue #59).
+          python tools/make-sbom.py --build-dir build --out "dist/sbom-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.cdx.json" \
+            --licenses-out "dist/THIRD-PARTY-LICENSES-${{ runner.os == 'Windows' && 'windows' || 'linux' }}.txt"
           cp example.conf dist/
           # SC-TRANSPORT:END
 
@@ -558,7 +560,7 @@ jobs:
           version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
           stage="BACnetSCHub-$version-linux-x64"
           mkdir -p "$stage"
-          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/LICENSE dist/example.conf "$stage/"
+          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/*.txt dist/LICENSE dist/example.conf "$stage/"
           cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/bacnet-schub-hub.service "$stage/"
           chmod +x "$stage/install.sh" "$stage/uninstall.sh" "$stage/BACnetExampleBSCHUB"
           tar -czf "dist/$stage.tar.gz" "$stage"

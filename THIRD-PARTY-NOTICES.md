@@ -14,6 +14,11 @@ time, and each package's own licence text ships alongside it there
 (`build/vcpkg_installed/<triplet>/share/<port>/copyright`) once you have built
 this example at least once.
 
+**The full licence texts of every library linked into a release** are in that
+release's `THIRD-PARTY-LICENSES-windows.txt` / `THIRD-PARTY-LICENSES-linux.txt`
+(made from those copyright files by `tools/make-sbom.py --licenses-out`), which
+the installer, the `.deb` and the `.tar.gz` also install next to the program.
+
 ## libwebsockets
 
 - **Project:** <https://libwebsockets.org/> / <https://github.com/warmcat/libwebsockets>
