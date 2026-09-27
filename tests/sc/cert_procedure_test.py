@@ -12,6 +12,8 @@ over plain BACnet/IP:
       Network Port 2 Changes_Pending = TRUE, ReinitializeDevice ACTIVATE_CHANGES
     - then a client certificate signed by the NEW CA completes a TLS handshake with the hub
   Rejected activation:
+    - the current certificate with its private key appended (a combined file) into File 1,
+      ACTIVATE_CHANGES -> invalid-configuration-data (File 1 is public over AtomicReadFile)
     - AtomicWriteFile garbage into File 1, ACTIVATE_CHANGES -> invalid-configuration-data,
       and the operational certificate on disk is unchanged
   DISCARD_CHANGES (Network Port 2 Command, cl. 12.56.16/.100):
@@ -245,6 +247,10 @@ async def main():
 
         # --- rejected activation --------------------------------------------------------------
         before = (hub_dir / "operational-certificate.pem").read_bytes()
+        await write_file(app, device, FILE_OPERATIONAL, before + (hub_dir / "private-key.pem").read_bytes())
+        response = await reinitialize(app, device, "activateChanges")
+        record("ACTIVATE_CHANGES with a private key in the certificate file refused",
+               "invalid-configuration-data" in error_text(response), error_text(response))
         await write_file(app, device, FILE_OPERATIONAL, b"this is not a certificate\n")
         response = await reinitialize(app, device, "activateChanges")
         record("ACTIVATE_CHANGES with a garbage operational certificate refused",

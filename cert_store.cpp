@@ -94,31 +94,83 @@ Staged* Stage(uint32_t fileInstance) {
     return &(g_staged[fileInstance] = s);
 }
 
-// Every certificate in a PEM blob. An empty or whitespace-only blob yields
-// none; anything else that doesn't parse completely is an error.
-bool ParseCertificates(const std::string& pem, std::vector<X509*>* out, std::string* reason) {
-    if (pem.find_first_not_of(" \t\r\n") == std::string::npos) {
-        return true;  // empty
-    }
-    BIO* bio = BIO_new_mem_buf(pem.data(), (int)pem.size());
-    X509* cert;
-    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL)) != NULL) {
-        out->push_back(cert);
-    }
-    ERR_clear_error();  // the read loop always ends with a harmless "no start line"
-    BIO_free(bio);
-    if (out->empty()) {
-        *reason = "not a PEM certificate";
-        return false;
-    }
-    return true;
-}
-
 void FreeAll(std::vector<X509*>* certs) {
     for (X509* c : *certs) {
         X509_free(c);
     }
     certs->clear();
+}
+
+// Splits a PEM blob into its "-----BEGIN <label>-----" ... "-----END <label>-----"
+// blocks. Only blocks labelled `label` and whitespace between them are
+// allowed: anything else - a PRIVATE KEY block in a combined cert+key file,
+// stray text - is refused, because these files are served to anyone over
+// AtomicReadFile exactly as written. An empty or whitespace-only blob yields
+// no blocks.
+bool SplitPemBlocks(const std::string& pem, const std::string& label, std::vector<std::string>* blocks,
+                    std::string* reason) {
+    static const char* const kBegin = "-----BEGIN ";
+    static const char* const kDashes = "-----";
+    size_t pos = 0;
+    while (true) {
+        const size_t begin = pem.find(kBegin, pos);
+        const size_t gapEnd = begin == std::string::npos ? pem.size() : begin;
+        if (pem.find_first_not_of(" \t\r\n", pos) < gapEnd) {
+            *reason = "has text outside a PEM block";
+            return false;
+        }
+        if (begin == std::string::npos) {
+            return true;
+        }
+        const size_t labelStart = begin + strlen(kBegin);
+        const size_t labelEnd = pem.find(kDashes, labelStart);
+        if (labelEnd == std::string::npos) {
+            *reason = "has an unterminated PEM header";
+            return false;
+        }
+        const std::string found = pem.substr(labelStart, labelEnd - labelStart);
+        if (found != label) {
+            *reason = "holds a \"" + found.substr(0, 40) + "\" PEM block (only " + label + " is allowed here)";
+            return false;
+        }
+        const std::string endMarker = "-----END " + label + kDashes;
+        const size_t end = pem.find(endMarker, labelEnd);
+        if (end == std::string::npos) {
+            *reason = "has a " + label + " block with no END line";
+            return false;
+        }
+        pos = end + endMarker.size();
+        blocks->push_back(pem.substr(begin, pos - begin));
+    }
+}
+
+// Every certificate in a PEM blob. An empty or whitespace-only blob yields
+// none; anything else that isn't only PEM certificates is an error.
+bool ParseCertificates(const std::string& pem, std::vector<X509*>* out, std::string* reason) {
+    std::vector<std::string> blocks;
+    if (!SplitPemBlocks(pem, "CERTIFICATE", &blocks, reason)) {
+        return false;
+    }
+    if (blocks.empty()) {
+        if (pem.find_first_not_of(" \t\r\n") == std::string::npos) {
+            return true;  // empty
+        }
+        *reason = "not a PEM certificate";
+        return false;
+    }
+    for (const std::string& block : blocks) {
+        BIO* bio = BIO_new_mem_buf(block.data(), (int)block.size());
+        X509* cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+        BIO_free(bio);
+        ERR_clear_error();
+        if (cert == NULL) {
+            FreeAll(out);
+            *reason = "holds a CERTIFICATE block that doesn't parse";
+            return false;
+        }
+        out->push_back(cert);
+    }
+    return true;
 }
 
 // A file's contents as they would be after commit.
@@ -445,7 +497,21 @@ bool InstallCertificateSigningRequest(uint32_t fileInstance, const std::string& 
         *reason = "not a certificate File object";
         return false;
     }
-    BIO* bio = BIO_new_mem_buf(pem.data(), (int)pem.size());
+    // Exactly one CERTIFICATE REQUEST block and nothing else: the file is
+    // served over AtomicReadFile as written (see SplitPemBlocks).
+    // (Some Windows tools write the older "NEW CERTIFICATE REQUEST" label.)
+    std::vector<std::string> blocks;
+    const char* const label = pem.find("-----BEGIN NEW CERTIFICATE REQUEST-----") != std::string::npos
+                                  ? "NEW CERTIFICATE REQUEST" : "CERTIFICATE REQUEST";
+    if (!SplitPemBlocks(pem, label, &blocks, reason)) {
+        *reason = "the certificate signing request " + *reason;
+        return false;
+    }
+    if (blocks.size() != 1) {
+        *reason = "expected exactly one PEM certificate signing request";
+        return false;
+    }
+    BIO* bio = BIO_new_mem_buf(blocks[0].data(), (int)blocks[0].size());
     X509_REQ* request = PEM_read_bio_X509_REQ(bio, NULL, NULL, NULL);
     BIO_free(bio);
     if (request == NULL) {

@@ -119,8 +119,14 @@ def main():
         status, body = request(base, "/certs/issuer1", "POST", issuer_pem, token=args.token)
         record("upload of a valid issuer certificate -> 200", status == 200, f"HTTP {status}: {body.strip()}")
 
-        status, body = request(base, "/certs/csr", "POST", issuer_pem, token=args.token)
-        record("upload of something that isn't a CSR to csr -> 400", status == 400, f"HTTP {status}: {body.strip()}")
+        # A real CSR with the hub's private key appended (a combined file): the CSR
+        # slot is served over AtomicReadFile as written, so anything but the one
+        # CERTIFICATE REQUEST block must be refused.
+        csr_pem = (cert_dir / "certificate-signing-request.pem").read_bytes()
+        key_pem = (cert_dir / "private-key.pem").read_bytes()
+        status, body = request(base, "/certs/csr", "POST", csr_pem + key_pem, token=args.token)
+        record("upload of a CSR with a private key appended -> 400", status == 400 and "PRIVATE KEY" in body,
+               f"HTTP {status}: {body.strip()}")
 
         # 5 attempts so far from this address; the 6th within the minute is refused.
         status, body = request(base, "/certs/operational", "POST", issuer_pem, token=args.token)
