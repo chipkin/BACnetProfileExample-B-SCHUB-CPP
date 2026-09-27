@@ -915,6 +915,9 @@ bool ScTransport::StartListening(const std::string& uri) {
     // disables every older negotiable version, leaving only 1.3).
     info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT | LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT;
     info.ssl_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_SSLv3;
+    // BACnet/SC is a WebSocket upgrade over HTTP/1.1; don't let a TLS peer
+    // negotiate HTTP/2 through lws's default "h2,http/1.1" ALPN list.
+    info.alpn = "http/1.1";
     info.user = this;
     info.gid = static_cast<gid_t>(-1);
     info.uid = static_cast<uid_t>(-1);
@@ -1657,7 +1660,15 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
         // The connector's SSL_CTX (in `user`), as lws creates it, on a fake
         // wsi with only the context set - so handled before the per-connection
         // lookup below. Load the CRL so the hub we dial is checked too.
-        LoadRevocationList(static_cast<SSL_CTX*>(user), m_tls.crlPath, "connector");
+        // Fail closed like the listener: a CRL file that exists but can't be
+        // used must not silently skip revocation. lws ignores this callback's
+        // return value on the client side, so instead turn CRL checking on
+        // with no CRL loaded - OpenSSL then refuses every peer certificate
+        // ("unable to get certificate CRL") until the file is fixed or removed.
+        SSL_CTX* sslCtx = static_cast<SSL_CTX*>(user);
+        if (!LoadRevocationList(sslCtx, m_tls.crlPath, "connector") && sslCtx != nullptr) {
+            X509_STORE_set_flags(SSL_CTX_get_cert_store(sslCtx), X509_V_FLAG_CRL_CHECK);
+        }
         return 0;
     }
     // Every reason below fires on a wsi lws created from THIS connection's own
