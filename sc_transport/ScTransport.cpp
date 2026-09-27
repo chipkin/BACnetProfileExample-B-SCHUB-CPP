@@ -1195,9 +1195,13 @@ void ScTransport::RequestClose(lws* wsi, CloseRequest* closeRequest, const uint1
     lws_callback_on_writable(wsi);  // the close itself happens in the WRITEABLE callback
 }
 
-bool ScTransport::ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest) {
+bool ScTransport::ApplyRequestedClose(lws* wsi, const CloseRequest& closeRequest,
+                                      const std::deque<std::vector<uint8_t>>& txQueue) {
     if (!closeRequest.requested) {
         return false;
+    }
+    if (closeRequest.code != LWS_CLOSE_STATUS_POLICY_VIOLATION && !txQueue.empty()) {
+        return false;  // send what's queued first; the caller asks for another turn
     }
     lws_close_reason(wsi, static_cast<lws_close_status>(closeRequest.code),
                      reinterpret_cast<unsigned char*>(const_cast<char*>(closeRequest.reason.data())),
@@ -1566,11 +1570,14 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             if (peer == nullptr) {
                 break;
             }
-            if (ApplyRequestedClose(wsi, peer->closeRequest)) {
+            if (ApplyRequestedClose(wsi, peer->closeRequest, peer->txQueue)) {
                 return -1;  // Disconnect() or a full transmit queue asked for this close
             }
             if (FlushOneQueuedFrame(wsi, &peer->txQueue, "\"" + peer->connectionString + "\"")) {
                 return -1;
+            }
+            if (peer->closeRequest.requested) {
+                lws_callback_on_writable(wsi);  // close once the queue has gone out
             }
             break;
         }
@@ -1771,11 +1778,14 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
             if (conn == nullptr) {
                 break;
             }
-            if (ApplyRequestedClose(wsi, conn->closeRequest)) {
+            if (ApplyRequestedClose(wsi, conn->closeRequest, conn->txQueue)) {
                 return -1;
             }
             if (FlushOneQueuedFrame(wsi, &conn->txQueue, "hub \"" + conn->uri + "\"")) {
                 return -1;
+            }
+            if (conn->closeRequest.requested) {
+                lws_callback_on_writable(wsi);  // close once the queue has gone out
             }
             break;
         }
