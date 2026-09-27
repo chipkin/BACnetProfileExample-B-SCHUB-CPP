@@ -296,7 +296,7 @@ BACnetExampleBSCHUB [options]
 | `--port <n>` | `47808` | BACnet/IP UDP port. |
 | `--bacnet-ip <on/off>` | `on` | `off` runs BACnet/SC only - see [BACnet/SC only](#bacnetsc-only). |
 | `--deviceID <n>` | `389022` | BACnet device instance. |
-| `--device-name <name>` | `Chipkin Example B-SCHUB` | The Device's `Object_Name`. Must be unique on the BACnet internetwork, so name each hub. |
+| `--device-name <name>` | `Chipkin Example B-SCHUB` | The Device's `Object_Name`. Must be unique on the BACnet internetwork, so name each hub. 1 to 128 bytes of UTF-8; for a non-ASCII name use `device-name` in a config file saved as UTF-8. |
 | `--ip-network-number <n>`, `--sc-network-number <n>` | not set | `Network_Number` of Network Port 1 / 2 (1..65534), reported with quality `configured`. Unset ports report 0, quality `unknown`. |
 | `--log-file <path>` | none | Also write everything the hub prints to this file (see [Logging](#logging)). |
 | `--log-max-size-mb <n>`, `--log-max-files <n>` | `10`, `5` | Rotate the log file at this size, keeping this many old files (`<path>.1`, `.2`, ...). |

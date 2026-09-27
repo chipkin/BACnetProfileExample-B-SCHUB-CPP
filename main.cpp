@@ -190,6 +190,10 @@ static const uint32_t VENDOR_IDENTIFIER = 389;
 // only what an unconfigured unit calls itself.
 static const char* DEVICE_NAME_DEFAULT = "Chipkin Example B-SCHUB";
 static std::string g_deviceName = DEVICE_NAME_DEFAULT;
+// Longest --device-name accepted, in UTF-8 bytes. Object_Name has no fixed
+// limit in the standard, but the stack reads it into a 256-byte buffer and
+// fails one that fills it (issue #52); 128 leaves plenty of room.
+static const size_t MAX_DEVICE_NAME_BYTES = 128;
 
 // Each Network Port's Network_Number (1..65534) - --ip-network-number /
 // --sc-network-number or the config file's ip-network-number /
@@ -879,14 +883,50 @@ static std::string ObjectDescription(const uint16_t objectType, const uint32_t o
     return std::string();
 }
 
+// True if `text` is well-formed UTF-8 (the encoding Object_Name is served in).
+static bool IsValidUtf8(const std::string& text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char lead = (unsigned char)text[i];
+        size_t extra;
+        if (lead < 0x80) {
+            extra = 0;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= text.size()) {
+            return false;  // truncated sequence
+        }
+        for (size_t k = 1; k <= extra; ++k) {
+            if ((((unsigned char)text[i + k]) & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
 static bool ReturnCharacterString(const char* text, char* value,
                                   uint32_t* valueElementCount,
                                   const uint32_t maxElementCount,
                                   uint8_t* encodingType) {
     uint32_t length = (uint32_t)strlen(text);
-    if (length > maxElementCount) {
-        length = maxElementCount; // see the equivalent B-SS comment: this never
-                                   // trips at the default MAX_CHARACTER_STRING_SIZE
+    // The stack fails a string that fills its whole buffer (stack issue
+    // #2487), so leave at least one byte free - and never cut a multi-byte
+    // UTF-8 character in half. Start-up limits the user-set strings
+    // (MAX_DEVICE_NAME_BYTES), so this only guards against surprises.
+    if (maxElementCount > 0 && length >= maxElementCount) {
+        length = maxElementCount - 1;
+        while (length > 0 && (((unsigned char)text[length]) & 0xC0) == 0x80) {
+            --length;  // text[length] is a continuation byte: back up to a character start
+        }
     }
     memcpy(value, text, length);
     *valueElementCount = length;
@@ -1943,7 +1983,8 @@ static int RunHub(int argc, char** argv) {
                 printf("\nDevice and logging:\n");
                 printf("  --device-name <name>\n");
                 printf("                      The Device's Object_Name - must be unique on the BACnet\n");
-                printf("                      internetwork. Default \"%s\".\n", DEVICE_NAME_DEFAULT);
+                printf("                      internetwork; 1 to %u bytes of UTF-8. Default \"%s\".\n",
+                       (unsigned)MAX_DEVICE_NAME_BYTES, DEVICE_NAME_DEFAULT);
                 printf("  --ip-network-number <n>, --sc-network-number <n>\n");
                 printf("                      Network_Number (1..65534) of Network Port 1 (BACnet/IP) /\n");
                 printf("                      2 (BACnet/SC), reported as configured. Default: not set.\n");
@@ -2105,6 +2146,13 @@ static int RunHub(int argc, char** argv) {
             g_deviceName = deviceName;  // CLI wins
         } else if (fileConfig.hasDeviceName) {
             g_deviceName = fileConfig.deviceName;
+        }
+        if (g_deviceName.empty() || g_deviceName.size() > MAX_DEVICE_NAME_BYTES || !IsValidUtf8(g_deviceName)) {
+            printf("Error: the device name must be 1 to %u bytes of UTF-8 text (got %u bytes%s).\n",
+                   (unsigned)MAX_DEVICE_NAME_BYTES, (unsigned)g_deviceName.size(),
+                   IsValidUtf8(g_deviceName) ? "" : ", not valid UTF-8 - for a non-ASCII name, set device-name in a "
+                                                    "config file saved as UTF-8");
+            return 1;
         }
         g_ipNetworkNumber = (uint16_t)ParseUIntArg(argc, argv, "--ip-network-number", 1, 65534,
             fileConfig.hasIpNetworkNumber ? fileConfig.ipNetworkNumber : 0);
