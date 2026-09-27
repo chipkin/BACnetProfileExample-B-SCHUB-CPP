@@ -9,6 +9,16 @@ Open work is tracked in
 
 ## [1.4.0] - unreleased
 
+### Changed
+
+- CAS BACnet Stack updated to the latest 6.x.
+- **Segmentation is now supported in both directions**
+  (`Segmentation_Supported` = segmented-both, `Max_Segments_Accepted` 16,
+  `APDU_Segment_Timeout` 5000 ms), the CAS BACnet Stack's new default. Large
+  ReadPropertyMultiple answers are sent in segments instead of being refused,
+  and segmented requests are accepted. The PICS is updated, and
+  `tests/sc/segmentation_test.py` checks both directions in CI.
+
 ### Added
 
 - `--sc-accept-device-without-hello` (config: `sc-accept-device-without-hello`),
