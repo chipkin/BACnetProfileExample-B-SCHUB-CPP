@@ -37,18 +37,24 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Read-only by default (issue #58); each job asks for only what it needs.
 permissions:
-  contents: write
-  # SC-TRANSPORT:BEGIN - Windows code signing: azure/login uses GitHub OIDC, which needs
-  # an ID token. Only the tag build of the Windows leg requests one (see "Code signing").
-  id-token: write
-  # SC-TRANSPORT:END
-  packages: write  # the vcpkg NuGet binary cache on GitHub Packages (issue #17)
+  contents: read
 
 jobs:
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The build runs this repository's CMake and Python, including a pull
+    # request's, so it gets no contents write (only the release job publishes).
+    permissions:
+      contents: read
+      # SC-TRANSPORT:BEGIN - Windows code signing: azure/login uses GitHub OIDC, which needs
+      # an ID token. Only the tag build of the Windows leg requests one (see "Code signing"),
+      # and the Azure federated credential only trusts the "release" environment.
+      id-token: write
+      # SC-TRANSPORT:END
+      packages: write  # the vcpkg NuGet binary cache (issue #17); pull requests only read it
     # SC-TRANSPORT:BEGIN - code signing. The Windows leg of a vX.Y.Z tag build runs in the
     # "release" environment, which the Azure federated credential trusts (subject
     # repo:chipkin/BACnetProfileExample-B-SCHUB-CPP:environment:release). Every other
@@ -263,6 +269,10 @@ jobs:
 
       - name: Smoke test + metrics (starts, binds, stays up; measures time to 'ready')
         shell: bash
+        env:
+          # Through the environment, not ${{ }} inside the script: a branch name
+          # (workflow_dispatch) must never be pasted into shell code (issue #58).
+          GIT_REF_NAME: ${{ github.ref_name }}
         run: |
           start=$(date +%s%3N)
           "${{ matrix.exe }}" --port 47821 > smoke.log 2>&1 &
@@ -300,7 +310,7 @@ jobs:
             "startup_ms_to_ready": $ready_ms,
             "compiler": "$compiler",
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "git_ref": "${{ github.ref_name }}"
+            "git_ref": "$GIT_REF_NAME"
           }
           EOF
           cat "${{ matrix.metrics }}"
@@ -671,7 +681,8 @@ jobs:
         with:
           subject-path: release/*
       # SC-TRANSPORT:END
-      - uses: softprops/action-gh-release@v2
+      # Pinned to a commit (issue #58): this job can write releases and attestations.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true
