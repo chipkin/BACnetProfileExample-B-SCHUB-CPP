@@ -62,7 +62,10 @@ fi
 
 install -m 0644 "$HERE/bacnet-schub-hub.service" "$UNIT"
 systemctl daemon-reload
-systemctl enable --now bacnet-schub-hub
+# enable + restart, not "enable --now": on an upgrade the service is already
+# running, and --now would leave the OLD binary serving until the next reboot.
+systemctl enable bacnet-schub-hub
+systemctl restart bacnet-schub-hub
 
 echo
 echo "Installed. The hub is running as the bacnet-schub-hub service:"
