@@ -269,7 +269,7 @@ jobs:
           PID=$!
           ready_ms=""
           for i in $(seq 1 100); do
-            if grep -q "ready" smoke.log; then ready_ms=$(( $(date +%s%3N) - start )); break; fi
+            if grep -qE '") ready\. Vendor ID' smoke.log; then ready_ms=$(( $(date +%s%3N) - start )); break; fi
             sleep 0.1
           done
           sleep 2
@@ -397,7 +397,7 @@ jobs:
           done
           rc=0
           python tests/sc/http_test.py --http-port 18084 --token ci-upload-token --cert-dir certs --device-name "CI Hub 7" || rc=1
-          grep -q "ready" ci-hub.log || { echo "FAIL: ci-hub.log does not have the start-up lines"; rc=1; }
+          grep -qE '") ready\. Vendor ID' ci-hub.log || { echo "FAIL: ci-hub.log does not have the start-up lines"; rc=1; }
           kill "$pid" 2>/dev/null || true
           [ "$rc" -eq 0 ] || { cat ci-http.out; cat ci-hub.log; exit 1; }
 
@@ -481,15 +481,17 @@ jobs:
         run: |
           mkdir -p dist
           cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
-          cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
-          cp docs/PICS.md dist/ 2>/dev/null || true
+          # No "|| true": a renamed or missing document must fail the build, not
+          # silently drop out of every package.
+          cp README.md TUTORIAL.md LICENSE dist/
+          cp docs/PICS.md dist/
           # SC-TRANSPORT:BEGIN - this example's package also ships the PICS as a PDF and
           # its third-party-dependency notices (libwebsockets, OpenSSL) - no other
           # example in the series has either.
-          cp docs/PICS.pdf docs/manual.pdf docs/fact-sheet.pdf dist/ 2>/dev/null || true
-          cp THIRD-PARTY-NOTICES.md dist/ 2>/dev/null || true
-          cp docs/production-certificates.md dist/ 2>/dev/null || true
-          cp SECURITY.md docs/SUPPORT.md dist/ 2>/dev/null || true
+          cp docs/PICS.pdf docs/manual.pdf docs/fact-sheet.pdf dist/
+          cp THIRD-PARTY-NOTICES.md dist/
+          cp docs/production-certificates.md dist/
+          cp SECURITY.md docs/SUPPORT.md dist/
           # Software bill of materials (issue #32): this example, the CAS BACnet
           # Stack and every vcpkg library in the executable, with versions and
           # licences. One per platform (the vcpkg libraries differ).
@@ -546,7 +548,7 @@ jobs:
           version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
           stage="BACnetSCHub-$version-linux-x64"
           mkdir -p "$stage"
-          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/LICENSE dist/example.conf "$stage/" 2>/dev/null || true
+          cp dist/BACnetExampleBSCHUB dist/*.md dist/*.pdf dist/LICENSE dist/example.conf "$stage/"
           cp packaging/linux/install.sh packaging/linux/uninstall.sh packaging/linux/bacnet-schub-hub.service "$stage/"
           chmod +x "$stage/install.sh" "$stage/uninstall.sh" "$stage/BACnetExampleBSCHUB"
           tar -czf "dist/$stage.tar.gz" "$stage"
@@ -572,7 +574,7 @@ jobs:
           [ "$ok" = 1 ] || { echo "FAIL: the bacnet-schub-hub service did not answer /health"; exit 1; }
           curl -s http://127.0.0.1:8080/health; echo
           # /var/log/bacnet-schub is 0750 bacnethub (like the certificates), so check it as root.
-          sudo grep -q "ready" /var/log/bacnet-schub/hub.log || { echo "FAIL: /var/log/bacnet-schub/hub.log missing or has no start-up lines"; sudo ls -la /var/log/bacnet-schub; exit 1; }
+          sudo grep -qE '") ready\. Vendor ID' /var/log/bacnet-schub/hub.log || { echo "FAIL: /var/log/bacnet-schub/hub.log missing or has no start-up lines"; sudo ls -la /var/log/bacnet-schub; exit 1; }
           sudo apt-get purge -y -qq bacnet-schub-hub > /dev/null
           ! systemctl is-active bacnet-schub-hub
 
@@ -580,6 +582,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Earlier steps' test instances also serve 8080: make sure none is left to
+          # answer /health for a service that didn't start.
+          Get-Process BACnetExampleBSCHUB -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 1
           $setup = Get-ChildItem dist -Filter "*-setup.exe" | Select-Object -First 1
           Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
           $ok = $false
