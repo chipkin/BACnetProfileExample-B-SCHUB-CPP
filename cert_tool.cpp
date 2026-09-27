@@ -18,6 +18,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <cerrno>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <regex>
@@ -152,7 +154,9 @@ X509Ptr MakeCertificate(Role role, const std::string& commonName, EVP_PKEY* subj
     BN_free(serialBn);
 
     const long days = (role == Role::Ca) ? CA_VALID_DAYS : LEAF_VALID_DAYS;
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0);
+    // Valid from an hour ago, so a device whose clock is a little behind this
+    // computer's doesn't reject a freshly made certificate as "not yet valid".
+    X509_gmtime_adj(X509_getm_notBefore(cert.get()), -60L * 60L);
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), days * 24L * 60L * 60L);
 
     X509_NAME* name = X509_get_subject_name(cert.get());
@@ -794,7 +798,14 @@ unsigned HighestClientNumber(const fs::path& certDir, const std::string& label) 
         std::smatch m;
         const std::string name = entry.path().filename().string();
         if (entry.is_directory() && std::regex_match(name, m, pattern)) {
-            const unsigned n = (unsigned)std::stoul(m[1].str());
+            // strtoul, not stoul: a folder like "client-99999999999999999999"
+            // must not throw. Out-of-range numbers are ignored.
+            errno = 0;
+            const unsigned long parsed = std::strtoul(m[1].str().c_str(), nullptr, 10);
+            if (errno == ERANGE || parsed > 99999) {
+                continue;
+            }
+            const unsigned n = (unsigned)parsed;
             if (n > highest) {
                 highest = n;
             }
@@ -857,6 +868,9 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
         LEGACY_ISSUER_CERTIFICATE_FILE, LEGACY_ISSUER_PRIVATE_KEY_FILE,
         LEGACY_OPERATIONAL_CERTIFICATE_FILE, LEGACY_PRIVATE_KEY_FILE,
         LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE, ISSUER_CERTIFICATE_2_FILE, TRUSTED_ISSUERS_FILE,
+        // The CRL is the OLD issuer's: left behind, it makes the hub refuse every
+        // certificate from a new issuer ("unable to get certificate CRL").
+        ISSUER_CRL_FILE,
         "ca.srl", "node.crt", "node.key", MANIFEST_FILE, README_FILE};
     if (!force) {
         for (const char* name : setFiles) {

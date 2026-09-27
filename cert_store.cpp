@@ -375,7 +375,12 @@ bool Write(uint32_t fileInstance, int32_t fileStart, const uint8_t* data, uint32
         return false;
     }
     // -1 = append (cl. 14.2.1.3.1); the ACK must report where the write began.
-    const size_t start = (fileStart < 0) ? s->bytes.size() : (size_t)fileStart;
+    // Any other negative start is invalid.
+    if (fileStart < -1) {
+        *errorCode = ERROR_INVALID_FILE_START_POSITION;
+        return false;
+    }
+    const size_t start = (fileStart == -1) ? s->bytes.size() : (size_t)fileStart;
     if (start > s->bytes.size()) {
         *errorCode = ERROR_INVALID_FILE_START_POSITION;  // no holes
         return false;
