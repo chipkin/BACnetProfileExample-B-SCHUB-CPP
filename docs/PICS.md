@@ -56,8 +56,10 @@ trending (T-*).
 It executes the device-B side of the BACnet/SC certificate procedures
 (135-2024 clause 19.8.3): WriteProperty `File_Size` and AtomicWriteFile into
 the operational and issuer certificate File objects, applied by
-ReinitializeDevice `ACTIVATE_CHANGES`/`WARMSTART` after validation.
-`GENERATE_CSR_FILE` is not supported.
+ReinitializeDevice `ACTIVATE_CHANGES`/`WARMSTART` after validation, and the
+Network Port `Command` values `DISCARD_CHANGES` (drops staged certificate
+writes) and `GENERATE_CSR_FILE` (new key pair and certificate signing request,
+Network Port 2).
 
 ## 4. Application services supported
 
@@ -72,7 +74,7 @@ ReinitializeDevice `ACTIVATE_CHANGES`/`WARMSTART` after validation.
 | DeviceCommunicationControl | no | **yes** |
 | AtomicReadFile | no | **yes** |
 | AtomicWriteFile | no | **yes** (certificate File objects 1, 3, 4) |
-| WriteProperty | no | **yes** (`File_Size` of File objects 1, 3, 4 only) |
+| WriteProperty | no | **yes** (`File_Size` of File objects 1, 3, 4, and Network Port `Command`, only) |
 | ReinitializeDevice | no | **yes** (`ACTIVATE_CHANGES`, `WARMSTART` only) |
 
 An unsolicited I-Am is broadcast at start-up, as well as in response to
@@ -89,8 +91,9 @@ Segmentation is **not supported** in either direction
 
 ## 6. Standard object types supported
 
-No object is dynamically creatable or deletable. The only writable property
-is `File_Size` of File objects 1, 3 and 4 (certificate procedures).
+No object is dynamically creatable or deletable. The only writable properties
+are `File_Size` of File objects 1, 3 and 4 and `Command` of both Network Port
+objects (certificate procedures).
 
 | Object type | Instance | Object_Name | Optional properties supported |
 |---|:---:|---|---|
@@ -197,7 +200,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Units | BACnetEngineeringUnits | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 1 "BACnet IP" - BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below, unless --bacnet-ip off (BACnet/SC only) leaves this object out altogether. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown unless --ip-network-number sets it (then quality configured); the device is not a router
+### Network Port 1 "BACnet IP" - BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below, unless --bacnet-ip off (BACnet/SC only) leaves this object out altogether. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown unless --ip-network-number sets it (then quality configured); the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack: DISCARD_CHANGES reverts a pending Network_Number
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -211,9 +214,10 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Network_Type | BACnetNetworkType | app | no |
 | Protocol_Level | BACnetProtocolLevel | app | no |
 | Changes_Pending | Boolean | app | no |
+| Command | BACnetNetworkPortCommand | stack | yes |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener) and the optional hub connector; the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1
+### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener) and the optional hub connector; the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -227,6 +231,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Network_Type | BACnetNetworkType | app | no |
 | Protocol_Level | BACnetProtocolLevel | app | no |
 | Changes_Pending | Boolean | app | no |
+| Command | BACnetNetworkPortCommand | stack | yes |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
 ### File 1 "Operational Certificate" - writable over BACnet (clause 19.8.3): File_Size and AtomicWriteFile, staged until ReinitializeDevice ACTIVATE_CHANGES/WARMSTART, which validates the set (parses, matches the hub's private key, chains to an issuer) before writing operational-certificate.pem and reloading TLS. Serves the hub's operational certificate via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date come from the staged copy or the file on disk
@@ -245,7 +250,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. GENERATE_CSR_FILE is not supported (cas-bacnet-stack#2976), so this CSR is for the hub's existing key
+### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|

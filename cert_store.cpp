@@ -40,6 +40,10 @@ struct Staged {
 
 Layout g_layout;
 std::map<uint32_t, Staged> g_staged;  // file instance -> staged contents
+// Set by ValidateStaged() when the staged operational certificate is for the
+// pending key (GENERATE_CSR_FILE) rather than the current one; CommitStaged()
+// then swaps the pending key in.
+bool g_commitPromotesPendingKey = false;
 
 bool ReadDisk(const std::string& path, std::string* out) {
     FILE* f = fopen(path.c_str(), "rb");
@@ -124,6 +128,19 @@ std::string Effective(uint32_t fileInstance) {
         bytes.clear();
     }
     return bytes;
+}
+
+// A PEM private key from disk, or nullptr. The caller frees it.
+EVP_PKEY* LoadKey(const std::string& path) {
+    std::string keyPem;
+    if (path.empty() || !ReadDisk(path, &keyPem)) {
+        return nullptr;
+    }
+    BIO* bio = BIO_new_mem_buf(keyPem.data(), (int)keyPem.size());
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    ERR_clear_error();
+    return key;
 }
 
 bool AtomicWriteFileToDisk(const std::string& path, const std::string& bytes, std::string* reason) {
@@ -260,25 +277,26 @@ bool ValidateStaged(std::string* reason) {
     }
 
     bool ok = true;
-    // It must belong to this hub's private key: GENERATE_CSR_FILE isn't
-    // available (issue #10), so a new operational certificate has to be
-    // issued for the key behind the Certificate Signing Request File object.
-    std::string keyPem;
-    EVP_PKEY* key = nullptr;
-    if (ReadDisk(g_layout.privateKeyPath, &keyPem)) {
-        BIO* bio = BIO_new_mem_buf(keyPem.data(), (int)keyPem.size());
-        key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
-        BIO_free(bio);
-    }
-    if (key == nullptr) {
+    // It must belong to this hub's private key, or to the pending key from
+    // GENERATE_CSR_FILE: a new operational certificate is issued for the key
+    // behind the Certificate Signing Request File object.
+    g_commitPromotesPendingKey = false;
+    EVP_PKEY* key = LoadKey(g_layout.privateKeyPath);
+    EVP_PKEY* pendingKey = LoadKey(g_layout.pendingPrivateKeyPath);
+    if (key != nullptr && X509_check_private_key(operational[0], key) == 1) {
+        // The current key: nothing else changes.
+    } else if (pendingKey != nullptr && X509_check_private_key(operational[0], pendingKey) == 1) {
+        g_commitPromotesPendingKey = true;
+    } else if (key == nullptr) {
         *reason = "could not read this hub's private key \"" + g_layout.privateKeyPath + "\"";
         ok = false;
-    } else if (X509_check_private_key(operational[0], key) != 1) {
+    } else {
         *reason = "the operational certificate does not match this hub's private key (sign the "
                   "Certificate Signing Request File instead)";
         ok = false;
     }
     EVP_PKEY_free(key);
+    EVP_PKEY_free(pendingKey);
     ERR_clear_error();
 
     // ...and chain to one of the issuers, or no peer would accept this hub.
@@ -330,11 +348,88 @@ bool CommitStaged(std::string* reason) {
         }
     }
     g_staged.clear();
+    if (g_commitPromotesPendingKey) {
+        // The new certificate is on disk; its key goes in next, so TLS (reloaded
+        // after this returns) loads a matching pair.
+        g_commitPromotesPendingKey = false;
+#if defined(_WIN32)
+        const bool moved = MoveFileExA(g_layout.pendingPrivateKeyPath.c_str(), g_layout.privateKeyPath.c_str(),
+                                       MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+        const bool moved = std::rename(g_layout.pendingPrivateKeyPath.c_str(), g_layout.privateKeyPath.c_str()) == 0;
+#endif
+        if (!moved) {
+            *reason = "could not replace \"" + g_layout.privateKeyPath + "\" with the pending key \"" +
+                      g_layout.pendingPrivateKeyPath + "\"";
+            return false;
+        }
+    }
     return true;
 }
 
 void DiscardStaged() {
     g_staged.clear();
+    g_commitPromotesPendingKey = false;
+}
+
+bool GenerateKeyAndCsr(std::string* reason) {
+    if (!g_staged.empty()) {
+        *reason = "certificate writes are staged - activate or discard them first";
+        return false;
+    }
+    const auto csrPath = g_layout.paths.find(g_layout.csrInstance);
+    if (csrPath == g_layout.paths.end() || g_layout.pendingPrivateKeyPath.empty()) {
+        *reason = "no Certificate Signing Request file configured";
+        return false;
+    }
+    // The subject stays the same: the new certificate identifies the same hub.
+    std::vector<X509*> operational;
+    std::string why;
+    if (!ParseCertificates(Effective(g_layout.operationalInstance), &operational, &why) || operational.empty()) {
+        FreeAll(&operational);
+        *reason = "could not read the current operational certificate for its subject" +
+                  (why.empty() ? std::string() : ": " + why);
+        return false;
+    }
+
+    EVP_PKEY* key = EVP_EC_gen("P-256");
+    X509_REQ* request = X509_REQ_new();
+    bool ok = key != nullptr && request != nullptr &&
+              X509_REQ_set_version(request, 0) == 1 &&
+              X509_REQ_set_subject_name(request, X509_get_subject_name(operational[0])) == 1 &&
+              X509_REQ_set_pubkey(request, key) == 1 &&
+              X509_REQ_sign(request, key, EVP_sha256()) > 0;
+    FreeAll(&operational);
+    std::string keyPem;
+    std::string csrPem;
+    if (ok) {
+        BIO* keyBio = BIO_new(BIO_s_mem());
+        BIO* csrBio = BIO_new(BIO_s_mem());
+        ok = PEM_write_bio_PrivateKey(keyBio, key, NULL, NULL, 0, NULL, NULL) == 1 &&
+             PEM_write_bio_X509_REQ(csrBio, request) == 1;
+        char* p = nullptr;
+        long n = BIO_get_mem_data(keyBio, &p);
+        keyPem.assign(p, (size_t)n);
+        n = BIO_get_mem_data(csrBio, &p);
+        csrPem.assign(p, (size_t)n);
+        BIO_free(keyBio);
+        BIO_free(csrBio);
+    }
+    X509_REQ_free(request);
+    EVP_PKEY_free(key);
+    ERR_clear_error();
+    if (!ok) {
+        *reason = "OpenSSL could not generate the key pair or the request";
+        return false;
+    }
+    // The key first: a CSR on disk without its key could never be used.
+    if (!AtomicWriteFileToDisk(g_layout.pendingPrivateKeyPath, keyPem, reason)) {
+        return false;
+    }
+    std::error_code ec;
+    fs::permissions(g_layout.pendingPrivateKeyPath, fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace, ec);  // like private-key.pem - see cert_tool.cpp WritePem
+    return AtomicWriteFileToDisk(csrPath->second, csrPem, reason);
 }
 
 bool StageWholeFile(uint32_t fileInstance, const std::string& bytes, uint32_t* errorCode) {
@@ -365,23 +460,21 @@ bool InstallCertificateSigningRequest(uint32_t fileInstance, const std::string& 
         ok = false;
     }
     if (ok) {
-        // It must be for this hub's own key, or a certificate signed from it
-        // could never be installed (ValidateStaged would refuse it).
-        std::string keyPem;
-        EVP_PKEY* key = nullptr;
-        if (ReadDisk(g_layout.privateKeyPath, &keyPem)) {
-            BIO* keyBio = BIO_new_mem_buf(keyPem.data(), (int)keyPem.size());
-            key = PEM_read_bio_PrivateKey(keyBio, NULL, NULL, NULL);
-            BIO_free(keyBio);
-        }
+        // It must be for this hub's own key (or the pending one from
+        // GENERATE_CSR_FILE), or a certificate signed from it could never be
+        // installed (ValidateStaged would refuse it).
+        EVP_PKEY* key = LoadKey(g_layout.privateKeyPath);
+        EVP_PKEY* pendingKey = LoadKey(g_layout.pendingPrivateKeyPath);
         if (key == nullptr) {
             *reason = "could not read this hub's private key \"" + g_layout.privateKeyPath + "\"";
             ok = false;
-        } else if (EVP_PKEY_eq(requestKey, key) != 1) {
+        } else if (EVP_PKEY_eq(requestKey, key) != 1 &&
+                   (pendingKey == nullptr || EVP_PKEY_eq(requestKey, pendingKey) != 1)) {
             *reason = "the certificate signing request is not for this hub's private key";
             ok = false;
         }
         EVP_PKEY_free(key);
+        EVP_PKEY_free(pendingKey);
     }
     X509_REQ_free(request);
     ERR_clear_error();

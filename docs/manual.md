@@ -470,13 +470,17 @@ Supported procedures:
 - **Replace the hub certificate** - read the CSR (File 2), have your CA sign
   it, write the result to File 1, activate.
 
-Not yet supported: the Network Port `Command` property, so neither key-pair
-regeneration (`GENERATE_CSR_FILE`, waiting on
-[cas-bacnet-stack#2976](https://github.com/chipkin/cas-bacnet-stack/issues/2976))
-nor `DISCARD_CHANGES`
-([#29](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/29)).
-To drop staged writes, write the file's original contents back, or restart
-the hub (a restart discards staged writes).
+- **Replace the hub certificate with a new key pair** - write
+  `GENERATE_CSR_FILE` (9) to Network Port 2's `Command`. The hub makes a new
+  key pair and a new CSR (File 2) with the same subject, saving the new key as
+  `private-key-pending.pem`; it keeps using its current key and certificate
+  meanwhile. Have the new CSR signed, write the result to File 1 and activate:
+  the new key then replaces `private-key.pem`. Refused with
+  `INVALID_VALUE_IN_THIS_STATE` while certificate writes are staged.
+- **Discard staged writes** - write `DISCARD_CHANGES` (1) to Network Port 2's
+  `Command`. The staged certificate writes are dropped, the File objects read
+  the files on disk again, and `Changes_Pending` goes back to FALSE. A restart
+  also discards staged writes.
 
 **Known issue:** right after the hub starts, Network Port 2 reads
 `Changes_Pending` = TRUE (and `Current_Health` may report

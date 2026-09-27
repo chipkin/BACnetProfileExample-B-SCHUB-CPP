@@ -165,9 +165,13 @@ certificate set first. The HTTP status page is at <http://127.0.0.1:8080/>.
 - Implement **only** the services and objects the B-SCHUB profile requires -
   but expose **every required property** of each object for Protocol_Revision
   30. No commandable outputs, and WriteProperty only for the certificate File
-  objects' `File_Size` (the clause 19.8.3 certificate procedures, with
-  AtomicWriteFile and ReinitializeDevice ACTIVATE_CHANGES/WARMSTART) - this
-  profile does not require DS-WP-B.
+  objects' `File_Size` and the Network Ports' `Command` (the clause 19.8.3
+  certificate procedures, with AtomicWriteFile, ReinitializeDevice
+  ACTIVATE_CHANGES/WARMSTART, and the `NetworkPortCommand` callback for
+  DISCARD_CHANGES/GENERATE_CSR_FILE) - this profile does not require DS-WP-B.
+  GENERATE_CSR_FILE's new key stays in `private-key-pending.pem` until a
+  certificate for it is activated; never swap it in earlier, or the hub runs
+  with a key that has no certificate.
 - **Never destroy the last TLS lws_context.** `ScTransport` keeps a
   process-lifetime context (`EnsureTlsLifetimeContext`), because destroying
   the last context created with `LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT` tears

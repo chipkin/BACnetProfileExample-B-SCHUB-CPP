@@ -17,6 +17,16 @@ Open work is tracked in
   Stack's new compatibility flag 0x02 (cas-bacnet-stack#3097); it combines with
   `--sc-accept-hub-without-hello` (0x01). The hub logs a warning at start-up
   while it is on.
+- Network Port `Command` (cl. 12.56.16) on both Network Ports, writable
+  (CAS BACnet Stack `issues/runbook` 9533157d: cas-bacnet-stack#2552/#3095,
+  #2557, #2976):
+  - `DISCARD_CHANGES` drops staged certificate writes; the File objects read
+    the files on disk again and `Changes_Pending` goes back to FALSE (#29).
+  - `GENERATE_CSR_FILE` on Network Port 2 makes a new P-256 key pair and a new
+    Certificate Signing Request (File 2) with the same subject. The new key
+    waits in `private-key-pending.pem` and replaces `private-key.pem` when a
+    certificate signed for it is activated (#10).
+- `tests/sc/cert_procedure_test.py` covers both commands (28 checks).
 
 ## [1.3.0] - 2026-09-26
 

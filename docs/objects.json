@@ -31,9 +31,9 @@
       "name": "BACnet IP",
       "app": ["Object_Name", "Description", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
       "enabled": ["Description"],
-      "writable": [],
+      "writable": ["Command"],
       "accepted": ["Reliability"],
-      "note": "BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below, unless --bacnet-ip off (BACnet/SC only) leaves this object out altogether. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown unless --ip-network-number sets it (then quality configured); the device is not a router"
+      "note": "BACnet/IP; kept active throughout so this example stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below, unless --bacnet-ip off (BACnet/SC only) leaves this object out altogether. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown unless --ip-network-number sets it (then quality configured); the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack: DISCARD_CHANGES reverts a pending Network_Number"
     },
     {
       "type": "Network Port",
@@ -41,9 +41,9 @@
       "name": "BACnet SC",
       "app": ["Object_Name", "Description", "Out_Of_Service", "Network_Type", "Protocol_Level", "Changes_Pending"],
       "enabled": ["Description"],
-      "writable": [],
+      "writable": ["Command"],
       "accepted": ["Reliability"],
-      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener) and the optional hub connector; the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1"
+      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener) and the optional hub connector; the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp"
     },
     {
       "type": "File",
@@ -63,7 +63,7 @@
       "enabled": ["Description"],
       "writable": [],
       "accepted": [],
-      "note": "read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. GENERATE_CSR_FILE is not supported (cas-bacnet-stack#2976), so this CSR is for the hub's existing key"
+      "note": "read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated"
     },
     {
       "type": "File",

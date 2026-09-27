@@ -67,11 +67,11 @@ hub's certificate.
 
 ## Getting the hub's certificate signed
 
-The hub can't generate a new key pair on request (the Network Port
-`GENERATE_CSR_FILE` command isn't available yet, see
-[#10](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/10)).
-So the key pair and CSR are made once, on the hub's own machine, and the key
-never leaves it:
+Either let a certificate tool ask the hub for a new key pair - it writes
+`GENERATE_CSR_FILE` to Network Port 2's `Command`, reads the new CSR from File
+2, and later writes the signed certificate back (see the manual, "Managing
+certificates over BACnet"); the key is made on the hub and never leaves it -
+or make the key pair and CSR yourself, once, on the hub's own machine:
 
 ```bash
 cd certs

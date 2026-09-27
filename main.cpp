@@ -391,6 +391,10 @@ static const uint32_t SERVICE_ATOMIC_WRITE_FILE = 7;     // BACnetServicesSuppor
 // BACnetReinitializedStateOfDevice activateChanges (WARMSTART comes from common/).
 static const uint32_t REINITIALIZE_STATE_ACTIVATE_CHANGES = 7;
 static const uint32_t ERROR_CODE_INVALID_CONFIGURATION_DATA = 46;
+// BACnetNetworkPortCommand values the stack forwards to NetworkPortCommand
+// (cl. 12.56.16) - the rest it executes itself.
+static const uint32_t NETWORK_PORT_COMMAND_DISCARD_CHANGES = 1;
+static const uint32_t NETWORK_PORT_COMMAND_GENERATE_CSR_FILE = 9;
 
 // Set by the ReinitializeDevice callback once new certificates are committed;
 // the main loop then reloads the TLS contexts (see ScTransport::ReloadCredentials).
@@ -1156,7 +1160,8 @@ bool CallbackReadFile(const uint32_t deviceInstance, const uint32_t fileInstance
 // -----------------------------------------------------------------------------
 
 // Only the operational certificate and the two issuer slots are writable; the
-// Certificate Signing Request (File 2) is read-only - GENERATE_CSR_FILE isn't available (issue #10).
+// Certificate Signing Request (File 2) is read-only - the hub writes it itself
+// on GENERATE_CSR_FILE (NetworkPortCommand below).
 static bool IsWritableScCertFileInstance(const uint32_t fileInstance) {
     return fileInstance == FILE_OPERATIONAL_CERT_INSTANCE ||
            fileInstance == FILE_ISSUER_CERT_1_INSTANCE ||
@@ -1267,6 +1272,54 @@ bool ReinitializeDevice(const uint32_t deviceInstance, const uint32_t reinitiali
                           "ReinitializeDevice: new certificates saved; reloading BACnet/SC TLS");
     g_scReloadCredentialsRequested = true;  // done in the main loop, outside the stack's callback
     return true;
+}
+
+// Network Port Command (cl. 12.56.16), IFC-061. The stack executes the
+// Command property itself and asks the application about the two commands
+// that touch data only the application holds:
+//   DISCARD_CHANGES (1) - any port, before the stack reverts its own pending
+//     changes. On the BACnet/SC port the staged certificate writes are thrown
+//     away (cl. 12.56.100/.101 "revert the file data"); the BACnet/IP port has
+//     nothing of ours staged. Answering true lets the stack finish the revert.
+//   GENERATE_CSR_FILE (9) - the BACnet/SC port, only when Changes_Pending is
+//     FALSE. A new key pair and Certificate Signing Request (File 2); the new
+//     key stays pending until a certificate for it is activated - see
+//     cert_store.h. Synchronous: P-256 generation takes milliseconds.
+bool NetworkPortCommand(const uint32_t deviceInstance, const uint32_t networkPortInstance,
+                        const uint32_t command, uint32_t* errorCode) {
+    if (deviceInstance != g_deviceInstance) {
+        *errorCode = ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+        return false;
+    }
+    if (command == NETWORK_PORT_COMMAND_DISCARD_CHANGES) {
+        if (networkPortInstance == SC_NETWORK_PORT_INSTANCE && CertStore::HasStagedChanges()) {
+            CertStore::DiscardStaged();
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                                  "Network Port %u Command DISCARD_CHANGES: staged certificate writes discarded",
+                                  networkPortInstance);
+        } else {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                                  "Network Port %u Command DISCARD_CHANGES", networkPortInstance);
+        }
+        return true;
+    }
+    if (command == NETWORK_PORT_COMMAND_GENERATE_CSR_FILE && networkPortInstance == SC_NETWORK_PORT_INSTANCE) {
+        std::string reason;
+        if (!CertStore::GenerateKeyAndCsr(&reason)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                                  "Network Port %u Command GENERATE_CSR_FILE: FAILED: %s",
+                                  networkPortInstance, reason.c_str());
+            *errorCode = ERROR_CODE_INVALID_CONFIGURATION_DATA;
+            return false;
+        }
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                              "Network Port %u Command GENERATE_CSR_FILE: new key pair and certificate signing "
+                              "request (File %u) - the hub keeps its current key until a certificate for the new "
+                              "one is activated", networkPortInstance, FILE_CSR_INSTANCE);
+        return true;
+    }
+    *errorCode = ERROR_CODE_OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED;
+    return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -2232,6 +2285,8 @@ static int RunHub(int argc, char** argv) {
         layout.issuerInstances = {FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE};
         layout.privateKeyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
             g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+        layout.pendingPrivateKeyPath = g_scCertDir + "/" + CertTool::PENDING_PRIVATE_KEY_FILE;
+        layout.csrInstance = FILE_CSR_INSTANCE;
         CertStore::SetLayout(layout);
 
         // TLS trusts every issuer in both slots. With no certificates yet, fall
@@ -2283,6 +2338,8 @@ static int RunHub(int argc, char** argv) {
     BACnetStack_RegisterCallbackWriteFile(CallbackWriteFile);
     BACnetStack_RegisterCallbackSetPropertyUnsignedInteger(SetPropertyUnsignedInteger);
     BACnetStack_RegisterCallbackReinitializeDevice(ReinitializeDevice);
+    // Network Port Command DISCARD_CHANGES / GENERATE_CSR_FILE (IFC-061) - see 2d-ii.
+    BACnetStack_RegisterCallbackNetworkPortCommand(NetworkPortCommand);
 
     // --- Create the device --------------------------------------------------
     if (!BACnetStack_AddDevice(g_deviceInstance)) {

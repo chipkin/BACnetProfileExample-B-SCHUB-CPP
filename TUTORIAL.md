@@ -149,9 +149,12 @@ deployment's certificate story needs, at minimum:
    certificate and add a second issuer over BACnet (clause 19.8.3 - see
    docs/manual.md "Managing certificates over BACnet"); the hub validates the new
    set and restarts BACnet/SC without restarting the process.
-   What this example does **not** implement: automatic renewal before
-   expiry, key-pair regeneration (`GENERATE_CSR_FILE`, see point 4 below), or
-   alerting when a certificate is close to expiring (the hub only logs a
+   Key-pair regeneration is there too: a client writes `GENERATE_CSR_FILE`
+   to Network Port 2's `Command`, and `main.cpp`'s `NetworkPortCommand`
+   callback has `CertStore::GenerateKeyAndCsr()` make a new key (kept pending
+   until a certificate for it is activated) and CSR. What this example does
+   **not** implement: automatic renewal before expiry, or alerting when a
+   certificate is close to expiring (the hub only logs a
    warning at start-up). The lab CA is valid 10 years and the hub and device
    certificates 825 days (`cert_tool.cpp`).
 3. **A hostname/identity policy decision.** `ScTransport::Connect()` passes
@@ -168,9 +171,10 @@ deployment's certificate story needs, at minimum:
    stack does not expose a UUID-in-SAN binding check, and (point 4) has no
    certificate-validation callback at all.
 4. **Certificate validation is yours, not the stack's.** The stack has no
-   TLS path and no certificate-validation or CSR-generation callback. The two
-   it used to declare were never called and were removed (stack IFC-039,
-   #988). All validation happens in `ScTransport`'s TLS contexts, via
+   TLS path and no certificate-validation callback (the two it used to
+   declare were never called and were removed, stack IFC-039, #988). Its one
+   certificate hook is the Network Port Command callback (IFC-061), which
+   asks the application to make a new key and CSR on `GENERATE_CSR_FILE`. All validation happens in `ScTransport`'s TLS contexts, via
    OpenSSL. See `sc_transport/README.md`'s certificate-policy section for
    what that gives you (CA-chain validation only).
 

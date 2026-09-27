@@ -430,7 +430,16 @@ certificate-signing-request.pem                                   PUBLIC
     new operational certificate. BACnetExampleBSCHUB serves it as File 2
     ("Certificate Signing Request"). To move the hub onto your own PKI, give
     this file to your CA and install the certificate it returns as
-    operational-certificate.pem.
+    operational-certificate.pem. A configuration tool can also have the hub
+    make a new key pair and a new request (the Network Port's Command
+    GENERATE_CSR_FILE); the request here is then for the new key.
+
+private-key-pending.pem                                           PRIVATE
+    Only present after a GENERATE_CSR_FILE: the new key behind
+    certificate-signing-request.pem. The hub keeps using private-key.pem
+    until a certificate signed for this key is installed and activated;
+    then this file replaces private-key.pem. Keep it as private as
+    private-key.pem.
 
 issuer-certificate.pem                                            PUBLIC
     The certificate of the issuer (certificate authority) that signed every
@@ -844,7 +853,7 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
     // Every file a certificate set owns, in both namings.
     const char* const setFiles[] = {
         ISSUER_CERTIFICATE_FILE, ISSUER_PRIVATE_KEY_FILE, OPERATIONAL_CERTIFICATE_FILE,
-        PRIVATE_KEY_FILE, CERTIFICATE_SIGNING_REQUEST_FILE,
+        PRIVATE_KEY_FILE, PENDING_PRIVATE_KEY_FILE, CERTIFICATE_SIGNING_REQUEST_FILE,
         LEGACY_ISSUER_CERTIFICATE_FILE, LEGACY_ISSUER_PRIVATE_KEY_FILE,
         LEGACY_OPERATIONAL_CERTIFICATE_FILE, LEGACY_PRIVATE_KEY_FILE,
         LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE, ISSUER_CERTIFICATE_2_FILE, TRUSTED_ISSUERS_FILE,
