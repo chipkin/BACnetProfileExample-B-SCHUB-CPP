@@ -3,6 +3,7 @@
 // Implementation of HttpServer. See HttpServer.h for the contract and the
 // safety reasoning behind every design choice made here.
 #include "HttpServer.h"
+#include "LogSafe.h"
 
 #include "CASExampleLog.h"
 
@@ -317,7 +318,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - upload endpoint is disabled "
             "(http-upload-token is not configured).",
-            peer, session->slot.c_str());
+            peer, SafeForLog(session->slot).c_str());
         SendResponse(wsi, session, 503, "text/plain",
                     "certificate upload is disabled: no http-upload-token is configured.\n");
         return;
@@ -327,7 +328,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (session->rateLimited) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REFUSED from %s: slot=\"%s\" - %s limit reached (%u attempts a minute per client, "
-            "%u in total)", peer, session->slot.c_str(), session->rateLimitWhich, kUploadAttemptsPerClient,
+            "%u in total)", peer, SafeForLog(session->slot).c_str(), session->rateLimitWhich, kUploadAttemptsPerClient,
             kUploadAttemptsTotal);
         SendResponse(wsi, session, 429, "text/plain", "too many upload attempts; try again in a minute.\n");
         return;
@@ -335,7 +336,7 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (!session->authOk) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - missing/invalid bearer token.",
-            peer, session->slot.c_str());
+            peer, SafeForLog(session->slot).c_str());
         SendResponse(wsi, session, 401, "text/plain",
                     "missing or invalid Authorization: Bearer <http-upload-token> header.\n");
         return;
@@ -343,14 +344,14 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (!session->slotKnown) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: unknown slot \"%s\" (uri \"%s\").",
-            peer, session->slot.c_str(), session->uri.c_str());
+            peer, SafeForLog(session->slot).c_str(), SafeForLog(session->uri).c_str());
         SendResponse(wsi, session, 404, "text/plain", "unknown certificate slot.\n");
         return;
     }
     if (session->tooLarge || session->body.size() < kMinUploadBytes || session->body.size() > kMaxUploadBytes) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" - size %zu bytes out of bounds (%zu..%zu).",
-            peer, session->slot.c_str(), session->body.size(), kMinUploadBytes, kMaxUploadBytes);
+            peer, SafeForLog(session->slot).c_str(), session->body.size(), kMinUploadBytes, kMaxUploadBytes);
         SendResponse(wsi, session, 413, "text/plain", "upload rejected: size out of bounds.\n");
         return;
     }
@@ -367,13 +368,13 @@ void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
     if (status != 200) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "cert upload REJECTED from %s: slot=\"%s\" (%zu bytes) - %s",
-            peer, session->slot.c_str(), session->body.size(), message.c_str());
+            peer, SafeForLog(session->slot).c_str(), session->body.size(), message.c_str());
         SendResponse(wsi, session, status, "text/plain", "upload rejected: " + message + "\n");
         return;
     }
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
         "cert upload SUCCESS from %s: slot=\"%s\" (%zu bytes) - %s",
-        peer, session->slot.c_str(), session->body.size(), message.c_str());
+        peer, SafeForLog(session->slot).c_str(), session->body.size(), message.c_str());
     SendResponse(wsi, session, 200, "application/json",
                 "{\"status\":\"ok\",\"slot\":\"" + session->slot + "\",\"bytes\":" +
                 std::to_string(session->body.size()) + "}");

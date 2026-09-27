@@ -141,7 +141,13 @@ bool SplitPemBlocks(const std::string& pem, const std::string& label, std::vecto
         }
         const std::string found = pem.substr(labelStart, labelEnd - labelStart);
         if (found != label) {
-            *reason = "holds a \"" + found.substr(0, 40) + "\" PEM block (only " + label + " is allowed here)";
+            // The label is the writer's text and ends up in log lines: keep
+            // printable ASCII only (issue #64).
+            std::string shown;
+            for (const char c : found.substr(0, 40)) {
+                shown += (c >= 0x20 && c < 0x7f) ? c : '?';
+            }
+            *reason = "holds a \"" + shown + "\" PEM block (only " + label + " is allowed here)";
             return false;
         }
         const std::string endMarker = "-----END " + label + kDashes;

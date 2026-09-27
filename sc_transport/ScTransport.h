@@ -457,6 +457,10 @@ private:
     // so Service() can bring it back after a failed restart (issue #61): the
     // stack still believes it is listening and won't ask again.
     std::string m_wantedListenUri;
+    // Rate-limit refusals: when the last one was logged, and how many were
+    // refused without a log line since then (issue #64).
+    std::chrono::steady_clock::time_point m_lastRateLimitLog;
+    uint64_t m_rateLimitLogSuppressed = 0;
     uint64_t m_nextClientId = 1;
 
     // Heap-allocated (not a fixed-size member array) so this header does not

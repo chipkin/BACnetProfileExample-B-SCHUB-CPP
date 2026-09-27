@@ -2,6 +2,7 @@
 // Public-domain example code (CC0) - see ../LICENSE.
 // Implementation of ScTransport. See ScTransport.h for the contract.
 #include "ScTransport.h"
+#include "LogSafe.h"
 
 #include "CASExampleLog.h"
 
@@ -62,6 +63,9 @@ const std::size_t kMaxIngressBytes = 1600;
 // without a restart). The listener waits kListenRetryInterval between failed
 // attempts so a port that stays busy is not re-bound 30 times a second.
 const std::chrono::seconds kListenRetryInterval(5);
+
+// At most one "SC rate limit: refusing ..." line per this interval (issue #64).
+const std::chrono::seconds kRateLimitLogInterval(10);
 
 bool FileReadable(const std::string& path) {
     if (path.empty()) {
@@ -306,7 +310,7 @@ std::string PeerCertificateSubject(lws* wsi) {
         BIO_free(bio);
     }
     X509_free(cert);
-    return subject;
+    return SafeForLog(subject);  // the peer chose it - see LogSafe.h
 }
 
 // Diagnostic Item 1: makes a rejected mTLS handshake visible. Before this, a
@@ -381,7 +385,7 @@ int LogClientCertVerificationResult(void* user, void* in, std::size_t len) {
     CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
         "SC TLS handshake REJECTED - client certificate failed verification: \"%s\" (OpenSSL error code %d); "
         "presented cert subject CN=\"%s\" issuer CN=\"%s\"",
-        errorText, errorCode, subjectCn.c_str(), issuerCn.c_str());
+        errorText, errorCode, SafeForLog(subjectCn).c_str(), SafeForLog(issuerCn).c_str());
     return 1;  // fail the cert - mirrors OpenSSL's own preverify_ok=0 decision, does not override it
 }
 
@@ -1377,7 +1381,7 @@ void ScTransport::AuditSentFrame(PeerConnection* peer, const uint8_t* data, cons
             const unsigned errorClass = (static_cast<unsigned>(data[offset + 3]) << 8) | data[offset + 4];
             const unsigned errorCode = (static_cast<unsigned>(data[offset + 5]) << 8) | data[offset + 6];
             const std::string details(reinterpret_cast<const char*>(data) + offset + 7, len - (offset + 7));
-            reason = (details.empty() ? std::string("no details") : "\"" + details + "\"") +
+            reason = (details.empty() ? std::string("no details") : "\"" + SafeForLog(details) + "\"") +
                      ", error class " + std::to_string(errorClass) + " code " + std::to_string(errorCode);
         }
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
@@ -1446,12 +1450,26 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             const char* limitHit = "";
             if (!AllowNewConnectionAttempt(address, &limitHit)) {
                 ++m_rateLimitRejections;
+                // One line per kRateLimitLogInterval at most: a flood from many
+                // addresses would otherwise write thousands of lines a second on
+                // the thread that runs the stack, and rotate the useful history
+                // out of --log-file (issue #64). /metrics counts every refusal.
+                const auto now = std::chrono::steady_clock::now();
+                if (m_lastRateLimitLog != std::chrono::steady_clock::time_point() &&
+                    now - m_lastRateLimitLog < kRateLimitLogInterval) {
+                    ++m_rateLimitLogSuppressed;
+                    return -1;
+                }
+                m_lastRateLimitLog = now;
+                const std::string more = m_rateLimitLogSuppressed == 0 ? std::string() :
+                    " (and " + std::to_string(m_rateLimitLogSuppressed) + " more refused since the last message)";
+                m_rateLimitLogSuppressed = 0;
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                     "SC rate limit: refusing a new connection from %s on %s - %s limit of %u attempt(s)/sec "
-                    "reached (refused before the TLS handshake; see --sc-rate-limit%s)",
+                    "reached (refused before the TLS handshake; see --sc-rate-limit%s)%s",
                     address.c_str(), m_listenUri.c_str(), limitHit,
                     (unsigned)(std::strcmp(limitHit, "total") == 0 ? m_totalRateLimit : m_perAddressRateLimit),
-                    std::strcmp(limitHit, "total") == 0 ? "-total" : "");
+                    std::strcmp(limitHit, "total") == 0 ? "-total" : "", more.c_str());
                 return -1;
             }
             break;
@@ -1478,7 +1496,8 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                 const std::string peerAddress = PeerAddressPort(wsi);
                 CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
                     "BACnet/SC: refusing a WebSocket upgrade from %s - it asked for subprotocol(s) \"%s\", "
-                    "this hub speaks \"%s\" (HTTP 400)", peerAddress.c_str(), requested, m_acceptSubprotocol.c_str());
+                    "this hub speaks \"%s\" (HTTP 400)", peerAddress.c_str(), SafeForLog(requested).c_str(),
+                    m_acceptSubprotocol.c_str());
                 // Written by hand rather than with lws_return_http_status(): at
                 // this point lws hasn't recorded the request's HTTP version, so
                 // that helper answers "HTTP/1.0", which WebSocket clients
@@ -1522,7 +1541,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                     ? "direct-connect (dc.bsc.bacnet.org) not supported by this hub"
                     : "unsupported subprotocol";
                 fprintf(stderr, "BACnet/SC: rejecting connection - client asked for subprotocol(s) "
-                                "\"%s\", not \"%s\"\n", requested, m_acceptSubprotocol.c_str());
+                                "\"%s\", not \"%s\"\n", SafeForLog(requested).c_str(), m_acceptSubprotocol.c_str());
                 lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,
                                  (unsigned char*)closeReason, static_cast<unsigned int>(strlen(closeReason)));
                 return -1;
