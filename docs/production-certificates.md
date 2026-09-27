@@ -226,8 +226,9 @@ and subjectAltName are mostly for people:
 - **The hub's key** (`private-key.pem`) must be readable only by the account
   that runs the hub:
   - Linux: `chown bacnethub: private-key.pem && chmod 600 private-key.pem`
-  - Windows: `icacls private-key.pem /inheritance:r /grant:r "%USERNAME%:F"`
-    (or the service account's name when the hub runs as a service).
+  - Windows: `icacls private-key.pem /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`
+    (SYSTEM - the account the Windows service runs as - and Administrators
+    keep access; name a different service account if you changed it).
 - **Keep the CA's key off the hub.** `issuer-private-key.pem` is only created
   by `--generate-certs` for lab use. A production CA key belongs on the CA,
   ideally offline or in an HSM.

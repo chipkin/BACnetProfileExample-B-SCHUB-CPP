@@ -343,8 +343,11 @@ file**, so they never show up in process listings or shell history.
 `http-upload-token` is the separate secret for the HTTP certificate upload
 (use a different value - the hub warns if they match). Both are compared in
 constant time. Restrict the file's permissions (`chmod 600 hub.conf`, or on
-Windows `icacls hub.conf /inheritance:r /grant:r "%USERNAME%:F"`); the hub
-warns at start-up if the file looks readable by other users.
+Windows `icacls hub.conf /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`,
+which keeps access for SYSTEM - the account the Windows service runs as - and
+Administrators); the hub warns at start-up if the file looks readable by other
+users. The Windows installer already restricts
+`C:\ProgramData\Chipkin\BACnetSCHub` to SYSTEM and Administrators.
 
 ### Logging
 

@@ -12,6 +12,12 @@
 ; "BACnetSCHub" Windows service (start on boot, restart on failure) with
 ; BACnetExampleBSCHUB --install-service. Uninstalling removes the service and
 ; the program, and keeps the settings, certificates and logs.
+;
+; {commonappdata}\Chipkin\BACnetSCHub holds private keys (the hub's and the
+; lab CA's) and hub.conf's secrets, so it is NOT left with ProgramData's
+; inherited ACL (which lets every local user read files and create new ones):
+; the first [Run] entry makes it SYSTEM + Administrators only, and repairs the
+; ACL of an existing install on upgrade. The service runs as LocalSystem.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -89,10 +95,20 @@ begin
 end;
 
 [Run]
+; SYSTEM (S-1-5-18) and Administrators (S-1-5-32-544) only - by SID, so it
+; works on non-English Windows. First the folder itself (inheritable), then
+; everything already inside it (an earlier install's files, hub.conf) is reset
+; to inherit just that. Not "/T" on the first command: (OI)(CI) grants mean
+; nothing on a file, so files would be left with an empty ACL.
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Chipkin\BACnetSCHub"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /Q"; Flags: runhidden waituntilterminated; StatusMsg: "Restricting access to the settings and certificates..."
+Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Chipkin\BACnetSCHub\*"" /reset /T /Q"; Flags: runhidden waituntilterminated
 ; A lab certificate set if certs\ is empty (the hub refuses to replace an existing one).
 Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--sc-cert-dir ""{commonappdata}\Chipkin\BACnetSCHub\certs"" --generate-certs"; Flags: runhidden waituntilterminated; StatusMsg: "Making lab certificates..."; Check: not FileExists(ExpandConstant('{commonappdata}\Chipkin\BACnetSCHub\certs\issuer-certificate.pem'))
 Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--install-service --config ""{commonappdata}\Chipkin\BACnetSCHub\hub.conf"""; Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Installing the service..."
 Filename: "{sys}\sc.exe"; Parameters: "start BACnetSCHub"; Flags: runhidden waituntilterminated; Tasks: service
+; netsh doesn't de-duplicate by name, so remove any rule from an earlier install first.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BACnet SC Hub (BACnet/IP)"""; Flags: runhidden waituntilterminated; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BACnet SC Hub (BACnet/SC)"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BACnet SC Hub (BACnet/IP)"" dir=in action=allow protocol=UDP localport=47808 program=""{app}\BACnetExampleBSCHUB.exe"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BACnet SC Hub (BACnet/SC)"" dir=in action=allow protocol=TCP localport=47819 program=""{app}\BACnetExampleBSCHUB.exe"""; Flags: runhidden waituntilterminated; Tasks: firewall
 

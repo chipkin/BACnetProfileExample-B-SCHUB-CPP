@@ -316,7 +316,8 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
             "config file \"%s\" sets a password or token and appears readable by more than "
             "its owner/Administrators. Restrict its permissions: Windows - "
-            "\"icacls %s /inheritance:r /grant:r %%USERNAME%%:F\"; Linux/macOS - \"chmod 600 %s\". "
+            "\"icacls %s /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F %%USERNAME%%:F\" (keeps SYSTEM, "
+            "the service account, and Administrators); Linux/macOS - \"chmod 600 %s\". "
             "See docs/manual.md \"Configuration file\".",
             path.c_str(), path.c_str(), path.c_str());
     }
