@@ -283,6 +283,21 @@ certificate signed, rotating certificates and changing the CA without an
 outage, revocation, what the certificates should contain, and protecting
 private keys.
 
+### Password-protected private keys
+
+A certificate package may hold an encrypted private key (the file starts
+`-----BEGIN ENCRYPTED PRIVATE KEY-----`). The hub asks for its password
+**once**, when it starts, with the typing hidden, and checks it by decrypting
+the key; a wrong password is asked for again, up to three times. It keeps the
+password in memory and uses it everywhere the key is needed - the listener,
+the connector's every connect attempt, the HTTPS status page - so it is never
+asked for again during the run.
+
+A service has no console to ask on: set the password in the config file as
+`sc-key-password` (config file only, like `dcc-password`; restrict the file's
+permissions as described in [Configuration file](#configuration-file)). When
+it is set, the hub doesn't ask.
+
 ## 5. Configuration
 
 ```bash
@@ -336,7 +351,7 @@ may contain one.
 `device-id`, `device-name`, `ip-network-number`, `sc-network-number`,
 `log-file`, `log-max-size-mb`, `log-max-files`, `port`, `bacnet-ip`,
 `sc-port`, `sc-cert-dir`, `sc-hub-uri`, `sc-failover-uri`, `dcc-password`,
-`http-upload-token`, `http-port`, `http-bind`, `http-tls`, `http-tls-cert`,
+`sc-key-password`, `http-upload-token`, `http-port`, `http-bind`, `http-tls`, `http-tls-cert`,
 `http-tls-key`, `sc-max-hub-connections`, `sc-rate-limit`,
 `sc-rate-limit-total`, `sc-accept-hub-without-hello` and
 `sc-accept-device-without-hello`. On/off keys take
@@ -344,8 +359,10 @@ may contain one.
 always wins over the config file. An unknown key or bad value is logged and
 skipped.
 
-**`dcc-password` and `http-upload-token` can only be set in the config
-file**, so they never show up in process listings or shell history.
+**`dcc-password`, `sc-key-password` and `http-upload-token` can only be set
+in the config file**, so they never show up in process listings or shell history.
+`sc-key-password` is the password of an encrypted private key (see
+[Password-protected private keys](#password-protected-private-keys)).
 `dcc-password` protects DeviceCommunicationControl and ReinitializeDevice;
 `http-upload-token` is the separate secret for the HTTP certificate upload
 (use a different value - the hub warns if they match). Both are compared in

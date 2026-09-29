@@ -21,6 +21,16 @@ Open work is tracked in
 
 ### Added
 
+- **A password-protected private key is asked for once.** With an encrypted
+  `private-key.pem` (as in the Plugfest 2026 certificate packages), OpenSSL
+  used to prompt on the console every time the key was loaded - the start-up
+  certificate check, the listener, and every connect attempt of the hub
+  connector - so the password had to be typed again and again. The hub now
+  asks once at start-up (typing hidden), checks the password by decrypting
+  the key (asking again if it's wrong, up to three times), and uses it
+  everywhere for the rest of the run. New config key `sc-key-password`
+  (config file only, like `dcc-password`) supplies it without asking, which a
+  service needs.
 - `--sc-accept-device-without-hello` (config: `sc-accept-device-without-hello`),
   off by default: the hub accepts a device whose Connect-Request omits the
   Hello destination option, such as YABE (issue #40). Uses the CAS BACnet

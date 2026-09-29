@@ -4,6 +4,7 @@
 // cert_store.cpp - see cert_store.h for what this does and why.
 
 #include "cert_store.h"
+#include "sc_transport/KeyPassword.h"
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -247,7 +248,8 @@ EVP_PKEY* LoadKey(const std::string& path) {
         return nullptr;
     }
     BIO* bio = BIO_new_mem_buf(keyPem.data(), (int)keyPem.size());
-    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    // A password-protected key uses the password asked for once at start-up; OpenSSL must not prompt.
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, NULL, CASSc::KeyPassword::PemCallback, NULL);
     BIO_free(bio);
     ERR_clear_error();
     return key;

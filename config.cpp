@@ -257,6 +257,9 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
             }
             outConfig->dccPassword = value;
             outConfig->hasDccPassword = true;
+        } else if (key == "sc-key-password") {
+            outConfig->scKeyPassword = value;
+            outConfig->hasScKeyPassword = true;
         } else if (key == "http-upload-token") {
             outConfig->httpUploadToken = value;
             outConfig->hasHttpUploadToken = true;
@@ -332,6 +335,7 @@ bool LoadExampleConfig(const std::string& path, ExampleConfig* outConfig) {
             path.c_str());
     }
     const bool hasSecret = (outConfig->hasDccPassword && !outConfig->dccPassword.empty()) ||
+                           (outConfig->hasScKeyPassword && !outConfig->scKeyPassword.empty()) ||
                            (outConfig->hasHttpUploadToken && !outConfig->httpUploadToken.empty());
     if (hasSecret && ConfigFileHasBroadPermissions(path)) {
         CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,

@@ -8,7 +8,7 @@
 // This example's `--config <path>` support: a dependency-free, INI-like
 // "key = value" config file supplying DEFAULTS for a handful of this
 // example's settings (device-id, port, sc-port, sc-cert-dir, sc-hub-uri,
-// sc-failover-uri, dcc-password, http-port, http-bind,
+// sc-failover-uri, dcc-password, sc-key-password, http-port, http-bind,
 // sc-max-hub-connections, sc-rate-limit, sc-rate-limit-total).
 //
 // Precedence is CLI args > config file > main.cpp's own built-in defaults -
@@ -99,6 +99,14 @@ struct ExampleConfig {
     // warning LoadExampleConfig() below performs when this key is non-empty.
     bool hasDccPassword = false;
     std::string dccPassword;
+
+    // sc-key-password: the password of a password-protected (encrypted) private
+    // key under --sc-cert-dir. Config file only, like dcc-password (a CLI
+    // argument would show in process listings). Without it the hub asks for the
+    // password once on the console at start-up (sc_transport/KeyPassword.h); a
+    // service has no console, so it needs this key.
+    bool hasScKeyPassword = false;
+    std::string scKeyPassword;
 
     // http-upload-token: the bearer token POST /certs/<slot> requires (issue
     // #23). Config file only, like dcc-password, and a separate secret from

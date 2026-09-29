@@ -3,6 +3,7 @@
 // Implementation of HttpServer. See HttpServer.h for the contract and the
 // safety reasoning behind every design choice made here.
 #include "HttpServer.h"
+#include "KeyPassword.h"
 #include "LogSafe.h"
 
 #include "CASExampleLog.h"
@@ -191,6 +192,8 @@ bool HttpServer::Start(const HttpServerConfig& config) {
         info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
         info.ssl_cert_filepath = m_config.tlsCertPath.c_str();
         info.ssl_private_key_filepath = m_config.tlsKeyPath.c_str();
+        // By default this is the hub's own key; its password, if any, was asked for once at start-up.
+        info.ssl_private_key_password = KeyPassword::Get();
         info.ssl_options_set = SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1;
         // HTTP/1.1 only. The vcpkg libwebsockets is built with HTTP/2, and a TLS
         // vhost offers "h2" by default; these endpoints don't need it, and the

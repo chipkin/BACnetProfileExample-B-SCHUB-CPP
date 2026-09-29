@@ -125,6 +125,7 @@
                                     // see the top of main() below.
 #include "sc_transport/ScTransport.h"
 #include "sc_transport/ScTransportRouter.h"
+#include "sc_transport/KeyPassword.h" // the private key's password, asked for once
 #include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
 #include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
@@ -2191,10 +2192,11 @@ static int RunHub(int argc, char** argv) {
                 printf("  --config <path>     Read settings from a \"key = value\" file. The settings\n");
                 printf("                      above have keys of the same name without \"--\" (--deviceID\n");
                 printf("                      is device-id; example.conf lists them all). An option on the\n");
-                printf("                      command line still wins over the file. dcc-password and\n");
-                printf("                      http-upload-token can ONLY be set in the file, so they\n");
-                printf("                      never show in process listings - see docs/manual.md\n");
-                printf("                      \"Configuration file\".\n");
+                printf("                      command line still wins over the file. dcc-password,\n");
+                printf("                      sc-key-password and http-upload-token can ONLY be set in\n");
+                printf("                      the file, so they never show in process listings - see\n");
+                printf("                      docs/manual.md \"Configuration file\". An encrypted private\n");
+                printf("                      key's password is otherwise asked for once at start-up.\n");
                 break;
             }
         }
@@ -2427,6 +2429,25 @@ static int RunHub(int argc, char** argv) {
     g_scHubAcceptUri = "wss://0.0.0.0:" + std::to_string(g_scPort) + "/";
     {
         CASSc::ScTlsFiles tls;
+        // A password-protected private key: ask for its password ONCE, here,
+        // before anything loads the key (CertStore just below, the certificate
+        // check, the listener, every connector attempt, HTTPS). Each of those
+        // used to let OpenSSL prompt on its own, so the operator typed it again
+        // and again. The config file's sc-key-password is used when set; a
+        // service has no console, so it needs that key. See sc_transport/KeyPassword.h.
+        {
+            const std::string keyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
+                g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+            std::string keyPasswordMessage;
+            const bool keyReady = CASSc::KeyPassword::Prepare(
+                keyPath, fileConfig.hasScKeyPassword ? fileConfig.scKeyPassword : "", !Service::IsService(),
+                &keyPasswordMessage);
+            if (!keyReady) {
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Error, "certificates: %s", keyPasswordMessage.c_str());
+            } else if (!keyPasswordMessage.empty()) {
+                CASExampleHelper::Log(CASExampleHelper::LogLevel::Info, "certificates: %s", keyPasswordMessage.c_str());
+            }
+        }
         // BACnet-named PEM files from --generate-certs, or the older names
         // from an earlier release - see cert_tool.h.
         const std::string issuer1Path = ScCertFilePath(FILE_ISSUER_CERT_1_INSTANCE);

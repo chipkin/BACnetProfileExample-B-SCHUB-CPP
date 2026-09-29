@@ -129,7 +129,8 @@ set(COMMON_SOURCES
 set(SC_TRANSPORT_SOURCES
     "sc_transport/ScTransport.cpp"
     "sc_transport/ScTransportRouter.cpp"
-    "sc_transport/HttpServer.cpp")
+    "sc_transport/HttpServer.cpp"
+    "sc_transport/KeyPassword.cpp")
 
 add_executable(BACnetExampleBSCHUB
     main.cpp

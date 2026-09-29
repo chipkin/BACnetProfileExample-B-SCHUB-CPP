@@ -2,6 +2,7 @@
 // Public-domain example code (CC0) - see ../LICENSE.
 // Implementation of ScTransport. See ScTransport.h for the contract.
 #include "ScTransport.h"
+#include "KeyPassword.h"
 #include "LogSafe.h"
 
 #include "CASExampleLog.h"
@@ -573,7 +574,9 @@ bool LogCertificateDiagnostics(const ScTlsFiles& tls) {
         }
 
         FILE* keyFile = fopen(tls.keyPath.c_str(), "rb");
-        EVP_PKEY* pkey = (keyFile != nullptr) ? PEM_read_PrivateKey(keyFile, nullptr, nullptr, nullptr) : nullptr;
+        // KeyPassword::PemCallback: the password asked for once at start-up; OpenSSL
+        // must not prompt on the console itself (it did, on every retry).
+        EVP_PKEY* pkey = (keyFile != nullptr) ? PEM_read_PrivateKey(keyFile, nullptr, KeyPassword::PemCallback, nullptr) : nullptr;
         if (keyFile != nullptr) {
             fclose(keyFile);
         }
@@ -914,6 +917,7 @@ bool ScTransport::StartListening(const std::string& uri) {
     info.protocols = m_protocols;
     info.ssl_cert_filepath = m_tls.certPath.c_str();
     info.ssl_private_key_filepath = m_tls.keyPath.c_str();
+    info.ssl_private_key_password = KeyPassword::Get();  // nullptr for a key with no password
     info.ssl_ca_filepath = m_tls.caCertPath.c_str();
     // Mutual TLS (SC nodes/hubs authenticate each other by certificate, AB.5.3)
     // + TLS 1.3 only (135-2024 AB.5.2 mandates 1.3; SSL_OP_NO_TLSv1/1_1/1_2/SSLv3
@@ -1124,6 +1128,8 @@ bool ScTransport::Connect(const std::string& uri) {
     info.client_ssl_ca_filepath = m_tls.caCertPath.c_str();          // validates the HUB's certificate
     info.client_ssl_cert_filepath = m_tls.certPath.c_str();          // this device's own operational cert (mutual TLS)
     info.client_ssl_private_key_filepath = m_tls.keyPath.c_str();
+    // Asked for once at start-up (KeyPassword.h); without it OpenSSL prompted on every connect attempt.
+    info.client_ssl_private_key_password = KeyPassword::Get();
     // TLS 1.3 only, same restriction as the listener half (135-2024 AB.5.2).
     info.ssl_client_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_SSLv3;
     info.user = this;
