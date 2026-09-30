@@ -128,6 +128,7 @@
 #include "sc_transport/KeyPassword.h" // the private key's password, asked for once
 #include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
+#include "sc_transport/TlsKeyLog.h" // --sc-keylog-file: TLS secrets for Wireshark (issue #68)
 #include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
 #include "cert_store.h" // certificate File object contents + clause 19.8.3 staging - see cert_store.h
 #include "log_file.h"   // --log-file: console output also to a rotating file - see log_file.h
@@ -160,7 +161,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.4.0";
+static const char* APP_VERSION = "1.5.0";
 
 // The device instance. BACnet requires this to be configurable, so it defaults
 // to 389022 and can be overridden on the command line with --deviceID.
@@ -1519,11 +1520,12 @@ static std::string BuildHealthJson(bool* healthy) {
         "\"bacnet_ip_enabled\":%s,"
         "\"sc_hub_function_listening\":%s,"
         "\"sc_hub_connections_current\":%zu,"
-        "\"staged_certificate_changes\":%s"
+        "\"staged_certificate_changes\":%s,"
+        "\"tls_keylog\":%s"
         "}",
         listening ? "ok" : "degraded", APP_VERSION, (unsigned long long)UptimeSeconds(),
         g_bacnetIpEnabled ? "true" : "false", listening ? "true" : "false", g_scTransport.GetMetrics().currentPeerCount,
-        CertStore::HasStagedChanges() ? "true" : "false");
+        CertStore::HasStagedChanges() ? "true" : "false", CASSc::TlsKeyLog::IsOpen() ? "true" : "false");
     return std::string(buf);
 }
 
@@ -1576,6 +1578,8 @@ static std::string BuildStatusPage() {
             ? std::string("none (revocation not checked)") : g_scCrlPath},
         {"Staged certificate changes", CertStore::HasStagedChanges()
             ? std::string("yes - applied on ReinitializeDevice ACTIVATE_CHANGES") : std::string("none")},
+        {"TLS key log (--sc-keylog-file)", CASSc::TlsKeyLog::IsOpen()
+            ? "ON - session secrets written to " + CASSc::TlsKeyLog::Path() : std::string("off")},
     };
     const Row metrics[] = {
         {"Uptime", FormatUptime(uptime)},
@@ -1595,14 +1599,21 @@ static std::string BuildStatusPage() {
             "<title>B-SCHUB status</title><style>"
             "body{font-family:system-ui,sans-serif;margin:24px;max-width:760px;color:#1f2328;background:#fff}"
             "h1{font-size:1.4em;margin:0 0 4px}h2{font-size:1.05em;margin:24px 0 8px}"
-            "p.sub{margin:0;color:#59636e}table{border-collapse:collapse;width:100%}"
+            "p.sub{margin:0;color:#59636e}p.warn{margin:16px 0 0;padding:10px 12px;border:1px solid #d1242f;"
+            "background:#ffebe9;color:#82071e}table{border-collapse:collapse;width:100%}"
             "td{padding:6px 8px;border-bottom:1px solid #d1d9e0;vertical-align:top}"
             "td:first-child{color:#59636e;width:42%}pre{background:#f6f8fa;padding:12px;overflow-x:auto}"
             "@media (prefers-color-scheme:dark){body{color:#e6edf3;background:#0d1117}"
-            "p.sub,td:first-child{color:#9198a1}td{border-color:#3d444d}pre{background:#161b22}a{color:#4493f8}}"
+            "p.sub,td:first-child{color:#9198a1}td{border-color:#3d444d}pre{background:#161b22}a{color:#4493f8}"
+            "p.warn{background:#25171c;border-color:#f85149;color:#ffa198}}"
             "</style></head><body>\n";
     html += "<h1>" + HtmlEscape(g_deviceName) + "</h1><p class=\"sub\">Version " + HtmlEscape(APP_VERSION) +
             " &middot; BACnet/SC hub &middot; refreshes every 5 s</p>\n";
+    if (CASSc::TlsKeyLog::IsOpen()) {
+        html += "<p class=\"warn\"><strong>TLS key log is ON.</strong> The session secrets of every BACnet/SC connection are "
+                "being written to " + HtmlEscape(CASSc::TlsKeyLog::Path()) + " (--sc-keylog-file). Anyone with that "
+                "file and a packet capture can read this hub's traffic.</p>\n";
+    }
     auto table = [&html](const char* title, const Row* rows, size_t count) {
         html += std::string("<h2>") + title + "</h2><table>";
         for (size_t i = 0; i < count; ++i) {
@@ -1963,11 +1974,11 @@ static const char* const kValueOptions[] = {
     "--http-port", "--http-bind", "--http-tls-cert", "--http-tls-key", "--sc-max-hub-connections",
     "--sc-rate-limit", "--sc-rate-limit-total", "--bacnet-ip", "--device-name", "--ip-network-number",
     "--sc-network-number", "--log-file", "--log-max-size-mb", "--log-max-files", "--config",
-    "--cert-label", "--cert-hub-uri"};
+    "--cert-label", "--cert-hub-uri", "--sign-csr", "--sc-keylog-file"};
 // Switches; the first group also takes an optional on/off (see ParseSwitchArg).
 static const char* const kOnOffSwitches[] = {"--http-tls", "--sc-accept-hub-without-hello",
                                              "--sc-accept-device-without-hello"};
-static const char* const kSwitches[] = {"--force", "--xml", "--xmlLog", "--service", "--install-service",
+static const char* const kSwitches[] = {"--force", "--generate-csr", "--xml", "--xmlLog", "--service", "--install-service",
                                         "--uninstall-service", "--help", "-h", "/?", "--version"};
 static const char* const kOptionalCountOptions[] = {"--generate-certs", "--add-client-certs"};
 
@@ -2136,6 +2147,14 @@ static int RunHub(int argc, char** argv) {
                 printf("                      Compatibility, off by default: accept a device whose\n");
                 printf("                      Connect-Request omits the Hello option (e.g. YABE).\n");
                 printf("                      Deviates from ANSI/ASHRAE 135 - see the manual as above.\n");
+                printf("  --sc-keylog-file <file>\n");
+                printf("                      DEBUGGING ONLY: append the TLS session secrets of every\n");
+                printf("                      BACnet/SC connection (hub function and hub connector) to\n");
+                printf("                      <file>, in the NSS key log format, so Wireshark can decrypt\n");
+                printf("                      a capture (Preferences > Protocols > TLS > (Pre)-Master-\n");
+                printf("                      Secret log filename).\n");
+                printf("                      Anyone with the file and a capture can read the traffic.\n");
+                printf("                      Command line only; no config-file key.\n");
                 printf("\nLab certificates (LAB TESTING ONLY - written to --sc-cert-dir, then exits):\n");
                 printf("  --generate-certs [n]\n");
                 printf("                      Create a fresh set of PEM files named after the Network\n");
@@ -2151,11 +2170,22 @@ static int RunHub(int argc, char** argv) {
                 printf("                      already in --sc-cert-dir. Numbering continues after the\n");
                 printf("                      highest existing label, and the running hub trusts them\n");
                 printf("                      without a restart.\n");
+                printf("  --generate-csr      Make a new private key and certificate signing request for\n");
+                printf("                      ONE device in clients/<label>/, for --sign-csr. Needs no\n");
+                printf("                      issuer, so a device's owner can run it and keep the key.\n");
+                printf("  --sign-csr <file>   Sign a device's own certificate signing request (PEM or\n");
+                printf("                      DER) with the issuer already in --sc-cert-dir, writing\n");
+                printf("                      clients/<label>/: its operational-certificate.pem,\n");
+                printf("                      issuer-certificate.pem and bacnetsc.config. The device keeps\n");
+                printf("                      its private key. The certificate keeps the request's\n");
+                printf("                      subject; validity and key usage are the client profile's.\n");
                 printf("  --cert-label <prefix>\n");
                 printf("                      Label for client certificates. Default \"client\", giving\n");
                 printf("                      client-01, client-02, ... Each certificate's Common Name is\n");
                 printf("                      \"Chipkin Example B-SCHUB <label>-NN\". Every certificate is\n");
-                printf("                      also listed in <sc-cert-dir>/certificates.txt.\n");
+                printf("                      also listed in <sc-cert-dir>/certificates.txt. With\n");
+                printf("                      --generate-csr / --sign-csr it is the folder name as it is\n");
+                printf("                      (default: the next client-NN).\n");
                 printf("  --cert-hub-uri <wss://host:port/>\n");
                 printf("                      Primary hub URI written into each client's bacnetsc.config\n");
                 printf("                      (CAS BACnet Explorer import file). Default: this\n");
@@ -2295,9 +2325,9 @@ static int RunHub(int argc, char** argv) {
         return 1;
     }
 
-    // --- Lab certificate generation (--generate-certs / --add-client-certs) --
-    // A one-shot tool mode: write the certificates, then exit without starting
-    // the device. See cert_tool.h.
+    // --- Lab certificate generation (--generate-certs / --add-client-certs /
+    // --generate-csr / --sign-csr) - a one-shot tool mode: write the
+    // certificates, then exit without starting the device. See cert_tool.h.
     {
         unsigned generateCount = 0;
         unsigned addCount = 0;
@@ -2307,16 +2337,25 @@ static int RunHub(int argc, char** argv) {
             CertTool::DEFAULT_GENERATE_CLIENT_COUNT, &generateCount, &generateValid);
         const bool add = ParseOptionalCountArg(argc, argv, "--add-client-certs",
             CertTool::DEFAULT_ADD_CLIENT_COUNT, &addCount, &addValid);
-        if (generate || add) {
+        const bool generateCsr = HasFlag(argc, argv, "--generate-csr");
+        const std::string signCsrFile = ParseStringArg(argc, argv, "--sign-csr");
+        const bool signCsr = !signCsrFile.empty();
+        if (generate || add || generateCsr || signCsr) {
             if (!generateValid || !addValid) {
                 return 1;
             }
-            if (generate && add) {
-                fprintf(stderr, "Error: use --generate-certs or --add-client-certs, not both.\n");
+            if ((int)generate + (int)add + (int)generateCsr + (int)signCsr > 1) {
+                fprintf(stderr, "Error: use only one of --generate-certs, --add-client-certs, --generate-csr "
+                                "and --sign-csr.\n");
                 return 1;
             }
+            // --generate-csr / --sign-csr make ONE folder, named by --cert-label
+            // as it is ("" = the next client-NN); the others number from it.
             std::string label = ParseStringArg(argc, argv, "--cert-label");
-            if (label.empty()) {
+            if (generateCsr) {
+                return CertTool::GenerateClientCsr(g_scCertDir, label) ? 0 : 1;
+            }
+            if (label.empty() && !signCsr) {
                 label = CertTool::DEFAULT_CLIENT_LABEL;
             }
             // The hub URI written into each client's bacnetsc.config: this
@@ -2333,10 +2372,15 @@ static int RunHub(int argc, char** argv) {
                 snprintf(uri, sizeof(uri), "wss://%u.%u.%u.%u:%u/", ip[0], ip[1], ip[2], ip[3], g_scPort);
                 hubUri = uri;
             }
-            const bool ok = generate
-                ? CertTool::GenerateCertificateSet(g_scCertDir, generateCount, label, hubUri,
-                                                   HasFlag(argc, argv, "--force"))
-                : CertTool::AddClientCertificates(g_scCertDir, addCount, label, hubUri);
+            bool ok = false;
+            if (signCsr) {
+                ok = CertTool::SignClientCsr(g_scCertDir, signCsrFile, label, hubUri);
+            } else if (generate) {
+                ok = CertTool::GenerateCertificateSet(g_scCertDir, generateCount, label, hubUri,
+                                                      HasFlag(argc, argv, "--force"));
+            } else {
+                ok = CertTool::AddClientCertificates(g_scCertDir, addCount, label, hubUri);
+            }
             return ok ? 0 : 1;
         }
     }
@@ -2347,6 +2391,25 @@ static int RunHub(int argc, char** argv) {
     g_scFailoverUri = ParseStringArg(argc, argv, "--sc-failover-uri");
     if (g_scFailoverUri.empty() && fileConfig.hasScFailoverUri) {
         g_scFailoverUri = fileConfig.scFailoverUri;
+    }
+    // --- TLS key log for Wireshark (issue #68) ---------------------------------
+    // Command line ONLY - deliberately no config-file key, so a service can't
+    // be left writing session secrets by a forgotten line in its config, and
+    // it shows in the process listing. Opened before any TLS context exists;
+    // the transport attaches it to each SSL_CTX (sc_transport/TlsKeyLog.h).
+    {
+        const std::string keyLogFile = ParseStringArg(argc, argv, "--sc-keylog-file");
+        if (!keyLogFile.empty()) {
+            std::string reason;
+            if (!CASSc::TlsKeyLog::Open(keyLogFile, &reason)) {
+                fprintf(stderr, "Error: --sc-keylog-file: %s\n", reason.c_str());
+                return 1;
+            }
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                "TLS KEY LOG ON: the session secrets of every BACnet/SC connection are written to "
+                "\"%s\". Anyone with this file and a packet capture can read that traffic - use it for "
+                "debugging only, then delete the file.", keyLogFile.c_str());
+        }
     }
     {
         const uint16_t fromFile =

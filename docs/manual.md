@@ -1,6 +1,6 @@
 # BACnet/SC Hub (B-SCHUB) - User Manual
 
-**Version 1.4.0** · Chipkin Automation Systems ·
+**Version 1.5.0** · Chipkin Automation Systems ·
 <https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP>
 
 This manual is for people who install, configure and run the hub.
@@ -196,7 +196,7 @@ BACnetExampleBSCHUB
 On Windows the program is `BACnetExampleBSCHUB.exe`. A typical start-up:
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.4.0
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.5.0
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
@@ -242,7 +242,7 @@ file names follow the Network Port properties that carry them (ANSI/ASHRAE
 | `private-key.pem` | The hub's private key. **Private.** |
 | `certificate-signing-request.pem` | CSR for the hub's key (File 2, Certificate_Signing_Request_File). |
 | `issuer-certificate.pem` | The lab CA (File 3, Issuer_Certificate_Files). Every device needs a copy. |
-| `issuer-private-key.pem` | The CA's private key, only used to sign more devices. **Private.** Keep it off the network. |
+| `issuer-private-key.pem` | The CA's private key, only used to sign more devices (`--add-client-certs`, `--sign-csr`). **Private.** Keep it off the network. |
 | `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem`, `bacnetsc.config` (CAS BACnet Explorer), and for Windows tools such as YABE `<label>.pfx` (certificate + key + issuer, empty password, **private**), `issuer-certificate.cer` (DER) and `yabe-bacnetsc.config`. |
 | `certificates.txt` | Every certificate's label, location, serial number, expiry and SHA-256 fingerprint. |
 | `readme.txt` | A walkthrough of the folder, including which files are private. |
@@ -264,6 +264,36 @@ CA. Numbering continues, and a running hub trusts them straight away:
 BACnetExampleBSCHUB --add-client-certs 2                    # clients/client-04, client-05
 BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # clients/ahu-01 .. ahu-03
 ```
+
+**Signing a device's own CSR.** When a device makes its own key and sends
+you a certificate signing request (PEM or DER), sign it with the existing CA.
+The private key never leaves the device:
+
+```bash
+BACnetExampleBSCHUB --sign-csr ahu7.csr --cert-label ahu-7   # clients/ahu-7/
+```
+
+The hub first checks that the request's signature verifies and that its key
+is ECDSA P-256 or stronger, or RSA 2048-bit or stronger. `clients/ahu-7/` then
+gets the device's `operational-certificate.pem`, `issuer-certificate.pem`
+(and `.cer`) and `bacnetsc.config`, with no private key, `.pfx` or YABE file.
+Send that folder back to the device's owner. The certificate keeps the
+request's subject and public key. Everything else comes from the device
+profile above: 825 days, EKU clientAuth, no subjectAltName. Any extensions the
+request asks for are ignored. Without `--cert-label` the folder is the next
+`client-NN`. A running hub trusts the new certificate straight away.
+
+To make a key and a CSR for a device with this program, for example on the
+device owner's own computer:
+
+```bash
+BACnetExampleBSCHUB --generate-csr --cert-label ahu-7        # clients/ahu-7/private-key.pem + certificate-signing-request.pem
+```
+
+`--generate-csr` needs no CA. If you sign the request in the same folder
+(`--sign-csr clients/ahu-7/certificate-signing-request.pem`, where the label
+comes from the folder), the certificate lands next to its key, and the folder
+also gets the `.pfx` and YABE files.
 
 **Starting over.** `--generate-certs` won't replace an existing CA, because
 every certificate already handed out would stop working. Add `--force` to
@@ -328,10 +358,13 @@ BACnetExampleBSCHUB [options]
 | `--http-bind <addr>` | `127.0.0.1` | Interface for the HTTP listener. See [Security](#9-security) before changing it. |
 | `--http-tls` | off | Serve the HTTP endpoints over HTTPS. |
 | `--http-tls-cert <file>`, `--http-tls-key <file>` | the hub's operational certificate and key | Certificate and key for `--http-tls`. |
+| `--sc-keylog-file <file>` | off | **Debugging only.** Append each BACnet/SC connection's TLS session secrets to `<file>`, so Wireshark can decrypt a capture. Command line only. See [Decoding BACnet/SC traffic in Wireshark](#decoding-bacnetsc-traffic-in-wireshark). |
 | `--config <path>` | none | Read settings from a config file (below). |
 | `--generate-certs [n]` | `3` | Make a lab certificate set with `n` device certificates, then exit. |
 | `--add-client-certs [n]` | `1` | Sign `n` more device certificates with the existing CA, then exit. |
-| `--cert-label <prefix>` | `client` | Label for new device certificates. |
+| `--generate-csr` | - | Make a private key and a certificate signing request for one device in `clients/<label>/`, then exit. |
+| `--sign-csr <file>` | - | Sign a device's certificate signing request with the existing CA into `clients/<label>/`, then exit. |
+| `--cert-label <prefix>` | `client` | Label for new device certificates. With `--generate-csr` or `--sign-csr` it's the folder name as given (default: the next `client-NN`). |
 | `--cert-hub-uri <wss://host:port/>` | this computer's IPv4 and `--sc-port` | Hub URI written into each device's `bacnetsc.config` (and the hub certificate's subjectAltName). |
 | `--force` | - | With `--generate-certs`: replace an existing certificate set. |
 | `--install-service`, `--uninstall-service` | - | Windows: set up or remove the BACnetSCHub service (see [Running as a service](#running-as-a-service)). |
@@ -550,7 +583,7 @@ start-up.
 
 ```
 $ curl -s http://127.0.0.1:8080/health
-{"status":"ok","version":"1.4.0","uptime_seconds":154,"bacnet_ip_enabled":true,"sc_hub_function_listening":true,"sc_hub_connections_current":1,"staged_certificate_changes":false}
+{"status":"ok","version":"1.5.0","uptime_seconds":154,"bacnet_ip_enabled":true,"sc_hub_function_listening":true,"sc_hub_connections_current":1,"staged_certificate_changes":false,"tls_keylog":false}
 
 $ curl -s http://127.0.0.1:8080/metrics
 {"uptime_seconds":154,"uptime":"2m 34s","sc_hub_connections_current":1,"sc_hub_connections_max":4,"sc_total_connects":3,"sc_total_disconnects":2,"sc_rate_limit_rejections":0,"sc_rx_messages":12,"sc_rx_bytes":456,"sc_tx_messages":12,"sc_tx_bytes":456,"sc_tx_queue_overflows":0}
@@ -600,6 +633,11 @@ curl -X POST --data-binary @new-hub-cert.pem \
   HTTP. `/`, `/health` and `/metrics` have no authentication, even over HTTPS.
 - **Private keys** (`private-key.pem`, `issuer-private-key.pem`) must stay
   private. Keep the CA's key off the hub in production.
+- **TLS key log.** `--sc-keylog-file` writes the BACnet/SC session secrets to
+  a file, so that anyone with the file and a capture can read the traffic.
+  It's for debugging only, and is off unless given on the command line (see
+  [Decoding BACnet/SC traffic in Wireshark](#decoding-bacnetsc-traffic-in-wireshark)).
+  `/health`'s `tls_keylog` tells a monitor when it is on.
 - **Rate limiting**: new BACnet/SC connection attempts are limited per
   source address (`--sc-rate-limit`, default 10 a second) and for the whole
   listener (`--sc-rate-limit-total`, default 50 a second), before the TLS
@@ -630,6 +668,41 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | A BACnet/SC tool on Windows 10 (e.g. YABE) fails with `A call to SSPI failed` / a TLS handshake error, and the hub logs nothing | Windows 10's own TLS can't do TLS 1.3, which BACnet/SC requires. The hub warns about this at start-up on Windows 10. Run the tool on Windows 11 / Server 2022 or later, or use a client with its own TLS 1.3 (CAS BACnet Explorer). See [#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39). |
 | The Windows service doesn't start | Check `log-file` in the service's `hub.conf`, and Windows Event Viewer > Windows Logs > System for Service Control Manager errors. |
 
+### Decoding BACnet/SC traffic in Wireshark
+
+BACnet/SC is TLS 1.3, so a capture shows only encrypted records. To see the
+BACnet/SC messages inside, have the hub write each connection's TLS session
+secrets to a key log file, and give that file to Wireshark:
+
+```bash
+BACnetExampleBSCHUB --sc-keylog-file sc-keys.log
+```
+
+1. Start the capture (for example `tcp port 47819`; on Windows, capture
+   traffic to the same computer with Npcap's loopback adapter), then start
+   the hub with `--sc-keylog-file`. Only connections made while the option is
+   on can be decoded, because Wireshark needs each TLS handshake.
+2. In Wireshark: **Edit > Preferences > Protocols > TLS > (Pre)-Master-Secret
+   log filename**, and select `sc-keys.log`. With tshark:
+   `tshark -r capture.pcapng -o tls.keylog_file:sc-keys.log`.
+3. The records then decode as WebSocket, and the BACnet/SC frames as
+   **BSCVLC** (Connect-Request, Connect-Accept, Encapsulated-NPDU, ...). Filter
+   with `bscvlc`. If you run BACnet/SC on a port Wireshark doesn't recognise,
+   use **Decode As > TCP port > TLS**.
+
+The file covers both BACnet/SC roles: devices connecting to the hub, and the
+hub's own connection to another hub (`--sc-hub-uri`). It doesn't cover the
+HTTPS status page. The hub appends to the file and flushes every line
+straight away, so you can decode a capture while the hub is still running.
+
+**Anyone with this file and a capture can read that traffic.** Use the option
+for debugging only, then delete the file. It never holds a private key. It
+can be set on the command line only (there is no config-file key), so a
+service can't be left logging by a forgotten line in its config. While it is
+on, the hub logs a warning at start-up and whenever BACnet/SC starts
+listening, `/health` reports `"tls_keylog": true`, and the status page shows a
+banner.
+
 ## 11. The BACnet device
 
 ```
@@ -658,7 +731,7 @@ The [PICS](PICS.pdf) lists every property.
 
 ## 12. Version, licensing and support
 
-- **Version**: this manual describes version 1.4.0. What changed in each
+- **Version**: this manual describes version 1.5.0. What changed in each
   release is in [CHANGELOG.md](../CHANGELOG.md); what a version number
   promises is in [SUPPORT.md](SUPPORT.md).
 - **Licensing**: the hub's own source code is public domain (CC0-1.0). It is

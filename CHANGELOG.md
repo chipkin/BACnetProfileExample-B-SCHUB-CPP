@@ -7,17 +7,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Open work is tracked in
 [GitHub issues](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues).
 
-## [1.4.0] - unreleased
-
-### Changed
-
-- CAS BACnet Stack updated to the latest 6.x.
-- **Segmentation is now supported in both directions**
-  (`Segmentation_Supported` = segmented-both, `Max_Segments_Accepted` 16,
-  `APDU_Segment_Timeout` 5000 ms), the CAS BACnet Stack's new default. Large
-  ReadPropertyMultiple answers are sent in segments instead of being refused,
-  and segmented requests are accepted. The PICS is updated, and
-  `tests/sc/segmentation_test.py` checks both directions in CI.
+## [1.5.0] - unreleased
 
 ### Added
 
@@ -31,6 +21,42 @@ Open work is tracked in
   everywhere for the rest of the run. New config key `sc-key-password`
   (config file only, like `dcc-password`) supplies it without asking, which a
   service needs.
+- **Signing a device's own certificate signing request.** `--sign-csr <file>`
+  signs a CSR (PEM or DER) from a device that made its own key, using the
+  existing lab CA. It writes `clients/<label>/` with the device's certificate,
+  the issuer and `bacnetsc.config`, and never needs the device's private key.
+  The request's signature and key strength (ECDSA P-256+, RSA 2048+) are
+  checked first. The certificate keeps the request's subject and gets the
+  usual device profile, whatever extensions the request asks for.
+  `--generate-csr` makes a key and CSR for one device in `clients/<label>/`
+  and needs no CA. `--cert-label` names the folder for both (default: the
+  next `client-NN`). `tests/sc/csr_test.py` covers both (35 checks).
+- **`--sc-keylog-file <file>`: decode BACnet/SC traffic in Wireshark** (#68).
+  While it is set, the hub appends every BACnet/SC connection's TLS 1.3
+  session secrets to the file, in the NSS key log (`SSLKEYLOGFILE`) format
+  Wireshark reads. That covers both the hub function (devices connecting in)
+  and the hub connector (`--sc-hub-uri`), but not the HTTPS status page.
+  Wireshark then decodes the WebSocket frames as BACnet/SC (BSCVLC). It is
+  for debugging only: command line only, with no config-file key. While it is
+  on, the hub logs a warning at start-up and whenever BACnet/SC starts
+  listening, `/health` reports `"tls_keylog": true`, and the status page shows
+  a banner. `tests/sc/keylog_test.py` checks that the hub's secrets match the
+  peer's own key log for the same session (11 checks).
+
+## [1.4.0] - 2026-09-27
+
+### Changed
+
+- CAS BACnet Stack updated to the latest 6.x.
+- **Segmentation is now supported in both directions**
+  (`Segmentation_Supported` = segmented-both, `Max_Segments_Accepted` 16,
+  `APDU_Segment_Timeout` 5000 ms), the CAS BACnet Stack's new default. Large
+  ReadPropertyMultiple answers are sent in segments instead of being refused,
+  and segmented requests are accepted. The PICS is updated, and
+  `tests/sc/segmentation_test.py` checks both directions in CI.
+
+### Added
+
 - `--sc-accept-device-without-hello` (config: `sc-accept-device-without-hello`),
   off by default: the hub accepts a device whose Connect-Request omits the
   Hello destination option, such as YABE (issue #40). Uses the CAS BACnet

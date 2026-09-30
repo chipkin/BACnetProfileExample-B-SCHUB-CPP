@@ -4,6 +4,7 @@
 #include "ScTransport.h"
 #include "KeyPassword.h"
 #include "LogSafe.h"
+#include "TlsKeyLog.h"
 
 #include "CASExampleLog.h"
 
@@ -958,6 +959,11 @@ bool ScTransport::StartListening(const std::string& uri) {
     m_lastListenCreateFailure = std::chrono::steady_clock::time_point();
     printf("BACnet/SC: listening for WebSocket/TLS connections on %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
            uri.c_str(), m_acceptSubprotocol.c_str());
+    if (TlsKeyLog::IsOpen()) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+            "BACnet/SC: TLS key log ON - this listener's session secrets go to \"%s\" (--sc-keylog-file)",
+            TlsKeyLog::Path().c_str());
+    }
     return true;
 }
 
@@ -1483,7 +1489,9 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
 
         case LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS:
             // The listener's SSL_CTX (in `user`), as lws creates it - load the
-            // CRL (issue #15). Non-zero fails the context: fail closed.
+            // CRL (issue #15). Non-zero fails the context: fail closed. Also
+            // where --sc-keylog-file hooks in (issue #68; a no-op without it).
+            TlsKeyLog::Attach(static_cast<SSL_CTX*>(user));
             return LoadRevocationList(static_cast<SSL_CTX*>(user), m_tls.crlPath, "listener") ? 0 : 1;
 
         case LWS_CALLBACK_HTTP_CONFIRM_UPGRADE: {
@@ -1724,6 +1732,7 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
         // with no CRL loaded - OpenSSL then refuses every peer certificate
         // ("unable to get certificate CRL") until the file is fixed or removed.
         SSL_CTX* sslCtx = static_cast<SSL_CTX*>(user);
+        TlsKeyLog::Attach(sslCtx);  // --sc-keylog-file (issue #68); a no-op without it
         if (!LoadRevocationList(sslCtx, m_tls.crlPath, "connector") && sslCtx != nullptr) {
             X509_STORE_set_flags(SSL_CTX_get_cert_store(sslCtx), X509_V_FLAG_CRL_CHECK);
         }

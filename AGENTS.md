@@ -36,7 +36,8 @@ This repository is self-contained:
   several of its rules come from reading the stack's source, not its manual,
   and are easy to get subtly wrong again.
 - `cert_tool.{h,cpp}` - `--generate-certs [n]` / `--add-client-certs [n]` /
-  `--cert-label`: the built-in lab certificate generator. It writes PEM files
+  `--generate-csr` / `--sign-csr <file>` / `--cert-label`: the built-in lab
+  certificate generator. It writes PEM files
   named after the Network Port properties (`operational-certificate.pem`,
   `private-key.pem`, `certificate-signing-request.pem`,
   `issuer-certificate.pem`, `issuer-private-key.pem`) plus one
@@ -44,9 +45,9 @@ This repository is self-contained:
   starts, and exits. The file-name constants live in `cert_tool.h`, and
   `CertTool::ResolveCertFile` is the ONE place the hub picks between them
   and the older `hub.crt`/`hub.key`/`hub.csr`/`ca.crt` names - use it rather
-  than hard-coding a name. `--add-client-certs` must keep signing with the
-  existing issuer, never a new one, or running hubs stop trusting the new
-  clients.
+  than hard-coding a name. `--add-client-certs` and `--sign-csr` must keep signing
+  with the existing issuer, never a new one, or running hubs stop trusting the
+  new clients.
 - `cert_store.{h,cpp}` - the 4 certificate File objects' contents and the
   device-B side of the BACnet/SC certificate procedures (clause 19.8.3):
   File_Size/AtomicWriteFile writes are STAGED in memory, and main.cpp's
@@ -56,7 +57,7 @@ This repository is self-contained:
   `ValidateStaged()` - that is what stops the hub locking itself out.
 - `tests/sc/` - the BACnet/SC verification scripts
   (`hub_listener_test.py`, `fake_hub_server.py`, `file_object_test.py`,
-  `cert_procedure_test.py`, `rpm_test.py`, `http_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
+  `cert_procedure_test.py`, `rpm_test.py`, `http_test.py`, `csr_test.py`, `keylog_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
   BACnet/SC-related `main.cpp` change.
 - `log_file.{h,cpp}` - `--log-file`: copies stdout/stderr to a rotating log
   file through a pipe, so every line (stack and lws output included) is kept

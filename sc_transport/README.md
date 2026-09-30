@@ -94,6 +94,18 @@ identity-binding policy) looks like. The stack has no certificate-validation
 callback (it was never called and has been removed), so any stricter policy -
 revocation, identity binding - belongs here, in the TLS layer.
 
+## TLS key log (--sc-keylog-file)
+
+`TlsKeyLog` hands OpenSSL's `SSL_CTX_set_keylog_callback` a process-wide
+file (the callback has no user pointer), attached in the same two lws
+callbacks that load the CRL: `LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS`
+(listener) and `..._CLIENT_VERIFY_CERTS` (connector). lws runs them for every
+context it creates, so listener restarts and `ReloadCredentials()` are
+covered without anything else. The HTTPS status page is deliberately not
+attached: the key log is for BACnet/SC. Checked by `tests/sc/keylog_test.py`,
+which compares the hub's secrets with the peer's own key log for the same
+session.
+
 ## Testing
 
 `../tests/sc/` has the verification scripts (`hub_listener_test.py`,

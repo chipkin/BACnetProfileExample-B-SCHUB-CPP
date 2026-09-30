@@ -134,8 +134,12 @@ std::string HubSubjectAltName(const std::string& hubUri) {
     return san;
 }
 
+// `subject`, when given, is used as the certificate's subject name as it is
+// (a device's own name from its CSR - see SignClientCsr) instead of
+// O=ORGANIZATION, CN=commonName.
 X509Ptr MakeCertificate(Role role, const std::string& commonName, EVP_PKEY* subjectKey,
-                        const Credential* issuer, const std::string& hubSubjectAltName = std::string()) {
+                        const Credential* issuer, const std::string& hubSubjectAltName = std::string(),
+                        const X509_NAME* subject = NULL) {
     X509Ptr cert(X509_new());
     if (!cert) {
         return nullptr;
@@ -159,11 +163,16 @@ X509Ptr MakeCertificate(Role role, const std::string& commonName, EVP_PKEY* subj
     X509_gmtime_adj(X509_getm_notBefore(cert.get()), -60L * 60L);
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), days * 24L * 60L * 60L);
 
+    if (subject != NULL) {
+        X509_set_subject_name(cert.get(), subject);
+    } else {
+        X509_NAME* newName = X509_get_subject_name(cert.get());
+        X509_NAME_add_entry_by_txt(newName, "O", MBSTRING_UTF8,
+                                   (const unsigned char*)ORGANIZATION, -1, -1, 0);
+        X509_NAME_add_entry_by_txt(newName, "CN", MBSTRING_UTF8,
+                                   (const unsigned char*)commonName.c_str(), -1, -1, 0);
+    }
     X509_NAME* name = X509_get_subject_name(cert.get());
-    X509_NAME_add_entry_by_txt(name, "O", MBSTRING_UTF8,
-                               (const unsigned char*)ORGANIZATION, -1, -1, 0);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8,
-                               (const unsigned char*)commonName.c_str(), -1, -1, 0);
     X509_set_issuer_name(cert.get(), issuer ? X509_get_subject_name(issuer->cert.get()) : name);
     X509_set_pubkey(cert.get(), subjectKey);
 
@@ -268,14 +277,15 @@ bool WritePfx(const fs::path& path, EVP_PKEY* key, X509* cert, X509* issuer, con
     return ok;
 }
 
-// Writes a PKCS#10 certificate signing request for `key` with the same
-// subject as `cert`. The hub's CSR backs Network Port 2's
-// Certificate_Signing_Request_File object (File 2), which serves hub.csr.
-bool WriteCsr(const fs::path& path, EVP_PKEY* key, X509* cert) {
+// Writes a PKCS#10 certificate signing request for `key` with the subject
+// `subject`. The hub's CSR backs Network Port 2's
+// Certificate_Signing_Request_File object (File 2), which serves hub.csr; a
+// device's CSR (--generate-csr) is signed with --sign-csr.
+bool WriteCsr(const fs::path& path, EVP_PKEY* key, const X509_NAME* subject) {
     X509_REQ* req = X509_REQ_new();
     bool ok = req != NULL
         && X509_REQ_set_version(req, 0) == 1
-        && X509_REQ_set_subject_name(req, X509_get_subject_name(cert)) == 1
+        && X509_REQ_set_subject_name(req, subject) == 1
         && X509_REQ_set_pubkey(req, key) == 1
         && X509_REQ_sign(req, key, EVP_sha256()) > 0;
     if (ok) {
@@ -287,7 +297,7 @@ bool WriteCsr(const fs::path& path, EVP_PKEY* key, X509* cert) {
     }
     X509_REQ_free(req);
     if (!ok) {
-        PrintOpenSslError("could not write the hub's certificate signing request");
+        PrintOpenSslError("could not write the certificate signing request");
     }
     return ok;
 }
@@ -461,8 +471,9 @@ issuer-private-key.pem                                            PRIVATE
     The issuer's private key. It is the only thing that can sign new
     certificates this hub will trust, so anyone who holds it can add devices
     to your BACnet/SC network. It is used only by
-    "BACnetExampleBSCHUB --add-client-certs"; the running hub never reads
-    it. Keep it off devices, and ideally off the network entirely.
+    "BACnetExampleBSCHUB --add-client-certs" and "--sign-csr"; the running
+    hub never reads it. Keep it off devices, and ideally off the network
+    entirely.
 
 issuer-certificate-2.pem                                          PUBLIC
     Not created by --generate-certs. Written when a client adds a second
@@ -492,7 +503,10 @@ operational-certificate.pem                                       PUBLIC
     which device connected.
 
 private-key.pem                                                   PRIVATE
-    That device's private key. It belongs on that one device only.
+    That device's private key. It belongs on that one device only. A folder
+    made by --sign-csr has none (nor a .pfx or yabe-bacnetsc.config) unless
+    the key was made there with --generate-csr: the device made its own key
+    and kept it.
 
 issuer-certificate.pem                                            PUBLIC
     A copy of this folder's issuer-certificate.pem, so the device can
@@ -564,6 +578,17 @@ HOW TO USE THESE FILES
    Numbering continues after the highest existing label. The running hub
    trusts the new certificates immediately; no restart is needed.
 
+   Device made its own key? Sign its certificate signing request instead,
+   so the private key never leaves the device:
+
+       BACnetExampleBSCHUB --sc-cert-dir <this folder> --sign-csr device.csr --cert-label ahu-7
+
+   This writes clients/ahu-7/ with the device's certificate, the issuer and
+   bacnetsc.config - everything but the private key, which the device
+   already has. To make a key and CSR for a device with this program:
+
+       BACnetExampleBSCHUB --sc-cert-dir <folder> --generate-csr --cert-label ahu-7
+
 4. Check a certificate before installing it (any OpenSSL):
 
        openssl verify -CAfile issuer-certificate.pem clients/client-01/operational-certificate.pem
@@ -633,6 +658,48 @@ operational certificate, install issuer-certificate.pem as its issuer certificat
 and set its primary hub URI to %HUBURI%.
 
 See ../../readme.txt in the hub's certificate folder for the full description.
+)";
+
+// readme.txt in a clients/<label>/ folder made by --generate-csr: a key and a
+// CSR, waiting for the hub's issuer to sign it.
+const char* const CSR_DIR_README = R"(BACnet/SC certificate signing request "%LABEL%"
+Generated by BACnetExampleBSCHUB --generate-csr for ONE device that will connect to a BACnet/SC hub.
+
+certificate-signing-request.pem  PUBLIC   The request (PKCS#10) for this device's key.
+                                          Subject CN: "%SUBJECT%". Send it to whoever
+                                          runs the hub.
+private-key.pem                  PRIVATE  This device's private key. Keep it on this device
+                                          only - it is never sent to the hub.
+
+Whoever runs the hub signs the request with the hub's issuer:
+
+    BACnetExampleBSCHUB --sc-cert-dir <hub certificate folder> --sign-csr certificate-signing-request.pem --cert-label %LABEL%
+
+and sends back operational-certificate.pem, issuer-certificate.pem and
+bacnetsc.config. Put them in this folder next to private-key.pem.
+)";
+
+// readme.txt in a clients/<label>/ folder made by --sign-csr when the device
+// kept its private key to itself (no private-key.pem here).
+const char* const SIGNED_CSR_DIR_README = R"(BACnet/SC client certificate "%LABEL%"
+Signed by BACnetExampleBSCHUB --sign-csr from the device's own certificate signing request,
+for ONE device that connects to its BACnet/SC hub. The device's private key is not in this
+folder: the device made it and kept it.
+
+operational-certificate.pem    PUBLIC   This device's operational certificate, signed by the hub's
+                                        issuer. Subject: "%SUBJECT%".
+                                        Install it with the private key the device made with its CSR.
+issuer-certificate.pem         PUBLIC   The certificate authority that signed the hub's certificate.
+                                        The device uses it to validate the hub
+                                        (Issuer_Certificate_Files - load it into both slots).
+issuer-certificate.cer         PUBLIC   issuer-certificate.pem in DER form.
+bacnetsc.config                PUBLIC   BACnet/SC connection settings for the CAS BACnet Explorer:
+                                        hub URI %HUBURI% and the files above, plus
+                                        private-key.pem - copy the device's key in next to it.
+
+Send the whole folder to the device's owner. Then, on the device: install the operational
+certificate (with its own private key), install issuer-certificate.pem as its issuer
+certificate, and set its primary hub URI to %HUBURI%.
 )";
 
 // Writes a text file (overwriting any previous version).
@@ -740,7 +807,7 @@ bool IssueHub(const fs::path& certDir, const Credential& issuer, const std::stri
     X509Ptr cert = MakeCertificate(Role::Hub, CN_PREFIX + std::string(HUB_LABEL), key.get(), &issuer,
                                    HubSubjectAltName(hubUri));
     if (!cert || !WritePem(keyPath, key.get(), NULL) || !WritePem(crtPath, NULL, cert.get()) ||
-        !WriteCsr(csrPath, key.get(), cert.get())) {
+        !WriteCsr(csrPath, key.get(), X509_get_subject_name(cert.get()))) {
         return false;
     }
     RecordInManifest(certDir, HUB_LABEL, "hub", "", cert.get());
@@ -842,6 +909,90 @@ bool IssueClients(const fs::path& certDir, const Credential& issuer, unsigned co
     return true;
 }
 
+// The label for --generate-csr / --sign-csr: the --cert-label given, used as
+// it is (one device, one folder), or the next free client-NN.
+std::string SingleClientLabel(const fs::path& certDir, const std::string& label) {
+    if (!label.empty()) {
+        return label;
+    }
+    return ClientLabel(DEFAULT_CLIENT_LABEL, HighestClientNumber(certDir, DEFAULT_CLIENT_LABEL) + 1);
+}
+
+// A subject name as one line of text, e.g. "CN=AHU 7,O=Example Corp".
+std::string NameText(const X509_NAME* name) {
+    BIO* bio = BIO_new(BIO_s_mem());
+    if (bio == NULL) {
+        return "?";
+    }
+    X509_NAME_print_ex(bio, name, 0, XN_FLAG_RFC2253 & ~ASN1_STRFLGS_ESC_MSB);
+    char* data = NULL;
+    const long len = BIO_get_mem_data(bio, &data);
+    std::string text(data != NULL ? data : "", len > 0 ? (size_t)len : 0);
+    BIO_free(bio);
+    return text;
+}
+
+struct ReqFree { void operator()(X509_REQ* p) const { X509_REQ_free(p); } };
+using ReqPtr = std::unique_ptr<X509_REQ, ReqFree>;
+
+// Reads a certificate signing request, PEM or DER.
+ReqPtr ReadCsr(const fs::path& path) {
+    BIO* bio = BIO_new_file(path.string().c_str(), "rb");
+    if (bio == NULL) {
+        fprintf(stderr, "Error: could not open \"%s\".\n", path.string().c_str());
+        return nullptr;
+    }
+    ReqPtr req(PEM_read_bio_X509_REQ(bio, NULL, NULL, NULL));
+    if (!req) {
+        ERR_clear_error();
+        BIO_reset(bio);  // not PEM - try DER from the start of the file
+        req.reset(d2i_X509_REQ_bio(bio, NULL));
+    }
+    BIO_free(bio);
+    if (!req) {
+        PrintOpenSslError("the file is not a certificate signing request (PKCS#10, PEM or DER)");
+    }
+    return req;
+}
+
+// The checks a CA makes before signing: the request is signed by the key it
+// carries (so the requester holds that private key), that key is strong
+// enough, and there is a subject to put in the certificate.
+bool CheckCsr(X509_REQ* req) {
+    EVP_PKEY* key = X509_REQ_get0_pubkey(req);
+    if (key == NULL || X509_REQ_verify(req, key) != 1) {
+        PrintOpenSslError("the certificate signing request's signature does not verify - it is damaged, "
+                          "or was not made with the key it contains");
+        return false;
+    }
+    const int type = EVP_PKEY_get_base_id(key);
+    const int bits = EVP_PKEY_get_bits(key);
+    if (!((type == EVP_PKEY_EC && bits >= 256) || (type == EVP_PKEY_RSA && bits >= 2048))) {
+        fprintf(stderr, "Error: the request's key is %s %d-bit; BACnet/SC needs ECDSA P-256 or stronger, or "
+                        "RSA 2048-bit or stronger.\n", EVP_PKEY_get0_type_name(key), bits);
+        return false;
+    }
+    if (X509_NAME_entry_count(X509_REQ_get_subject_name(req)) == 0) {
+        fprintf(stderr, "Error: the request has an empty subject - there is nothing to name the device by.\n");
+        return false;
+    }
+    return true;
+}
+
+// Reads a device's private key from its folder without ever prompting: an
+// encrypted key is simply treated as unreadable.
+PkeyPtr ReadKeyNoPrompt(const fs::path& path) {
+    FILE* f = fopen(path.string().c_str(), "rb");
+    if (f == NULL) {
+        return nullptr;
+    }
+    pem_password_cb* noPassword = [](char*, int, int, void*) { return 0; };
+    PkeyPtr key(PEM_read_PrivateKey(f, NULL, noPassword, NULL));
+    fclose(f);
+    ERR_clear_error();
+    return key;
+}
+
 }  // namespace
 
 std::string ResolveCertFile(const std::string& certDir, const char* name, const char* legacyName) {
@@ -920,7 +1071,7 @@ bool GenerateCertificateSet(const std::string& certDirArg, unsigned clientCount,
     printf("Wrote %s: what each file is, which are private, and how to use them.\n", README_FILE);
     printf("Client bacnetsc.config files point at %s (change with --cert-hub-uri).\n", hubUri.c_str());
     printf("Done. Give each connecting device its own %s/<label>/ folder.\n"
-           "Keep %s private: it is only needed to sign more clients (--add-client-certs).\n",
+           "Keep %s private: it is only needed to sign more clients (--add-client-certs, --sign-csr).\n",
            CLIENTS_DIR, ISSUER_PRIVATE_KEY_FILE);
     return true;
 }
@@ -942,6 +1093,135 @@ bool AddClientCertificates(const std::string& certDirArg, unsigned clientCount,
         return false;
     }
     printf("Done. The running hub already trusts these (same issuer) - no restart needed.\n");
+    return true;
+}
+
+bool GenerateClientCsr(const std::string& certDirArg, const std::string& labelArg) {
+    const fs::path certDir(certDirArg);
+    const std::string label = SingleClientLabel(certDir, labelArg);
+    if (!ValidLabel(label)) {
+        return false;
+    }
+    const fs::path dir = certDir / CLIENTS_DIR / label;
+    const fs::path keyPath = dir / PRIVATE_KEY_FILE;
+    const fs::path csrPath = dir / CERTIFICATE_SIGNING_REQUEST_FILE;
+    if (!CheckNotExisting({keyPath, csrPath, dir / OPERATIONAL_CERTIFICATE_FILE})) {
+        return false;
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    PkeyPtr key = NewP256Key();
+    if (!key) {
+        return false;
+    }
+    // The same subject --add-client-certs gives a device: O=<lab>, CN=Chipkin Example B-SCHUB <label>.
+    X509_NAME* subject = X509_NAME_new();
+    if (subject == NULL) {
+        return false;
+    }
+    const std::string commonName = CN_PREFIX + label;
+    X509_NAME_add_entry_by_txt(subject, "O", MBSTRING_UTF8, (const unsigned char*)ORGANIZATION, -1, -1, 0);
+    X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_UTF8, (const unsigned char*)commonName.c_str(), -1, -1, 0);
+    const bool ok = WritePem(keyPath, key.get(), NULL) && WriteCsr(csrPath, key.get(), subject) &&
+                    WriteText(dir / README_FILE, ReplaceAll(ReplaceAll(CSR_DIR_README, "%LABEL%", label),
+                                                            "%SUBJECT%", commonName));
+    X509_NAME_free(subject);
+    if (!ok) {
+        return false;
+    }
+    printf("Wrote a new key and certificate signing request for \"%s\" in \"%s\":\n", label.c_str(),
+           dir.string().c_str());
+    printf("  %-32s send this to whoever runs the hub\n", CERTIFICATE_SIGNING_REQUEST_FILE);
+    printf("  %-32s PRIVATE - keep it on this device\n", PRIVATE_KEY_FILE);
+    printf("The hub signs it with:  --sign-csr %s --cert-label %s\n", CERTIFICATE_SIGNING_REQUEST_FILE,
+           label.c_str());
+    return true;
+}
+
+bool SignClientCsr(const std::string& certDirArg, const std::string& csrFile, const std::string& labelArg,
+                   const std::string& hubUri) {
+    const fs::path certDir(certDirArg);
+    const fs::path csrPath(csrFile);
+    ReqPtr req = ReadCsr(csrPath);
+    if (!req || !CheckCsr(req.get())) {
+        return false;
+    }
+    Credential issuer;
+    if (!LoadIssuer(certDir, &issuer)) {
+        return false;
+    }
+
+    // A request made here with --generate-csr sits in clients/<label>/, so
+    // with no --cert-label its certificate goes back into that same folder,
+    // next to its key.
+    std::string label = labelArg;
+    std::error_code ec;
+    if (label.empty() && fs::equivalent(csrPath.parent_path().parent_path(), certDir / CLIENTS_DIR, ec)) {
+        label = csrPath.parent_path().filename().string();
+    }
+    label = SingleClientLabel(certDir, label);
+    if (!ValidLabel(label)) {
+        return false;
+    }
+    const fs::path dir = certDir / CLIENTS_DIR / label;
+    const fs::path crtPath = dir / OPERATIONAL_CERTIFICATE_FILE;
+    const fs::path issuerPath = dir / ISSUER_CERTIFICATE_FILE;
+    if (!CheckNotExisting({crtPath})) {
+        return false;
+    }
+
+    // If the folder already holds the device's key (--generate-csr), it must be
+    // the key the request is for; the folder then also gets the .pfx and YABE
+    // files, which need the key.
+    EVP_PKEY* publicKey = X509_REQ_get0_pubkey(req.get());
+    PkeyPtr privateKey;
+    if (fs::exists(dir / PRIVATE_KEY_FILE)) {
+        privateKey = ReadKeyNoPrompt(dir / PRIVATE_KEY_FILE);
+        if (privateKey && EVP_PKEY_eq(privateKey.get(), publicKey) != 1) {
+            fprintf(stderr, "Error: \"%s\" is not the key this request is for. Use another --cert-label.\n",
+                    (dir / PRIVATE_KEY_FILE).string().c_str());
+            return false;
+        }
+        if (!privateKey) {
+            printf("Note: \"%s\" can't be read without a password, so no .pfx is written for it.\n",
+                   (dir / PRIVATE_KEY_FILE).string().c_str());
+        }
+    }
+
+    fs::create_directories(dir, ec);
+    const X509_NAME* subject = X509_REQ_get_subject_name(req.get());
+    X509Ptr cert = MakeCertificate(Role::Client, std::string(), publicKey, &issuer, std::string(), subject);
+    const fs::path derPath = dir / ISSUER_CERTIFICATE_DER_FILE;
+    if (!cert || !WritePem(crtPath, NULL, cert.get()) || !WritePem(issuerPath, NULL, issuer.cert.get()) ||
+        !WriteDer(derPath, issuer.cert.get()) || !WriteText(dir / BACNETSC_CONFIG_FILE, BacnetScConfig(hubUri))) {
+        return false;
+    }
+    if (privateKey) {
+        const fs::path pfxPath = dir / (label + CLIENT_PFX_EXTENSION);
+        if (!WritePfx(pfxPath, privateKey.get(), cert.get(), issuer.cert.get(), CN_PREFIX + label) ||
+            !WriteText(dir / YABE_CONFIG_FILE, YabeConfig(hubUri, pfxPath, derPath)) ||
+            !WriteText(dir / README_FILE,
+                       ReplaceAll(ReplaceAll(CLIENT_DIR_README, "%LABEL%", label), "%HUBURI%", hubUri))) {
+            return false;
+        }
+    } else if (!WriteText(dir / README_FILE,
+                          ReplaceAll(ReplaceAll(ReplaceAll(SIGNED_CSR_DIR_README, "%LABEL%", label), "%HUBURI%",
+                                                hubUri), "%SUBJECT%", NameText(subject)))) {
+        return false;
+    }
+    WriteText(certDir / README_FILE, CERT_DIR_README);
+
+    printf("Signed \"%s\" with the existing issuer in \"%s\":\n", csrPath.string().c_str(),
+           certDir.string().c_str());
+    printf("  Subject: %s\n", NameText(subject).c_str());
+    RecordInManifest(certDir, label, "client", std::string(CLIENTS_DIR) + "/" + label + "/", cert.get());
+    if (privateKey) {
+        printf("Done. %s holds everything the device needs, its private key included.\n", dir.string().c_str());
+    } else {
+        printf("Done. Send %s to the device's owner: its operational-certificate.pem goes with the private key\n"
+               "the device made with its request. The running hub already trusts it - no restart needed.\n",
+               dir.string().c_str());
+    }
     return true;
 }
 

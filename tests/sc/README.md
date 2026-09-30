@@ -199,6 +199,40 @@ BACnetExampleBSCHUB --sc-cert-dir certs --generate-certs 1
 python tests/sc/cert_files_test.py --cert-dir certs
 ```
 
+## `csr_test.py` (`--generate-csr` and `--sign-csr`)
+
+Runs the executable in a temporary certificate folder, so no hub needs to be
+running. `--generate-csr` should write a P-256 key and a valid CSR. `--sign-csr`
+should sign that CSR back into its own folder (with the `.pfx`/YABE files), and
+also sign a CSR made elsewhere, PEM or DER. That certificate keeps the CSR's
+subject and key, gets EKU clientAuth only, and the folder holds no private
+key. The test also checks refusals: a broken signature, RSA 1024, a file that
+isn't a CSR, a folder that already has a certificate, and a folder whose key
+isn't the CSR's.
+
+```
+python tests/sc/csr_test.py --exe build/Release/BACnetExampleBSCHUB.exe
+```
+
+To check that the hub accepts such a certificate over TLS, sign a
+`--generate-csr` request and connect with it:
+`hub_listener_test.py --client-cert <label>`.
+
+## `keylog_test.py` (`--sc-keylog-file`, issue #68)
+
+Starts the executable on free ports in a temporary folder. For each BACnet/SC
+role, Python's `ssl` module is the other end, with its own `keylog_filename`,
+and the hub's key log must hold the same five TLS 1.3 secrets for the same
+client random. The roles are the hub function (a device connecting in) and
+the hub connector (`--sc-hub-uri` to a TLS server the test runs). The test
+also checks that HTTPS status-page sessions are *not* logged, `/health`'s
+`tls_keylog`, the start-up warning, and that start-up fails for a key log
+file that can't be opened.
+
+```
+python tests/sc/keylog_test.py --exe build/Release/BACnetExampleBSCHUB.exe
+```
+
 ## CI
 
 `.github/workflows/release.yml` runs every script here on Windows and Linux
@@ -206,4 +240,5 @@ for each pull request: `hub_listener_test.py` (normally and with
 `--bacnet-ip off`), `file_object_test.py`, `rpm_test.py`, `http_test.py`
 (upload disabled, then enabled with a token, device name, network numbers and
 a log file), `fake_hub_server.py` against the connector, and
-`cert_procedure_test.py`, plus the connection-limit refusal.
+`cert_procedure_test.py`, `cert_files_test.py`, `csr_test.py` and `keylog_test.py`, plus the
+connection-limit refusal.

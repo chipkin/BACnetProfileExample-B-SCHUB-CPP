@@ -335,6 +335,14 @@ jobs:
       - name: Client certificate files for Windows tools (.pfx, .cer, YABE config)
         run: python tests/sc/cert_files_test.py --cert-dir certs
 
+      - name: Signing a device's own CSR (--generate-csr, --sign-csr)
+        shell: bash
+        run: python tests/sc/csr_test.py --exe "${{ matrix.exe }}"
+
+      - name: TLS key log for Wireshark (--sc-keylog-file)
+        shell: bash
+        run: python tests/sc/keylog_test.py --exe "${{ matrix.exe }}"
+
       - name: Start the example with BACnet/SC enabled
         shell: bash
         run: |

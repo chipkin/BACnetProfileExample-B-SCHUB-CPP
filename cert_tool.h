@@ -21,6 +21,19 @@
 //                             existing label.
 //   --cert-label <prefix>     Label prefix for client sets. Default "client",
 //                             giving client-01, client-02, ...
+//   --generate-csr            A new key and certificate signing request for
+//                             ONE device, in clients/<label>/ (--cert-label,
+//                             used as it is; default the next client-NN).
+//                             Needs no issuer: a device's owner can run it on
+//                             their own computer and keep the key there.
+//   --sign-csr <file>         Sign a device's own CSR (PEM or DER) with the
+//                             issuer ALREADY in --sc-cert-dir, writing
+//                             clients/<label>/ with its certificate, the
+//                             issuer and bacnetsc.config - but no private key,
+//                             which the device kept. The certificate keeps the
+//                             CSR's subject and public key; everything else
+//                             (validity, EKU clientAuth, ...) is this tool's
+//                             client profile, whatever the CSR asked for.
 //
 // FILE NAMES follow the BACnet Network Port properties that carry them
 // (ANSI/ASHRAE 135 cl. 12.56: Operational_Certificate_File,
@@ -133,6 +146,20 @@ bool GenerateCertificateSet(const std::string& certDir, unsigned clientCount,
 // Returns true on success.
 bool AddClientCertificates(const std::string& certDir, unsigned clientCount,
                            const std::string& clientLabel, const std::string& hubUri);
+
+// Writes a new private key and a certificate signing request for it in
+// certDir/clients/<label>/ (label "" = the next free client-NN). Never
+// overwrites a file. Returns true on success.
+bool GenerateClientCsr(const std::string& certDir, const std::string& label);
+
+// Signs the certificate signing request in `csrFile` with the issuer already in
+// certDir, after checking its signature and key strength, and writes
+// certDir/clients/<label>/ (label "" = the folder the CSR is in, if that is a
+// clients/ folder, else the next free client-NN). If that folder already holds
+// the matching private key (--generate-csr), the .pfx and YABE files are
+// written too. Never overwrites a certificate. Returns true on success.
+bool SignClientCsr(const std::string& certDir, const std::string& csrFile, const std::string& label,
+                   const std::string& hubUri);
 
 }  // namespace CertTool
 
