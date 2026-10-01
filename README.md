@@ -98,9 +98,9 @@ every pull request.
   [prebuilt release](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases).
   Contact <https://store.chipkin.com/services/stacks/bacnet-stack> or
   support@chipkin.com.
-- **libwebsockets** (MIT) and **OpenSSL 3** (Apache-2.0), via vcpkg, with
-  libwebsockets' own dependencies libuv (MIT), zlib (Zlib) and, on Windows,
-  pthreads4w (Apache-2.0). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+- **libwebsockets** (MIT), **OpenSSL 3** (Apache-2.0) and **zlib** (Zlib, for
+  CARI zip files), via vcpkg, with libwebsockets' own dependencies libuv (MIT)
+  and, on Windows, pthreads4w (Apache-2.0). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
   Each release includes a software bill of materials (`sbom-*.cdx.json`,
   CycloneDX) listing the exact versions.
 

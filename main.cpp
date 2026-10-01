@@ -30,12 +30,14 @@
 //                                                                 discoverable over plain BACnet/IP)
 //     Network Port 2                "BACnet SC"                 (the BACnet/SC port - hub function)
 //     File 1                        "Operational Certificate"   (the hub's operational certificate,
-//                                                                 operational-certificate.pem; writable)
+//                                                                 cert1/device-<n>/port-2/opr-hub.pem; writable)
 //     File 2                        "Certificate Signing Request" (the hub's CSR,
-//                                                                 certificate-signing-request.pem; read-only)
-//     File 3                        "Issuer Certificate Slot 1" (issuer-certificate.pem; writable)
-//     File 4                        "Issuer Certificate Slot 2" (issuer-certificate-2.pem, or slot 1's
+//                                                                 cert1/device-<n>/port-2/csr-hub.pem; read-only)
+//     File 3                        "Issuer Certificate Slot 1" (cert1/issuer/iss-1.pem; writable)
+//     File 4                        "Issuer Certificate Slot 2" (cert1/issuer/iss-2.pem, or slot 1's
 //                                                                 certificate until one is written; writable)
+//   The file names are the CARI layout (ANSI/ASHRAE 135-2024 Annex AA.2) - see
+//   cert_layout.h, which also reads the names of earlier releases.
 //
 // Every object has a Description saying what it is for (ObjectDescription()).
 //
@@ -129,6 +131,7 @@
 #include "sc_transport/HttpServer.h" // GET /health, /metrics + POST /certs/<slot> (this batch's Tasks 3/4)
 #include "config.h" // --config <path> support (Task 2) - see config.h
 #include "sc_transport/TlsKeyLog.h" // --sc-keylog-file: TLS secrets for Wireshark (issue #68)
+#include "cert_layout.h" // where each certificate file is in --sc-cert-dir (CARI tree, issue #71)
 #include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
 #include "cert_store.h" // certificate File object contents + clause 19.8.3 staging - see cert_store.h
 #include "log_file.h"   // --log-file: console output also to a rotating file - see log_file.h
@@ -432,6 +435,10 @@ static std::string g_scTrustedIssuersPath;
 // unlike the stub this replaces, ScTransport actually opens this port.
 static uint16_t g_scPort = 4443;
 static std::string g_scCertDir = "./certs";
+// Every certificate file's path in g_scCertDir (CARI tree, or an older
+// layout) - set once at start-up from cert_layout.h, used everywhere a
+// certificate or key file is named.
+static CertLayout::HubCertPaths g_certPaths;
 // Built from g_scPort once the CLI has been parsed - see main(). "0.0.0.0"
 // binds every interface (ScTransport::StartListening treats that host - or an
 // empty one - as "bind all", the same as a NULL lws iface).
@@ -564,40 +571,27 @@ static bool IsScCertFileInstance(const uint32_t fileInstance) {
            fileInstance == FILE_ISSUER_CERT_1_INSTANCE || fileInstance == FILE_ISSUER_CERT_2_INSTANCE;
 }
 
-// Returns the filename (relative to g_scCertDir) for one of the 4 File object
-// instances above, or "" if fileInstance isn't one of them. The names follow
-// the Network Port properties each file backs (see cert_tool.h), e.g.
-// operational-certificate.pem for Operational_Certificate_File. A directory
-// made by an earlier release still uses the older names
-// (hub.crt, hub.csr, ca.crt); CertTool::ResolveCertFile picks whichever exists.
-static std::string ScCertFileRelativePath(const uint32_t fileInstance) {
+// Full on-disk path for one of the 4 File object instances above, or "" if
+// fileInstance isn't one of them. The files are the hub's CARI tree
+// (cert1/device-<n>/port-2/opr-hub.pem ..., issue #71) or, in a folder from an
+// earlier release, the older names - g_certPaths (cert_layout.h) knows which.
+static std::string ScCertFilePath(const uint32_t fileInstance) {
     switch (fileInstance) {
-        case FILE_OPERATIONAL_CERT_INSTANCE:
-            return CertTool::ResolveCertFile(g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE,
-                                             CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
-        case FILE_CSR_INSTANCE:
-            return CertTool::ResolveCertFile(g_scCertDir, CertTool::CERTIFICATE_SIGNING_REQUEST_FILE,
-                                             CertTool::LEGACY_CERTIFICATE_SIGNING_REQUEST_FILE);
-        case FILE_ISSUER_CERT_1_INSTANCE:
-            return CertTool::ResolveCertFile(g_scCertDir, CertTool::ISSUER_CERTIFICATE_FILE,
-                                             CertTool::LEGACY_ISSUER_CERTIFICATE_FILE);
-        case FILE_ISSUER_CERT_2_INSTANCE:
-            // Slot 2 has its own file, so a client can add a second issuer
-            // without overwriting slot 1. Until something is written to it,
-            // it serves slot 1's certificate (CertStore's read fallback).
-            return CertTool::ISSUER_CERTIFICATE_2_FILE;
-        default:
-            return std::string();
+        case FILE_OPERATIONAL_CERT_INSTANCE: return g_certPaths.operationalCertificate;
+        case FILE_CSR_INSTANCE:              return g_certPaths.certificateSigningRequest;
+        case FILE_ISSUER_CERT_1_INSTANCE:    return g_certPaths.issuerCertificate1;
+        // Slot 2 has its own file, so a client can add a second issuer
+        // without overwriting slot 1. Until something is written to it, it
+        // serves slot 1's certificate (CertStore's read fallback).
+        case FILE_ISSUER_CERT_2_INSTANCE:    return g_certPaths.issuerCertificate2;
+        default:                             return std::string();
     }
 }
 
-// Full on-disk path for a File object instance, or "" if it isn't one of the 4.
-static std::string ScCertFilePath(const uint32_t fileInstance) {
-    const std::string relative = ScCertFileRelativePath(fileInstance);
-    if (relative.empty()) {
-        return std::string();
-    }
-    return g_scCertDir + "/" + relative;
+// The same, relative to --sc-cert-dir (for log lines and POST /certs/<slot>).
+static std::string ScCertFileRelativePath(const uint32_t fileInstance) {
+    const std::string path = ScCertFilePath(fileInstance);
+    return path.empty() ? path : CertLayout::RelativeTo(g_scCertDir, path);
 }
 
 // Stats the file for a File object instance. Returns false (leaving *size/*mtime
@@ -1907,6 +1901,21 @@ static std::string ParseStringArg(const int argc, char** argv, const char* flagN
     return std::string();
 }
 
+// The hub URI a device on the LAN dials: this machine's IPv4 address and
+// --sc-port (a lab default - --cert-hub-uri names a DNS name, another
+// interface or a NAT address instead). Written into bacnetsc.config and shown
+// by the set-up guide.
+static std::string LabHubUri() {
+    uint8_t ip[4] = {127, 0, 0, 1};
+    uint8_t mask[4] = {0, 0, 0, 0};
+    if (!CASExampleHelper::GetLocalIPv4(ip, mask)) {
+        ip[0] = 127; ip[1] = 0; ip[2] = 0; ip[3] = 1;
+    }
+    char uri[64];
+    snprintf(uri, sizeof(uri), "wss://%u.%u.%u.%u:%u/", ip[0], ip[1], ip[2], ip[3], g_scPort);
+    return uri;
+}
+
 // Parse "<flagName> [n]": returns true if the flag is present. *outCount is
 // the number after it, or defaultCount when the next argument is missing or
 // is another flag (so "--generate-certs" alone means the default). A value
@@ -1974,11 +1983,12 @@ static const char* const kValueOptions[] = {
     "--http-port", "--http-bind", "--http-tls-cert", "--http-tls-key", "--sc-max-hub-connections",
     "--sc-rate-limit", "--sc-rate-limit-total", "--bacnet-ip", "--device-name", "--ip-network-number",
     "--sc-network-number", "--log-file", "--log-max-size-mb", "--log-max-files", "--config",
-    "--cert-label", "--cert-hub-uri", "--sign-csr", "--sc-keylog-file"};
+    "--cert-label", "--cert-hub-uri", "--sign-csr", "--sc-keylog-file",
+    "--cert-device-instance", "--cert-port-id"};
 // Switches; the first group also takes an optional on/off (see ParseSwitchArg).
 static const char* const kOnOffSwitches[] = {"--http-tls", "--sc-accept-hub-without-hello",
                                              "--sc-accept-device-without-hello"};
-static const char* const kSwitches[] = {"--force", "--generate-csr", "--xml", "--xmlLog", "--service", "--install-service",
+static const char* const kSwitches[] = {"--force", "--generate-csr", "--migrate-certs", "--xml", "--xmlLog", "--service", "--install-service",
                                         "--uninstall-service", "--help", "-h", "/?", "--version"};
 static const char* const kOptionalCountOptions[] = {"--generate-certs", "--add-client-certs"};
 
@@ -2113,10 +2123,11 @@ static int RunHub(int argc, char** argv) {
                 printf("                      the device is reachable only over BACnet/SC. Default on.\n");
                 printf("\nBACnet/SC options (NM-SCH-B hub function):\n");
                 printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 4443.\n");
-                printf("  --sc-cert-dir <dir> Directory holding operational-certificate.pem,\n");
-                printf("                      private-key.pem and issuer-certificate.pem (or the older\n");
-                printf("                      hub.crt/hub.key/ca.crt; see\n");
-                printf("                      --generate-certs below). Default \"./certs\".\n");
+                printf("  --sc-cert-dir <dir> The certificate folder: a CARI tree (cert1/device-<n>/port-2/\n");
+                printf("                      opr-hub.pem, key-hub.pem, csr-hub.pem, cert1/issuer/iss-1.pem;\n");
+                printf("                      ANSI/ASHRAE 135-2024 Annex AA.2), or an older release's\n");
+                printf("                      names (operational-certificate.pem ..., hub.crt ...). See\n");
+                printf("                      --generate-certs below. Default \"./certs\".\n");
                 printf("  --sc-hub-uri <wss://host:port/path>\n");
                 printf("                      Also run the hub CONNECTOR role: dial out to another hub at\n");
                 printf("                      this URI. Off by default (this example needs only the hub\n");
@@ -2156,36 +2167,45 @@ static int RunHub(int argc, char** argv) {
                 printf("                      Anyone with the file and a capture can read the traffic.\n");
                 printf("                      Command line only; no config-file key.\n");
                 printf("\nLab certificates (LAB TESTING ONLY - written to --sc-cert-dir, then exits):\n");
+                printf("  Every file is laid out as CARI (Certificate Authority Requirements Interchange,\n");
+                printf("  ANSI/ASHRAE 135-2024 Annex AA.2): cert1/device-<n>/port-<id>/csr-, opr-, key-<name>.pem\n");
+                printf("  and cert1/issuer/iss-1.pem. readme.txt in the folder explains every file.\n");
                 printf("  --generate-certs [n]\n");
-                printf("                      Create a fresh set of PEM files named after the Network\n");
-                printf("                      Port properties: issuer-certificate.pem (+ its key), this\n");
-                printf("                      hub's operational-certificate.pem, private-key.pem and\n");
-                printf("                      certificate-signing-request.pem, and n labeled client\n");
-                printf("                      folders, clients/client-01/ ... (each holding its own\n");
-                printf("                      operational-certificate.pem, private-key.pem and\n");
-                printf("                      issuer-certificate.pem). Default n = 3. Refuses to replace\n");
-                printf("                      an existing issuer unless --force is also given.\n");
+                printf("                      A fresh set: the lab CA (ca/), this hub's CARI tree\n");
+                printf("                      (cert1/device-<deviceID>/port-2/ opr-, key-, csr-hub.pem and\n");
+                printf("                      cert1/issuer/iss-1.pem), and n device folders,\n");
+                printf("                      clients/client-01/ ... (each a CARI response with its own\n");
+                printf("                      certificate and key, zipped too, plus bacnetsc.config and\n");
+                printf("                      .pfx). Default n = 3. Refuses to replace an existing set\n");
+                printf("                      unless --force is also given.\n");
                 printf("  --add-client-certs [n]\n");
-                printf("                      Sign n more client certificates (default 1) with the issuer\n");
-                printf("                      already in --sc-cert-dir. Numbering continues after the\n");
-                printf("                      highest existing label, and the running hub trusts them\n");
-                printf("                      without a restart.\n");
-                printf("  --generate-csr      Make a new private key and certificate signing request for\n");
-                printf("                      ONE device in clients/<label>/, for --sign-csr. Needs no\n");
-                printf("                      issuer, so a device's owner can run it and keep the key.\n");
-                printf("  --sign-csr <file>   Sign a device's own certificate signing request (PEM or\n");
-                printf("                      DER) with the issuer already in --sc-cert-dir, writing\n");
-                printf("                      clients/<label>/: its operational-certificate.pem,\n");
-                printf("                      issuer-certificate.pem and bacnetsc.config. The device keeps\n");
-                printf("                      its private key. The certificate keeps the request's\n");
-                printf("                      subject; validity and key usage are the client profile's.\n");
-                printf("  --cert-label <prefix>\n");
-                printf("                      Label for client certificates. Default \"client\", giving\n");
-                printf("                      client-01, client-02, ... Each certificate's Common Name is\n");
-                printf("                      \"Chipkin Example B-SCHUB <label>-NN\". Every certificate is\n");
-                printf("                      also listed in <sc-cert-dir>/certificates.txt. With\n");
-                printf("                      --generate-csr / --sign-csr it is the folder name as it is\n");
-                printf("                      (default: the next client-NN).\n");
+                printf("                      n more device folders (default 1), signed by the CA already\n");
+                printf("                      in --sc-cert-dir. Numbering continues after the highest\n");
+                printf("                      existing label, and the running hub trusts them without a\n");
+                printf("                      restart.\n");
+                printf("  --generate-csr      A new private key and a CARI request (csr-, key-<label>.pem,\n");
+                printf("                      and <label>-cari-request.zip) for ONE device in\n");
+                printf("                      clients/<label>/. Needs no CA, so a device's owner can run\n");
+                printf("                      it and keep the key.\n");
+                printf("  --sign-csr <file>   Sign with the CA already in --sc-cert-dir:\n");
+                printf("                        a CARI request zip -> <name>-response.zip next to it (opr-\n");
+                printf("                          next to each CSR, cert1/issuer/iss-1.pem, errors.txt);\n");
+                printf("                        a bare CSR (PEM or DER) -> the device folder clients/<label>/;\n");
+                printf("                        a --generate-csr folder (or its CSR) -> signed in place.\n");
+                printf("                      A certificate keeps the request's subject and key; validity\n");
+                printf("                      and key usage are the device profile's.\n");
+                printf("  --migrate-certs     Copy an older release's certificate folder (operational-\n");
+                printf("                      certificate.pem ..., or hub.crt ...) into the CARI layout. The\n");
+                printf("                      old files are left as they are.\n");
+                printf("  --cert-label <label>\n");
+                printf("                      Device folder name. Default \"client\", giving client-01,\n");
+                printf("                      client-02, ... (a prefix with --generate-certs and\n");
+                printf("                      --add-client-certs; the exact name otherwise). The lab\n");
+                printf("                      subject is CN=\"Chipkin Example B-SCHUB <label>\". Every\n");
+                printf("                      certificate is also listed in <sc-cert-dir>/certificates.txt.\n");
+                printf("  --cert-device-instance <n>, --cert-port-id <id>\n");
+                printf("                      The device's CARI folder names, device-<n>/port-<id>.\n");
+                printf("                      Default: the client number, and 1.\n");
                 printf("  --cert-hub-uri <wss://host:port/>\n");
                 printf("                      Primary hub URI written into each client's bacnetsc.config\n");
                 printf("                      (CAS BACnet Explorer import file). Default: this\n");
@@ -2207,7 +2227,7 @@ static int RunHub(int argc, char** argv) {
                 printf("                      without --http-tls it is plain HTTP - see docs/manual.md\n");
                 printf("                      \"Security\" before setting this to anything else.\n");
                 printf("  --http-tls [on|off] Serve the HTTP endpoints over HTTPS (TLS 1.2/1.3). Uses the\n");
-                printf("                      hub's operational-certificate.pem and private-key.pem\n");
+                printf("                      hub's operational certificate and private key\n");
                 printf("                      unless --http-tls-cert/--http-tls-key say otherwise.\n");
                 printf("  --http-tls-cert <file>, --http-tls-key <file>\n");
                 printf("                      Certificate (PEM, may include its chain) and key for --http-tls.\n");
@@ -2316,13 +2336,7 @@ static int RunHub(int argc, char** argv) {
         g_httpUploadToken = fileConfig.httpUploadToken;  // config file only, like dcc-password
     }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
-    if (!fileConfig.hasScPort && ParseStringArg(argc, argv, "--sc-port").empty()) {
-        // The default changed in 1.5.0 (issue #70): say so once, so a site whose
-        // devices still dial :47819 can see why they no longer connect.
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
-            "BACnet/SC port %u (the default; before 1.5.0 it was 47819 - set sc-port = 47819 or --sc-port 47819 "
-            "if your devices still use that)", (unsigned)g_scPort);
-    }
+    const bool scPortIsDefault = !fileConfig.hasScPort && ParseStringArg(argc, argv, "--sc-port").empty();
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
     if (g_scCertDir.empty()) {
         // Every path is built as g_scCertDir + "/<file>", so "" would mean the
@@ -2332,9 +2346,10 @@ static int RunHub(int argc, char** argv) {
         return 1;
     }
 
-    // --- Lab certificate generation (--generate-certs / --add-client-certs /
-    // --generate-csr / --sign-csr) - a one-shot tool mode: write the
-    // certificates, then exit without starting the device. See cert_tool.h.
+    // --- Lab certificates (--generate-certs / --add-client-certs /
+    // --generate-csr / --sign-csr / --migrate-certs) - a one-shot tool mode:
+    // write the certificates (CARI layout, issue #71), then exit without
+    // starting the device. See cert_tool.h.
     {
         unsigned generateCount = 0;
         unsigned addCount = 0;
@@ -2347,46 +2362,57 @@ static int RunHub(int argc, char** argv) {
         const bool generateCsr = HasFlag(argc, argv, "--generate-csr");
         const std::string signCsrFile = ParseStringArg(argc, argv, "--sign-csr");
         const bool signCsr = !signCsrFile.empty();
-        if (generate || add || generateCsr || signCsr) {
+        const bool migrate = HasFlag(argc, argv, "--migrate-certs");
+        if (generate || add || generateCsr || signCsr || migrate) {
             if (!generateValid || !addValid) {
                 return 1;
             }
-            if ((int)generate + (int)add + (int)generateCsr + (int)signCsr > 1) {
-                fprintf(stderr, "Error: use only one of --generate-certs, --add-client-certs, --generate-csr "
-                                "and --sign-csr.\n");
+            if ((int)generate + (int)add + (int)generateCsr + (int)signCsr + (int)migrate > 1) {
+                fprintf(stderr, "Error: use only one of --generate-certs, --add-client-certs, --generate-csr, "
+                                "--sign-csr and --migrate-certs.\n");
                 return 1;
             }
+            if (migrate) {
+                return CertTool::MigrateCertificates(g_scCertDir, g_deviceInstance) ? 0 : 1;
+            }
+            CertTool::ClientOptions clients;
             // --generate-csr / --sign-csr make ONE folder, named by --cert-label
             // as it is ("" = the next client-NN); the others number from it.
-            std::string label = ParseStringArg(argc, argv, "--cert-label");
-            if (generateCsr) {
-                return CertTool::GenerateClientCsr(g_scCertDir, label) ? 0 : 1;
+            const std::string label = ParseStringArg(argc, argv, "--cert-label");
+            if (generate || add) {
+                clients.labelPrefix = label.empty() ? CertTool::DEFAULT_CLIENT_LABEL : label;
+            } else {
+                clients.label = label;
             }
-            if (label.empty() && !signCsr) {
-                label = CertTool::DEFAULT_CLIENT_LABEL;
-            }
-            // The hub URI written into each client's bacnetsc.config: this
-            // machine's IPv4 address and --sc-port, unless --cert-hub-uri says
-            // otherwise (a DNS name, another interface, a NAT address...).
-            std::string hubUri = ParseStringArg(argc, argv, "--cert-hub-uri");
-            if (hubUri.empty()) {
-                uint8_t ip[4] = {127, 0, 0, 1};
-                uint8_t mask[4] = {0, 0, 0, 0};
-                if (!CASExampleHelper::GetLocalIPv4(ip, mask)) {
-                    ip[0] = 127; ip[1] = 0; ip[2] = 0; ip[3] = 1;
+            const std::string instance = ParseStringArg(argc, argv, "--cert-device-instance");
+            if (!instance.empty()) {
+                char* end = NULL;
+                const unsigned long n = strtoul(instance.c_str(), &end, 10);
+                if (end == instance.c_str() || *end != '\0' || n > 4194302UL) {
+                    fprintf(stderr, "Error: --cert-device-instance expects 0 to 4194302, got \"%s\".\n",
+                            instance.c_str());
+                    return 1;
                 }
-                char uri[64];
-                snprintf(uri, sizeof(uri), "wss://%u.%u.%u.%u:%u/", ip[0], ip[1], ip[2], ip[3], g_scPort);
-                hubUri = uri;
+                clients.deviceInstance = (int64_t)n;
+            }
+            const std::string portId = ParseStringArg(argc, argv, "--cert-port-id");
+            if (!portId.empty()) {
+                clients.portId = portId;
+            }
+            clients.hubUri = ParseStringArg(argc, argv, "--cert-hub-uri");
+            if (clients.hubUri.empty()) {
+                clients.hubUri = LabHubUri();
             }
             bool ok = false;
-            if (signCsr) {
-                ok = CertTool::SignClientCsr(g_scCertDir, signCsrFile, label, hubUri);
+            if (generateCsr) {
+                ok = CertTool::GenerateClientCsr(g_scCertDir, clients);
+            } else if (signCsr) {
+                ok = CertTool::SignClientCsr(g_scCertDir, g_deviceInstance, signCsrFile, clients);
             } else if (generate) {
-                ok = CertTool::GenerateCertificateSet(g_scCertDir, generateCount, label, hubUri,
+                ok = CertTool::GenerateCertificateSet(g_scCertDir, g_deviceInstance, generateCount, clients,
                                                       HasFlag(argc, argv, "--force"));
             } else {
-                ok = CertTool::AddClientCertificates(g_scCertDir, addCount, label, hubUri);
+                ok = CertTool::AddClientCertificates(g_scCertDir, g_deviceInstance, addCount, clients);
             }
             return ok ? 0 : 1;
         }
@@ -2497,6 +2523,29 @@ static int RunHub(int argc, char** argv) {
     // Build the accept URI from --sc-port now that the CLI has been parsed.
     // "0.0.0.0" = bind every interface (ScTransport::StartListening's contract).
     g_scHubAcceptUri = "wss://0.0.0.0:" + std::to_string(g_scPort) + "/";
+    if (scPortIsDefault) {
+        // The default changed in 1.5.0 (issue #70): say so once, so a site whose
+        // devices still dial :47819 can see why they no longer connect.
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+            "BACnet/SC port %u (the default; before 1.5.0 it was 47819 - set sc-port = 47819 or --sc-port 47819 "
+            "if your devices still use that)", (unsigned)g_scPort);
+    }
+    // Where the certificate files are: the CARI tree this release writes, or
+    // an older folder's names (see cert_layout.h). Said in the log, so a
+    // support request shows which files the hub used.
+    g_certPaths = CertLayout::ResolveHubCertPaths(g_scCertDir, g_deviceInstance);
+    CASExampleHelper::Log(CASExampleHelper::LogLevel::Info, "certificates: %s layout in \"%s\"%s%s",
+        g_certPaths.KindName(), g_scCertDir.c_str(),
+        g_certPaths.kind == CertLayout::Kind::Cari ? ", hub port folder " : "",
+        g_certPaths.kind == CertLayout::Kind::Cari ? g_certPaths.portFolder.c_str() : "");
+    if (!g_certPaths.note.empty()) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, "certificates: %s", g_certPaths.note.c_str());
+    }
+    if (g_certPaths.kind != CertLayout::Kind::Cari) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+            "certificates: this folder uses an older layout; it keeps working. --migrate-certs copies it into the "
+            "CARI layout (ANSI/ASHRAE 135-2024 Annex AA.2) without changing the old files.");
+    }
     {
         CASSc::ScTlsFiles tls;
         // A password-protected private key: ask for its password ONCE, here,
@@ -2506,8 +2555,7 @@ static int RunHub(int argc, char** argv) {
         // and again. The config file's sc-key-password is used when set; a
         // service has no console, so it needs that key. See sc_transport/KeyPassword.h.
         {
-            const std::string keyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
-                g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+            const std::string keyPath = g_certPaths.privateKey;
             std::string keyPasswordMessage;
             const bool keyReady = CASSc::KeyPassword::Prepare(
                 keyPath, fileConfig.hasScKeyPassword ? fileConfig.scKeyPassword : "", !Service::IsService(),
@@ -2532,9 +2580,8 @@ static int RunHub(int argc, char** argv) {
         layout.readFallbackInstances[FILE_ISSUER_CERT_2_INSTANCE] = FILE_ISSUER_CERT_1_INSTANCE;
         layout.operationalInstance = FILE_OPERATIONAL_CERT_INSTANCE;
         layout.issuerInstances = {FILE_ISSUER_CERT_1_INSTANCE, FILE_ISSUER_CERT_2_INSTANCE};
-        layout.privateKeyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
-            g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
-        layout.pendingPrivateKeyPath = g_scCertDir + "/" + CertTool::PENDING_PRIVATE_KEY_FILE;
+        layout.privateKeyPath = g_certPaths.privateKey;
+        layout.pendingPrivateKeyPath = g_certPaths.pendingPrivateKey;
         layout.csrInstance = FILE_CSR_INSTANCE;
         CertStore::SetLayout(layout);
         std::string reconcileMessage;
@@ -2546,16 +2593,14 @@ static int RunHub(int argc, char** argv) {
 
         // TLS trusts every issuer in both slots. With no certificates yet, fall
         // back to slot 1's path so the "certificates missing" message names it.
-        g_scTrustedIssuersPath = g_scCertDir + "/" + CertTool::TRUSTED_ISSUERS_FILE;
+        g_scTrustedIssuersPath = g_certPaths.trustedIssuers;
         std::string bundleReason;
         tls.caCertPath = CertStore::WriteTrustedIssuerBundle(g_scTrustedIssuersPath, &bundleReason)
                              ? g_scTrustedIssuersPath : issuer1Path;
-        tls.certPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
-            g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE, CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
-        tls.keyPath = g_scCertDir + "/" + CertTool::ResolveCertFile(
-            g_scCertDir, CertTool::PRIVATE_KEY_FILE, CertTool::LEGACY_PRIVATE_KEY_FILE);
+        tls.certPath = g_certPaths.operationalCertificate;
+        tls.keyPath = g_certPaths.privateKey;
         // Optional certificate revocation list (issue #15) - see ScTlsFiles::crlPath.
-        tls.crlPath = g_scCrlPath = g_scCertDir + "/" + CertTool::ISSUER_CRL_FILE;
+        tls.crlPath = g_scCrlPath = g_certPaths.revocationList;
         g_scTransport.Configure(tls, "hub.bsc.bacnet.org"); // plan fact 1 - NOT "hub.bacnet.org"
         // Bound how fast the listener accepts new connection attempts, per
         // source address and in total - see g_scRateLimit's comment.
@@ -2893,12 +2938,8 @@ static int RunHub(int argc, char** argv) {
         httpConfig.certDir = g_scCertDir;
         if (g_httpTls) {
             // HTTPS (issue #22): the named certificate/key, or the hub's own.
-            httpConfig.tlsCertPath = !g_httpTlsCert.empty() ? g_httpTlsCert : g_scCertDir + "/" +
-                CertTool::ResolveCertFile(g_scCertDir, CertTool::OPERATIONAL_CERTIFICATE_FILE,
-                                          CertTool::LEGACY_OPERATIONAL_CERTIFICATE_FILE);
-            httpConfig.tlsKeyPath = !g_httpTlsKey.empty() ? g_httpTlsKey : g_scCertDir + "/" +
-                CertTool::ResolveCertFile(g_scCertDir, CertTool::PRIVATE_KEY_FILE,
-                                          CertTool::LEGACY_PRIVATE_KEY_FILE);
+            httpConfig.tlsCertPath = !g_httpTlsCert.empty() ? g_httpTlsCert : g_certPaths.operationalCertificate;
+            httpConfig.tlsKeyPath = !g_httpTlsKey.empty() ? g_httpTlsKey : g_certPaths.privateKey;
         }
         httpConfig.bearerToken = g_httpUploadToken;  // empty => upload endpoint disabled entirely
         httpConfig.resolveCertSlot = ResolveCertUploadSlot;

@@ -98,6 +98,7 @@ endif()
 # Resolved via the vcpkg toolchain set up above (VCPKG_ROOT / CMAKE_TOOLCHAIN_FILE).
 find_package(libwebsockets CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)     # cari.cpp's zip reader/writer (CARI files, issue #71)
 find_package(Threads REQUIRED)  # log_file.cpp's copy thread
 
 # --- The CAS BACnet Stack, via its CMake adapter target ---------------------
@@ -136,6 +137,8 @@ set(SC_TRANSPORT_SOURCES
 add_executable(BACnetExampleBSCHUB
     main.cpp
     config.cpp
+    cari.cpp
+    cert_layout.cpp
     cert_tool.cpp
     cert_store.cpp
     log_file.cpp
@@ -152,6 +155,7 @@ target_link_libraries(BACnetExampleBSCHUB PRIVATE
     websockets
     OpenSSL::SSL
     OpenSSL::Crypto
+    ZLIB::ZLIB
     Threads::Threads)
 
 # --- Warnings on OUR sources only -------------------------------------------

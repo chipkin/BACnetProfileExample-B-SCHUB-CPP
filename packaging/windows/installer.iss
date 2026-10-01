@@ -75,6 +75,18 @@ begin
   Result := ExpandConstant('{commonappdata}\Chipkin\BACnetSCHub\hub.conf');
 end;
 
+// True if certs\ already holds a certificate set, in any layout: the CARI tree
+// (cert1\, from 1.5.0), the flat names of 1.4, or the older ca.crt. Then the
+// installer leaves it alone - the hub refuses to replace a set anyway.
+function HasCertificateSet(): Boolean;
+var
+  Dir: String;
+begin
+  Dir := ExpandConstant('{commonappdata}\Chipkin\BACnetSCHub\certs');
+  Result := DirExists(Dir + '\cert1') or FileExists(Dir + '\issuer-certificate.pem') or
+            FileExists(Dir + '\ca.crt');
+end;
+
 procedure WriteDefaultConfig();
 var
   Lines: TArrayOfString;
@@ -106,7 +118,7 @@ end;
 Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Chipkin\BACnetSCHub"" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /Q"; Flags: runhidden waituntilterminated; StatusMsg: "Restricting access to the settings and certificates..."
 Filename: "{sys}\icacls.exe"; Parameters: """{commonappdata}\Chipkin\BACnetSCHub\*"" /reset /T /Q"; Flags: runhidden waituntilterminated
 ; A lab certificate set if certs\ is empty (the hub refuses to replace an existing one).
-Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--sc-cert-dir ""{commonappdata}\Chipkin\BACnetSCHub\certs"" --generate-certs"; Flags: runhidden waituntilterminated; StatusMsg: "Making lab certificates..."; Check: not FileExists(ExpandConstant('{commonappdata}\Chipkin\BACnetSCHub\certs\issuer-certificate.pem'))
+Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--sc-cert-dir ""{commonappdata}\Chipkin\BACnetSCHub\certs"" --generate-certs"; Flags: runhidden waituntilterminated; StatusMsg: "Making lab certificates..."; Check: not HasCertificateSet
 Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--install-service --config ""{commonappdata}\Chipkin\BACnetSCHub\hub.conf"""; Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Installing the service..."
 ; Run it as the virtual account NT SERVICE\BACnetSCHub instead of LocalSystem, and
 ; let only that account (besides SYSTEM and Administrators) into the data folder.

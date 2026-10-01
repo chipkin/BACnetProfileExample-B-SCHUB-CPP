@@ -339,6 +339,10 @@ jobs:
         shell: bash
         run: python tests/sc/csr_test.py --exe "${{ matrix.exe }}"
 
+      - name: CARI request/response files (135-2024 Annex AA.2) and --migrate-certs
+        shell: bash
+        run: python tests/sc/cari_test.py --exe "${{ matrix.exe }}"
+
       - name: TLS key log for Wireshark (--sc-keylog-file)
         shell: bash
         run: python tests/sc/keylog_test.py --exe "${{ matrix.exe }}"

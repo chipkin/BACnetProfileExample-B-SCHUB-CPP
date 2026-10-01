@@ -63,7 +63,7 @@
       "enabled": ["Description"],
       "writable": [],
       "accepted": [],
-      "note": "read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated"
+      "note": "read-only; serves the hub's certificate signing request (CARI cert1/device-<n>/port-2/csr-hub.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated"
     },
     {
       "type": "File",
@@ -73,7 +73,7 @@
       "enabled": ["Description"],
       "writable": ["File_Size"],
       "accepted": [],
-      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (issuer-certificate.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries"
+      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (CARI cert1/issuer/iss-1.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries"
     },
     {
       "type": "File",
@@ -83,7 +83,7 @@
       "enabled": ["Description"],
       "writable": ["File_Size"],
       "accepted": [],
-      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (issuer-certificate-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)"
+      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (CARI cert1/issuer/iss-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)"
     }
   ]
 }

@@ -27,9 +27,9 @@ over plain BACnet/IP:
     - then the hub presents the NEW certificate in its TLS handshake
   Replace operational certificate with a new key pair (GENERATE_CSR_FILE):
     - Command GENERATE_CSR_FILE -> a new CSR for a new key; Command reads IDLE again;
-      private-key.pem is unchanged and the new key waits in private-key-pending.pem
+      the hub's key (key-hub.pem) is unchanged and the new key waits in key-hub-pending.pem
     - sign the new CSR, write it into File 1, ACTIVATE_CHANGES -> the pending key replaces
-      private-key.pem and the hub presents the newest certificate
+      key-hub.pem and the hub presents the newest certificate
   Certificates peers would refuse, and a root + intermediate set (issue #45):
     - a CA certificate, or one with EKU clientAuth only, as File 1 -> invalid-configuration-data
     - root CA in File 3, an intermediate CA in File 4, a leaf from the intermediate in File 1
@@ -51,6 +51,8 @@ import socket
 import ssl
 import sys
 from pathlib import Path
+
+import cert_paths
 
 from bacpypes3.apdu import (
     AtomicReadFileACK,
@@ -155,7 +157,7 @@ async def write_command(app, address, command):
 
 def tls_handshake(host, port, cert_dir_of_client, label, ca_file=None):
     """Mutual-TLS handshake with the hub using clients/<label>/. Returns the hub's certificate (DER)."""
-    folder = Path(cert_dir_of_client) / "clients" / label
+    certfile, keyfile = cert_paths.client_files(Path(cert_dir_of_client), label)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     if ca_file:
@@ -163,7 +165,7 @@ def tls_handshake(host, port, cert_dir_of_client, label, ca_file=None):
         ctx.verify_mode = ssl.CERT_REQUIRED
     else:
         ctx.verify_mode = ssl.CERT_NONE
-    ctx.load_cert_chain(certfile=str(folder / "operational-certificate.pem"), keyfile=str(folder / "private-key.pem"))
+    ctx.load_cert_chain(certfile=str(certfile), keyfile=str(keyfile))
     with socket.create_connection((host, port), timeout=5) as sock:
         with ctx.wrap_socket(sock) as tls:
             tls.sendall(b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -180,8 +182,9 @@ def sign_csr(csr_pem, ca_dir, ca=None, is_ca=False, eku=None):
     `ca` = (certificate, key) overrides ca_dir; is_ca/eku make deliberately wrong certificates."""
     csr = x509.load_pem_x509_csr(csr_pem)
     if ca is None:
-        ca = (x509.load_pem_x509_certificate((Path(ca_dir) / "issuer-certificate.pem").read_bytes()),
-              serialization.load_pem_private_key((Path(ca_dir) / "issuer-private-key.pem").read_bytes(), None))
+        ca_cert_path, ca_key_path = cert_paths.ca_files(Path(ca_dir))
+        ca = (x509.load_pem_x509_certificate(ca_cert_path.read_bytes()),
+              serialization.load_pem_private_key(ca_key_path.read_bytes(), None))
     ca_cert, ca_key = ca
     if eku is None:
         eku = [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
@@ -200,8 +203,9 @@ def sign_csr(csr_pem, ca_dir, ca=None, is_ca=False, eku=None):
 
 def make_intermediate(ca_dir):
     """An intermediate CA signed by ca_dir's lab CA: (certificate, key, certificate PEM)."""
-    root = x509.load_pem_x509_certificate((Path(ca_dir) / "issuer-certificate.pem").read_bytes())
-    root_key = serialization.load_pem_private_key((Path(ca_dir) / "issuer-private-key.pem").read_bytes(), None)
+    ca_cert_path, ca_key_path = cert_paths.ca_files(Path(ca_dir))
+    root = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
+    root_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), None)
     key = ec.generate_private_key(ec.SECP256R1())
     now = datetime.datetime.now(datetime.timezone.utc)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "cert_procedure_test intermediate CA")])
@@ -262,26 +266,26 @@ async def main():
         response = await reinitialize(app, device, "activateChanges")
         record("ACTIVATE_CHANGES with no issuer left refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
-        record("issuer-certificate.pem unchanged", (hub_dir / "issuer-certificate.pem").stat().st_size > 0)
+        record("issuer slot 1 file unchanged", cert_paths.issuer_certificate(hub_dir).stat().st_size > 0)
         # Put the original back (staged; activated with the next step). Not DISCARD_CHANGES here:
         # on a fresh hub it also reverts the stack's own start-up pending state (#41,
         # cas-bacnet-stack#2866), after which Changes_Pending no longer follows certificate writes.
-        await write_file(app, device, FILE_ISSUER_1, (hub_dir / "issuer-certificate.pem").read_bytes())
+        await write_file(app, device, FILE_ISSUER_1, cert_paths.issuer_certificate(hub_dir).read_bytes())
 
         # --- add issuer -----------------------------------------------------------------------
-        new_ca = (other_dir / "issuer-certificate.pem").read_bytes()
+        new_ca = cert_paths.issuer_certificate(other_dir).read_bytes()
         await write_file(app, device, FILE_ISSUER_2, new_ca)
         record("File 4 reads back the staged issuer", await read_file(app, device, FILE_ISSUER_2) == new_ca)
         pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
         record("Network Port 2 Changes_Pending after the write", bool(pending), str(pending))
-        record("issuer-certificate-2.pem not written before activation",
-               not (hub_dir / "issuer-certificate-2.pem").exists())
+        record("issuer slot 2 file not written before activation",
+               not cert_paths.issuer_certificate_2(hub_dir).exists())
         response = await reinitialize(app, device, "activateChanges")
         record("ACTIVATE_CHANGES (add issuer) acknowledged", isinstance(response, SimpleAckPDU), str(response))
         pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
         record("Network Port 2 Changes_Pending FALSE after ACTIVATE_CHANGES", not pending, str(pending))
-        record("issuer-certificate-2.pem written on activation",
-               (hub_dir / "issuer-certificate-2.pem").read_bytes() == new_ca)
+        record("issuer slot 2 file written on activation",
+               cert_paths.issuer_certificate_2(hub_dir).read_bytes() == new_ca)
         await asyncio.sleep(2)  # the main loop reloads TLS on its next pass
         try:
             tls_handshake(args.target, args.sc_port, other_dir, "client-01")
@@ -295,8 +299,8 @@ async def main():
             record("client signed by the ORIGINAL issuer is still accepted", False, str(e))
 
         # --- rejected activation --------------------------------------------------------------
-        before = (hub_dir / "operational-certificate.pem").read_bytes()
-        await write_file(app, device, FILE_OPERATIONAL, before + (hub_dir / "private-key.pem").read_bytes())
+        before = cert_paths.hub_certificate(hub_dir).read_bytes()
+        await write_file(app, device, FILE_OPERATIONAL, before + cert_paths.hub_private_key(hub_dir).read_bytes())
         response = await reinitialize(app, device, "activateChanges")
         record("ACTIVATE_CHANGES with a private key in the certificate file refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
@@ -305,7 +309,7 @@ async def main():
         record("ACTIVATE_CHANGES with a garbage operational certificate refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
         record("operational certificate on disk unchanged after the refusal",
-               (hub_dir / "operational-certificate.pem").read_bytes() == before)
+               cert_paths.hub_certificate(hub_dir).read_bytes() == before)
 
         # --- DISCARD_CHANGES (Network Port 2 Command) -----------------------------------------
         # The garbage from the refused activation is still staged.
@@ -328,13 +332,13 @@ async def main():
         await asyncio.sleep(2)
         try:
             presented = tls_handshake(args.target, args.sc_port, other_dir, "client-01",
-                                      ca_file=other_dir / "issuer-certificate.pem")
+                                      ca_file=cert_paths.issuer_certificate(other_dir))
             record("hub presents the NEW operational certificate", presented == new_cert_der)
         except Exception as e:
             record("hub presents the NEW operational certificate", False, str(e))
 
         # --- replace operational certificate with a new key pair (GENERATE_CSR_FILE) ----------
-        key_before = (hub_dir / "private-key.pem").read_bytes()
+        key_before = cert_paths.hub_private_key(hub_dir).read_bytes()
         error = await write_command(app, device, COMMAND_GENERATE_CSR_FILE)
         record("Command GENERATE_CSR_FILE acknowledged", error is None, str(error))
         command = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_COMMAND)
@@ -345,11 +349,11 @@ async def main():
                new_csr != csr and new_csr_obj.is_signature_valid)
         record("the new CSR keeps the hub's subject",
                new_csr_obj.subject == x509.load_pem_x509_certificate(new_cert_pem).subject)
-        record("private-key.pem unchanged until activation", (hub_dir / "private-key.pem").read_bytes() == key_before)
-        record("the new key waits in private-key-pending.pem", (hub_dir / "private-key-pending.pem").is_file())
+        record("the hub key unchanged until activation", cert_paths.hub_private_key(hub_dir).read_bytes() == key_before)
+        record("the new key waits in the pending key file", cert_paths.pending_private_key(hub_dir).is_file())
         try:
             presented = tls_handshake(args.target, args.sc_port, other_dir, "client-01",
-                                      ca_file=other_dir / "issuer-certificate.pem")
+                                      ca_file=cert_paths.issuer_certificate(other_dir))
             record("hub still presents its current certificate before activation", presented == new_cert_der)
         except Exception as e:
             record("hub still presents its current certificate before activation", False, str(e))
@@ -358,13 +362,13 @@ async def main():
         response = await reinitialize(app, device, "activateChanges")
         record("ACTIVATE_CHANGES (certificate for the new key) acknowledged",
                isinstance(response, SimpleAckPDU), str(response))
-        record("the pending key replaced private-key.pem",
-               not (hub_dir / "private-key-pending.pem").exists() and
-               (hub_dir / "private-key.pem").read_bytes() != key_before)
+        record("the pending key replaced the hub key",
+               not cert_paths.pending_private_key(hub_dir).exists() and
+               cert_paths.hub_private_key(hub_dir).read_bytes() != key_before)
         await asyncio.sleep(2)
         try:
             presented = tls_handshake(args.target, args.sc_port, other_dir, "client-01",
-                                      ca_file=other_dir / "issuer-certificate.pem")
+                                      ca_file=cert_paths.issuer_certificate(other_dir))
             record("hub presents the certificate for its NEW key", presented == newest_der)
         except Exception as e:
             record("hub presents the certificate for its NEW key", False, str(e))
@@ -379,7 +383,7 @@ async def main():
                    "invalid-configuration-data" in error_text(response), error_text(response))
         inter_cert, inter_key, inter_pem = make_intermediate(other_dir)
         leaf_pem, _ = sign_csr(new_csr, None, ca=(inter_cert, inter_key))
-        await write_file(app, device, FILE_ISSUER_1, (other_dir / "issuer-certificate.pem").read_bytes())
+        await write_file(app, device, FILE_ISSUER_1, cert_paths.issuer_certificate(other_dir).read_bytes())
         await write_file(app, device, FILE_ISSUER_2, inter_pem)
         await write_file(app, device, FILE_OPERATIONAL, leaf_pem)
         response = await reinitialize(app, device, "activateChanges")

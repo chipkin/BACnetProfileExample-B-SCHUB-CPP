@@ -35,19 +35,30 @@ This repository is self-contained:
   enum, send/receive semantics) before changing anything in this folder -
   several of its rules come from reading the stack's source, not its manual,
   and are easy to get subtly wrong again.
+- `cert_layout.{h,cpp}` - where every certificate file is in `--sc-cert-dir`.
+  This release writes a **CARI** tree (ANSI/ASHRAE 135-2024 Annex AA.2,
+  Addendum cs; issue #71): `cert1/device-<n>/port-2/hub/` + `opr-hub.pem`
+  (File 1), `csr-hub.pem` (File 2), `key-hub.pem`, `cert1/issuer/iss-1.pem` /
+  `iss-2.pem` (Files 3/4), the lab CA in `ca/`, housekeeping files outside
+  `cert1/` (which may hold only CARI names). It also reads the 1.4 flat names
+  (`operational-certificate.pem`, ...) and the older `hub.crt`/`ca.crt`.
+  `CertLayout::ResolveHubCertPaths` is the ONE place that knows the names -
+  use `g_certPaths` in `main.cpp` rather than hard-coding a name.
+- `cari.{h,cpp}` - CARI files: a zip reader/writer on zlib and the tree
+  rules. The reader takes input from anyone: it checks sizes, entry counts,
+  methods and every path BEFORE extracting, and refuses anything CARI doesn't
+  name. Don't loosen those checks to "be helpful" - say why in `errors.txt`
+  or the error message instead.
 - `cert_tool.{h,cpp}` - `--generate-certs [n]` / `--add-client-certs [n]` /
-  `--generate-csr` / `--sign-csr <file>` / `--cert-label`: the built-in lab
-  certificate generator. It writes PEM files
-  named after the Network Port properties (`operational-certificate.pem`,
-  `private-key.pem`, `certificate-signing-request.pem`,
-  `issuer-certificate.pem`, `issuer-private-key.pem`) plus one
-  `clients/<label>/` folder per connecting device, runs before the stack
-  starts, and exits. The file-name constants live in `cert_tool.h`, and
-  `CertTool::ResolveCertFile` is the ONE place the hub picks between them
-  and the older `hub.crt`/`hub.key`/`hub.csr`/`ca.crt` names - use it rather
-  than hard-coding a name. `--add-client-certs` and `--sign-csr` must keep signing
-  with the existing issuer, never a new one, or running hubs stop trusting the
-  new clients.
+  `--generate-csr` / `--sign-csr <file>` / `--migrate-certs` / `--cert-label`
+  / `--cert-device-instance` / `--cert-port-id`: the built-in lab
+  certificate tool. Every device folder `clients/<label>/` is a CARI response
+  (plus `bacnetsc.config`, `.pfx`, YABE files outside `cert1/`).
+  `CertTool::SignCariTree` is the one signing path, shared by the command
+  line and the web set-up guide. It runs before the stack starts, and exits.
+  `--add-client-certs` and `--sign-csr` must keep signing with the existing
+  CA (and `SignCariTree` refuses a CA that isn't one of the hub's issuers),
+  never a new one, or running hubs stop trusting the new clients.
 - `cert_store.{h,cpp}` - the 4 certificate File objects' contents and the
   device-B side of the BACnet/SC certificate procedures (clause 19.8.3):
   File_Size/AtomicWriteFile writes are STAGED in memory, and main.cpp's
@@ -57,7 +68,7 @@ This repository is self-contained:
   `ValidateStaged()` - that is what stops the hub locking itself out.
 - `tests/sc/` - the BACnet/SC verification scripts
   (`hub_listener_test.py`, `fake_hub_server.py`, `file_object_test.py`,
-  `cert_procedure_test.py`, `rpm_test.py`, `http_test.py`, `csr_test.py`, `keylog_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
+  `cert_procedure_test.py`, `rpm_test.py`, `http_test.py`, `csr_test.py`, `cari_test.py`, `keylog_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
   BACnet/SC-related `main.cpp` change.
 - `log_file.{h,cpp}` - `--log-file`: copies stdout/stderr to a rotating log
   file through a pipe, so every line (stack and lws output included) is kept
@@ -170,7 +181,7 @@ certificate set first. The HTTP status page is at <http://127.0.0.1:8080/>.
   certificate procedures, with AtomicWriteFile, ReinitializeDevice
   ACTIVATE_CHANGES/WARMSTART, and the `NetworkPortCommand` callback for
   DISCARD_CHANGES/GENERATE_CSR_FILE) - this profile does not require DS-WP-B.
-  GENERATE_CSR_FILE's new key stays in `private-key-pending.pem` until a
+  GENERATE_CSR_FILE's new key stays in `key-hub-pending.pem` until a
   certificate for it is activated; never swap it in earlier, or the hub runs
   with a key that has no certificate.
 - **Never destroy the last TLS lws_context.** `ScTransport` keeps a
@@ -261,9 +272,9 @@ isn't configured - don't work around that by skipping the signing steps.
 The example source code is dedicated to the public domain under
 [CC0-1.0](LICENSE). The CAS BACnet Stack is a separate, commercially licensed
 product and is not covered by that dedication. Building this example also
-links two third-party dependencies via vcpkg (never vendored into this
-repository): **libwebsockets** (MIT) and **OpenSSL 3** (Apache-2.0), both used
-by `sc_transport/`. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and
+links three third-party dependencies via vcpkg (never vendored into this
+repository): **libwebsockets** (MIT) and **OpenSSL 3** (Apache-2.0), used by
+`sc_transport/`, and **zlib** (Zlib), used by `cari.cpp` for CARI zip files. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and
 [README.md "Licensing"](README.md#licensing) for the full notices. If you add
 another dependency to `vcpkg.json`, add its licence to both places in the same
 change.

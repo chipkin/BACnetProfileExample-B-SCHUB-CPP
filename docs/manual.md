@@ -232,28 +232,62 @@ BACnetExampleBSCHUB --generate-certs        # CA + hub + 3 device certificates
 BACnetExampleBSCHUB --generate-certs 10     # ... or any number of devices
 ```
 
-This writes PEM files to `--sc-cert-dir` (default `./certs`) and exits. The
-file names follow the Network Port properties that carry them (ANSI/ASHRAE
-135 clause 12.56):
+This writes PEM files to `--sc-cert-dir` (default `./certs`) and exits.
+Easier still: while the hub runs, the [set-up guide](#connecting-a-device-with-the-set-up-guide)
+at <http://127.0.0.1:8080/setup> signs a device's request or makes its files,
+and shows every field in them.
+
+### The CARI file layout
+
+The files are laid out in the **CARI** format (Certificate Authority
+Requirements Interchange, ANSI/ASHRAE 135-2024 Annex AA.2, added to 135-2020
+by Addendum cs). CARI is the folder layout BACnet uses to take certificate
+signing requests to a CA and bring the certificates back. Its root folder is
+`cert1/`:
+
+- **Folders:** one `device-<instance>/` folder per device, and one
+  `port-<id>/` folder per BACnet/SC port in it. A `hub/` folder in a port
+  folder marks a hub function, and a `router/` folder in a device folder marks
+  a device that routes between BACnet/SC networks. Both are empty.
+- **Files in a port folder:** `csr-<name>.pem` (the request), `opr-<name>.pem`
+  (the operational certificate the CA returns) and, optionally,
+  `key-<name>.pem` (the private key).
+- **The issuer:** `cert1/issuer/iss-1.pem` (and `iss-2.pem`).
+
+The hub's own folder is a CARI tree for the hub itself:
 
 | File | What it is |
 |---|---|
-| `operational-certificate.pem` | The hub's certificate (File 1, Operational_Certificate_File). Its subjectAltName lists localhost, 127.0.0.1, this computer's host name and the hub URI's host. |
-| `private-key.pem` | The hub's private key. **Private.** |
-| `certificate-signing-request.pem` | CSR for the hub's key (File 2, Certificate_Signing_Request_File). |
-| `issuer-certificate.pem` | The lab CA (File 3, Issuer_Certificate_Files). Every device needs a copy. |
-| `issuer-private-key.pem` | The CA's private key, only used to sign more devices (`--add-client-certs`, `--sign-csr`). **Private.** Keep it off the network. |
-| `clients/<label>/` | One folder per device: its `operational-certificate.pem`, `private-key.pem` (**private**), `issuer-certificate.pem`, `bacnetsc.config` (CAS BACnet Explorer), and for Windows tools such as YABE `<label>.pfx` (certificate + key + issuer, empty password, **private**), `issuer-certificate.cer` (DER) and `yabe-bacnetsc.config`. |
+| `cert1/device-<deviceID>/port-2/hub/` | Empty: Network Port 2 is a hub function. |
+| `cert1/device-<deviceID>/port-2/opr-hub.pem` | The hub's certificate (File 1, Operational_Certificate_File). Its subjectAltName lists localhost, 127.0.0.1, this computer's host name and the hub URI's host. |
+| `cert1/device-<deviceID>/port-2/key-hub.pem` | The hub's private key. **Private.** |
+| `cert1/device-<deviceID>/port-2/csr-hub.pem` | CSR for the hub's key (File 2, Certificate_Signing_Request_File). Zip `cert1/` and you have a CARI request for your site CA. |
+| `cert1/issuer/iss-1.pem` | The lab CA (File 3, Issuer_Certificate_Files). Every device needs a copy. |
+| `cert1/issuer/iss-2.pem` | File 4. Only once a second issuer is added (over BACnet or `POST /certs/issuer2`); until then File 4 serves `iss-1.pem`. |
+| `ca/ca-cert.pem`, `ca/ca-key.pem` | The lab CA that signs devices (`--add-client-certs`, `--sign-csr`, the set-up guide). The key is **private**; keep it off the network. Kept outside `cert1/`, which may only hold CARI files. |
+| `key-hub-pending.pem` | Only after a GENERATE_CSR_FILE: the new key behind `csr-hub.pem`, until a certificate for it is activated. **Private.** |
+| `trusted-issuers.pem` | Written by the hub: every issuer from both slots, which is what TLS trusts. |
+| `issuer-crl.pem` | Optional, from your CA: revoked device certificates (see [Security](#9-security)). |
 | `certificates.txt` | Every certificate's label, location, serial number, expiry and SHA-256 fingerprint. |
 | `readme.txt` | A walkthrough of the folder, including which files are private. |
+| `clients/<label>/` | One folder per device - below. |
 
-The hub adds two files of its own: `issuer-certificate-2.pem` (File 4, once a
-second issuer is written over BACnet) and `trusted-issuers.pem` (every issuer
-from both slots; this is what TLS trusts). You can add a third,
-`issuer-crl.pem`, to revoke device certificates (see
-[Security](#9-security)).
+Each device folder is that device's CARI response, plus files for the tools
+that use it:
 
-Device certificates are labeled by folder and by subject Common Name
+| File in `clients/<label>/` | What it is |
+|---|---|
+| `cert1/device-<n>/port-<id>/opr-<label>.pem` | The device's certificate (its Operational_Certificate_File). |
+| `cert1/device-<n>/port-<id>/key-<label>.pem` | Its private key, only when the hub made it. **Private.** A device that sent its own CSR keeps its key. |
+| `cert1/device-<n>/port-<id>/csr-<label>.pem` | The request the certificate was signed from. |
+| `cert1/issuer/iss-1.pem` | The issuer, so the device can validate the hub (its Issuer_Certificate_Files). |
+| `<label>-cari-response.zip` | `cert1/` zipped, for tools that import CARI files. |
+| `bacnetsc.config` | Import into the CAS BACnet Explorer: the hub URI and the files above (relative paths). |
+| `<label>.pfx`, `iss-1.cer`, `yabe-bacnetsc.config` | For YABE and other Windows tools: certificate + key + issuer (empty password, **private**), the issuer in DER, and YABE's channel file. Only when the key is in the folder. |
+
+The device instance and port id in the folder names default to the client
+number and `1`. Set them with `--cert-device-instance` and `--cert-port-id`.
+Device certificates also carry the label in their subject Common Name
 (`Chipkin Example B-SCHUB client-01`), so the hub's log shows which device
 connected.
 
@@ -265,43 +299,77 @@ BACnetExampleBSCHUB --add-client-certs 2                    # clients/client-04,
 BACnetExampleBSCHUB --add-client-certs 3 --cert-label ahu   # clients/ahu-01 .. ahu-03
 ```
 
-**Signing a device's own CSR.** When a device makes its own key and sends
-you a certificate signing request (PEM or DER), sign it with the existing CA.
-The private key never leaves the device:
+**Signing a CARI request.** A site's request for several devices, made with
+BACnet International's BACCARI tool or a vendor's own, is signed in one go.
+The response is written next to the request:
 
 ```bash
-BACnetExampleBSCHUB --sign-csr ahu7.csr --cert-label ahu-7   # clients/ahu-7/
+BACnetExampleBSCHUB --sign-csr site-request.zip              # -> site-response.zip
+```
+
+The response keeps every file of the request. It also gets:
+
+- `opr-<name>.pem` next to each CSR it signed;
+- `cert1/issuer/iss-1.pem` (and `iss-2.pem`, if the hub has two issuers);
+- `response-notes.txt`;
+- `errors.txt`, with one tab-separated line (`device-<n>`, `port-<id>`,
+  reason) for each request it refused.
+
+The command exits with 1 if any request was refused. Before anything is
+unpacked, the zip is checked against the CARI rules:
+
+- only CARI names, legal characters, and device instances 0 to 4194302;
+- no `..` or absolute paths;
+- `vendor-data` up to 1 MB and the notes up to 10 kB;
+- the whole file up to 4 MB.
+
+A port folder marked `hub/` gets a certificate with serverAuth as well as
+clientAuth.
+
+**Signing one device's own CSR.** When a device makes its own key and sends a
+bare certificate signing request (PEM or DER), sign it the same way. The
+private key never leaves the device:
+
+```bash
+BACnetExampleBSCHUB --sign-csr ahu7.csr --cert-label ahu-7 --cert-device-instance 7007   # clients/ahu-7/
 ```
 
 The hub first checks that the request's signature verifies and that its key
-is ECDSA P-256 or stronger, or RSA 2048-bit or stronger. `clients/ahu-7/` then
-gets the device's `operational-certificate.pem`, `issuer-certificate.pem`
-(and `.cer`) and `bacnetsc.config`, with no private key, `.pfx` or YABE file.
-Send that folder back to the device's owner. The certificate keeps the
-request's subject and public key. Everything else comes from the device
-profile above: 825 days, EKU clientAuth, no subjectAltName. Any extensions the
-request asks for are ignored. Without `--cert-label` the folder is the next
-`client-NN`. A running hub trusts the new certificate straight away.
+is ECDSA P-256 or stronger, or RSA 2048-bit or stronger.
 
-To make a key and a CSR for a device with this program, for example on the
-device owner's own computer:
+- **What `clients/ahu-7/` gets:** the device's CARI response (with no
+  `key-` file), `bacnetsc.config` and `iss-1.cer`. Send that folder, or its
+  `ahu-7-cari-response.zip`, back to the device's owner.
+- **What the certificate contains:** the request's subject and public key.
+  Everything else comes from the device profile: 825 days, EKU clientAuth,
+  no subjectAltName. Any extensions the request asks for are ignored.
+- **Defaults:** without `--cert-label` the folder is the next `client-NN`.
+- **No restart:** a running hub trusts the new certificate straight away.
+
+To make a key and a CARI request for a device with this program, for example
+on the device owner's own computer:
 
 ```bash
-BACnetExampleBSCHUB --generate-csr --cert-label ahu-7        # clients/ahu-7/private-key.pem + certificate-signing-request.pem
+BACnetExampleBSCHUB --generate-csr --cert-label ahu-7        # clients/ahu-7/cert1/... + ahu-7-cari-request.zip
 ```
 
-`--generate-csr` needs no CA. If you sign the request in the same folder
-(`--sign-csr clients/ahu-7/certificate-signing-request.pem`, where the label
-comes from the folder), the certificate lands next to its key, and the folder
-also gets the `.pfx` and YABE files.
+`--generate-csr` needs no CA. Signing that folder in place
+(`--sign-csr clients/ahu-7`) puts the certificate next to its key, and the
+folder also gets the `.pfx` and YABE files.
+
+**Older folders.** A folder made by an earlier release keeps working
+unchanged. That covers the 1.4 names (`operational-certificate.pem`,
+`private-key.pem`, `issuer-certificate.pem`, ...) and the older ones
+(`hub.crt`, `hub.key`, `ca.crt`). The start-up log names the layout it found.
+`--migrate-certs` copies such a folder into the CARI layout and leaves the old
+files as they are, so going back only means deleting `cert1/` and `ca/`.
 
 **Starting over.** `--generate-certs` won't replace an existing CA, because
 every certificate already handed out would stop working. Add `--force` to
 delete the whole set, including `clients/`, and make a new one.
 
-The lab profile is ECDSA P-256 with SHA-256; the CA is valid for 10 years and
-device certificates for 825 days. Folders made by earlier releases
-(`hub.crt`, `hub.key`, `ca.crt`) still work.
+The lab profile is ECDSA P-256 with SHA-256. The CA is valid for 10 years and
+other certificates for 825 days.
 
 ### Production certificates
 
@@ -360,11 +428,13 @@ BACnetExampleBSCHUB [options]
 | `--http-tls-cert <file>`, `--http-tls-key <file>` | the hub's operational certificate and key | Certificate and key for `--http-tls`. |
 | `--sc-keylog-file <file>` | off | **Debugging only.** Append each BACnet/SC connection's TLS session secrets to `<file>`, so Wireshark can decrypt a capture. Command line only. See [Decoding BACnet/SC traffic in Wireshark](#decoding-bacnetsc-traffic-in-wireshark). |
 | `--config <path>` | none | Read settings from a config file (below). |
-| `--generate-certs [n]` | `3` | Make a lab certificate set with `n` device certificates, then exit. |
-| `--add-client-certs [n]` | `1` | Sign `n` more device certificates with the existing CA, then exit. |
-| `--generate-csr` | - | Make a private key and a certificate signing request for one device in `clients/<label>/`, then exit. |
-| `--sign-csr <file>` | - | Sign a device's certificate signing request with the existing CA into `clients/<label>/`, then exit. |
-| `--cert-label <prefix>` | `client` | Label for new device certificates. With `--generate-csr` or `--sign-csr` it's the folder name as given (default: the next `client-NN`). |
+| `--generate-certs [n]` | `3` | Make a lab certificate set (CARI layout) with `n` device folders, then exit. |
+| `--add-client-certs [n]` | `1` | Sign `n` more device folders with the existing CA, then exit. |
+| `--generate-csr` | - | Make a private key and a CARI request for one device in `clients/<label>/`, then exit. |
+| `--sign-csr <file>` | - | Sign with the existing CA, then exit: a CARI request zip (writes `<name>-response.zip`), a bare CSR (writes `clients/<label>/`), or a `--generate-csr` folder (signed in place). |
+| `--migrate-certs` | - | Copy an older release's certificate folder into the CARI layout, then exit. |
+| `--cert-label <label>` | `client` | Device folder name: a prefix with `--generate-certs`/`--add-client-certs`, the exact name with `--generate-csr`/`--sign-csr` (default: the next `client-NN`). |
+| `--cert-device-instance <n>`, `--cert-port-id <id>` | client number, `1` | The device's CARI folder names, `device-<n>/port-<id>`. |
 | `--cert-hub-uri <wss://host:port/>` | this computer's IPv4 and `--sc-port` | Hub URI written into each device's `bacnetsc.config` (and the hub certificate's subjectAltName). |
 | `--force` | - | With `--generate-certs`: replace an existing certificate set. |
 | `--install-service`, `--uninstall-service` | - | Windows: set up or remove the BACnetSCHub service (see [Running as a service](#running-as-a-service)). |
@@ -474,20 +544,22 @@ For each BACnet/SC device:
 1. Give it its own `certs/clients/<label>/` folder. Don't share a folder
    between devices: the hub couldn't tell them apart.
 2. **[CAS BACnet Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer):** import the folder's `bacnetsc.config`. It
-   names the hub URI and the folder's three PEM files, so keep them together.
+   names the hub URI and the folder's certificate, key and issuer files by
+   relative path, so keep the folder together.
 3. **YABE (Yet Another BACnet Explorer):** in *Communication Channel* ->
    *BACnet/Secure Connect*, **Select** the folder's `yabe-bacnetsc.config`,
    then **Start**. It points at the folder's `<label>.pfx` (certificate,
    key and issuer, with an empty password - keep it private) and
-   `issuer-certificate.cer` by absolute path, so re-select it if you move
+   `iss-1.cer` by absolute path, so re-select it if you move
    the folder. YABE uses Windows' own TLS, which can't make the TLS 1.3
    connections BACnet/SC requires on Windows 10: use Windows 11 / Server
    2022 or later
    ([#39](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/39)).
-4. **Any other BACnet/SC device:** install `operational-certificate.pem` and
-   `private-key.pem` as its operational certificate and key, and
-   `issuer-certificate.pem` as its issuer certificate. Set its primary hub URI
-   to `wss://<hub address>:4443/`.
+4. **Any other BACnet/SC device:** install `opr-<label>.pem` and
+   `key-<label>.pem` (in `cert1/device-<n>/port-<id>/`) as its operational
+   certificate and key, and `cert1/issuer/iss-1.pem` as its issuer
+   certificate. Set its primary hub URI to `wss://<hub address>:4443/`. A
+   tool that imports CARI files can take `<label>-cari-response.zip` as it is.
 
 The hub URI in `bacnetsc.config` is this computer's LAN address unless you
 generated the set with `--cert-hub-uri`. The hub logs refused TLS handshakes
@@ -534,9 +606,9 @@ Supported procedures:
 - **Replace the hub certificate with a new key pair** - write
   `GENERATE_CSR_FILE` (9) to Network Port 2's `Command`. The hub makes a new
   key pair and a new CSR (File 2) with the same subject, saving the new key as
-  `private-key-pending.pem`; it keeps using its current key and certificate
+  `key-hub-pending.pem`; it keeps using its current key and certificate
   meanwhile. Have the new CSR signed, write the result to File 1 and activate:
-  the new key then replaces `private-key.pem`. Refused with
+  the new key then replaces `key-hub.pem`. Refused with
   `INVALID_VALUE_IN_THIS_STATE` while certificate writes are staged - and,
   until [#41](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/issues/41)
   is fixed, on a freshly started hub, which reads `Changes_Pending` TRUE with
@@ -566,10 +638,10 @@ If `dcc-password` is set, ReinitializeDevice requires it.
 
 The hub serves HTTP on `--http-port` (default 8080), on `127.0.0.1` only by
 default. With `--http-tls` it serves HTTPS instead (TLS 1.2 or 1.3), using the
-hub's own `operational-certificate.pem` and `private-key.pem` unless
+hub's own certificate and key (`opr-hub.pem`, `key-hub.pem`) unless
 `--http-tls-cert`/`--http-tls-key` name another certificate - for example one
 your browsers already trust. With the lab certificates, point curl at the lab
-CA: `curl --cacert certs/issuer-certificate.pem https://localhost:8080/health`
+CA: `curl --cacert certs/cert1/issuer/iss-1.pem https://localhost:8080/health`
 (with Windows' own curl, add `--ssl-no-revoke`: the lab CA publishes no
 revocation list for Windows to check). The HTTPS certificate is loaded at
 start-up.
@@ -631,7 +703,7 @@ curl -X POST --data-binary @new-hub-cert.pem \
   token and status data are encrypted (or use an SSH tunnel or a TLS reverse
   proxy). The hub logs a warning on every start bound off loopback over plain
   HTTP. `/`, `/health` and `/metrics` have no authentication, even over HTTPS.
-- **Private keys** (`private-key.pem`, `issuer-private-key.pem`) must stay
+- **Private keys** (`key-hub.pem`, `ca/ca-key.pem`, any `key-<label>.pem` and `.pfx`) must stay
   private. Keep the CA's key off the hub in production.
 - **TLS key log.** `--sc-keylog-file` writes the BACnet/SC session secrets to
   a file, so that anyone with the file and a capture can read the traffic.
@@ -656,8 +728,8 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 |---|---|
 | `cannot start listening ... certificate file(s) missing/unreadable` | No certificates in `--sc-cert-dir`. Run `--generate-certs`, or point `--sc-cert-dir` at your certificates. BACnet/IP keeps working. `/health` reports `degraded`. |
 | `lws_create_context failed ... retrying every 5 s` | The BACnet/SC port is in use, or a certificate file doesn't load. The hub keeps retrying; fix the cause and it starts listening without a restart. |
-| `SC TLS handshake REJECTED - client certificate failed verification` | The device's certificate isn't signed by an issuer the hub trusts, has expired, or is revoked (`certificate revoked`, `unable to get certificate CRL` when `issuer-crl.pem` has no CRL for its issuer, `CRL has expired`). Check it with `openssl verify -CAfile issuer-certificate.pem operational-certificate.pem` (add `-crl_check -CRLfile issuer-crl.pem` with a CRL). |
-| `private key ... DOES NOT MATCH` at start-up | `private-key.pem` and `operational-certificate.pem` are from different sets. |
+| `SC TLS handshake REJECTED - client certificate failed verification` | The device's certificate isn't signed by an issuer the hub trusts, has expired, or is revoked (`certificate revoked`, `unable to get certificate CRL` when `issuer-crl.pem` has no CRL for its issuer, `CRL has expired`). Check it with `openssl verify -CAfile cert1/issuer/iss-1.pem <the device's opr-*.pem>` (add `-crl_check -CRLfile issuer-crl.pem` with a CRL). |
+| `private key ... DOES NOT MATCH` at start-up | The hub's key and certificate (`key-hub.pem` and `opr-hub.pem`, or `private-key.pem` and `operational-certificate.pem` in an older folder) are from different sets. |
 | Devices that connected before an update to 1.5.0 no longer do | The default BACnet/SC port is 4443; before 1.5.0 it was 47819. Either set `sc-port = 47819` in the config file (or `--sc-port 47819`), or point the devices (and the firewall rule) at port 4443. The start-up log names the port in use. |
 | A device can't reach the hub | Check the hub URI in its `bacnetsc.config`, TCP 4443 in the firewall, and whether 4 devices are already connected (the [connection limit](#connection-limit)). The `SC audit:` lines show what the hub saw. |
 | `refusing a WebSocket upgrade ... (HTTP 400)` | The device asked for a WebSocket subprotocol other than `hub.bsc.bacnet.org`. Check its BACnet/SC settings. |

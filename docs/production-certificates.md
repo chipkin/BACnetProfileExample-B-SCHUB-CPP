@@ -14,7 +14,17 @@ certificate authority instead. This guide covers:
 - [What the certificates should contain](#what-the-certificates-should-contain)
 - [Protecting private keys](#protecting-private-keys)
 
-The file names below are the defaults in `--sc-cert-dir` (`./certs`).
+## File names
+
+The files below are in `--sc-cert-dir` (`./certs`). Their layout is the CARI
+format (ANSI/ASHRAE 135-2024 Annex AA.2), and `<n>` is the hub's device
+instance (`--deviceID`, default 389022). Below, `PORT` means
+`cert1/device-<n>/port-2`.
+
+A folder from an earlier release uses the older names (`operational-certificate.pem`,
+`private-key.pem`, `certificate-signing-request.pem`, `issuer-certificate.pem`,
+`issuer-certificate-2.pem`, or `hub.crt` / `hub.key` / `ca.crt`). The hub
+reads them unchanged, and `--migrate-certs` copies them into the CARI layout.
 
 ## How trust works
 
@@ -29,12 +39,12 @@ Port 2 ("BACnet SC") points at:
 
 | File object | File on disk | Holds |
 |---|---|---|
-| File 1 | `operational-certificate.pem` | The hub's own certificate (plus any intermediate CA certificates, see below). |
-| File 2 | `certificate-signing-request.pem` | A certificate signing request (CSR) for the hub's private key. Read-only. |
-| File 3 | `issuer-certificate.pem` | Issuer certificate slot 1. |
-| File 4 | `issuer-certificate-2.pem` | Issuer certificate slot 2. Serves slot 1's certificate until something is written to it. |
+| File 1 | `PORT/opr-hub.pem` | The hub's own certificate (plus any intermediate CA certificates, see below). |
+| File 2 | `PORT/csr-hub.pem` | A certificate signing request (CSR) for the hub's private key. Read-only. |
+| File 3 | `cert1/issuer/iss-1.pem` | Issuer certificate slot 1. |
+| File 4 | `cert1/issuer/iss-2.pem` | Issuer certificate slot 2. Serves slot 1's certificate until something is written to it. |
 
-The private key, `private-key.pem`, has no File object and is never served
+The private key, `PORT/key-hub.pem`, has no File object and is never served
 over BACnet. TLS trusts every certificate in both issuer slots; the hub
 writes them together into `trusted-issuers.pem`.
 
@@ -59,32 +69,46 @@ intermediate signs the hub and device certificates. Either:
 - or put only the **root in slot 1**, and have the hub and every device send
   the intermediate with their own certificate (their certificate file holds
   the device certificate followed by the intermediate). Slot 2 stays free.
-  The hub sends whatever is in `operational-certificate.pem`, so append the
-  intermediate there.
+  The hub sends whatever is in `opr-hub.pem`, so append the intermediate
+  there.
 
 Every device needs the same issuer certificate(s) as trust anchors for the
 hub's certificate.
 
 ## Getting the hub's certificate signed
 
-Either let a certificate tool ask the hub for a new key pair - it writes
-`GENERATE_CSR_FILE` to Network Port 2's `Command`, reads the new CSR from File
-2, and later writes the signed certificate back (see the manual, "Managing
-certificates over BACnet"); the key is made on the hub and never leaves it -
-or make the key pair and CSR yourself, once, on the hub's own machine:
+There are three ways to get a key and a CSR:
+
+- **Over BACnet.** A certificate tool asks the hub for a new key pair: it
+  writes `GENERATE_CSR_FILE` to Network Port 2's `Command`, reads the new CSR
+  from File 2, and later writes the signed certificate back (see the manual,
+  "Managing certificates over BACnet"). The key is made on the hub and never
+  leaves it.
+- **Use the existing one.** `PORT/csr-hub.pem` is already a CSR for the
+  hub's key.
+- **Make them yourself**, once, on the hub's own machine:
+
+```bash
+cd certs/cert1/device-389022/port-2
+# A new ECDSA P-256 key for the hub. Never copy this file off the machine.
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out key-hub.pem
+chmod 600 key-hub.pem            # Windows: see "Protecting private keys"
+# The CSR the CA will sign. The subject is up to your site's naming policy.
+openssl req -new -key key-hub.pem -subj "/O=Example Site/CN=BACnet SC Hub 1" -out csr-hub.pem
+```
+
+Send the CSR to your CA. The CSR is public; a certificate tool can also read
+it over BACnet from File 2 (AtomicReadFile).
+
+**If your CA takes CARI files** (for example BACnet International's BACCARI
+tool), send a zip of the hub's `cert1/` folder **without `key-hub.pem`**. CARI
+lets a request carry a key file, and the CA keeps it in the response, but the
+hub's private key must never leave the hub. For example:
 
 ```bash
 cd certs
-# A new ECDSA P-256 key for the hub. Never copy this file off the machine.
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out private-key.pem
-chmod 600 private-key.pem            # Windows: see "Protecting private keys"
-# The CSR the CA will sign. The subject is up to your site's naming policy.
-openssl req -new -key private-key.pem -subj "/O=Example Site/CN=BACnet SC Hub 1" \
-    -out certificate-signing-request.pem
+zip -r hub-request.zip cert1 -x '*/key-*.pem'
 ```
-
-Send `certificate-signing-request.pem` to your CA. The CSR is public; it can
-also be read over BACnet from File 2 (AtomicReadFile) by a certificate tool.
 
 If you run the CA with OpenSSL, sign it with the extensions a BACnet/SC hub
 certificate needs (it acts as a TLS server to devices and as a TLS client when
@@ -99,18 +123,22 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid:always
 subjectAltName = DNS:bacnet-hub.example.site, IP:10.0.0.20
 EOF
-openssl x509 -req -in certificate-signing-request.pem -CA issuer-ca.pem -CAkey issuer-ca-key.pem \
-    -CAcreateserial -days 730 -sha256 -extfile hub-ext.cnf -out operational-certificate.pem
+openssl x509 -req -in csr-hub.pem -CA issuer-ca.pem -CAkey issuer-ca-key.pem \
+    -CAcreateserial -days 730 -sha256 -extfile hub-ext.cnf -out opr-hub.pem
 ```
 
 Check the result before installing it:
 
 ```bash
-openssl verify -CAfile issuer-ca.pem operational-certificate.pem
+openssl verify -CAfile issuer-ca.pem opr-hub.pem
 # the two lines must match: the certificate belongs to the hub's key
-openssl x509 -in operational-certificate.pem -noout -pubkey | openssl sha256
-openssl pkey -in private-key.pem -pubout | openssl sha256
+openssl x509 -in opr-hub.pem -noout -pubkey | openssl sha256
+openssl pkey -in key-hub.pem -pubout | openssl sha256
 ```
+
+The hub's set-up guide (`http://127.0.0.1:8080/setup`) can show every field of
+the new certificate and run these checks for you: open its file inspector and
+drop the file in.
 
 ## Installing the certificate
 
@@ -131,32 +159,31 @@ key and chain to an issuer. If any check fails the hub answers
 can't lock it out. See the manual's
 [Managing certificates over BACnet](manual.md#7-managing-certificates-over-bacnet).
 
-**On disk.** Stop the hub, put `operational-certificate.pem`,
-`private-key.pem` and `issuer-certificate.pem` (and optionally
-`issuer-certificate-2.pem`) in `--sc-cert-dir`, and start it. The start-up log
-shows each certificate's subject, days until expiry, and whether the private
-key matches.
+**On disk.** Stop the hub, put `opr-hub.pem` and `key-hub.pem` in `PORT/`
+and the CA certificate in `cert1/issuer/iss-1.pem` (and optionally
+`iss-2.pem`), and start it. A CA that answers with a CARI response gives you
+exactly that tree. Unzip it into `--sc-cert-dir`: it puts `opr-hub.pem` next
+to `csr-hub.pem` and writes `cert1/issuer/`, and the key you kept stays where
+it is. The start-up log shows each certificate's subject, days until expiry,
+and whether the private key matches.
 
-Remove the lab files (`issuer-private-key.pem`, `clients/`) from a production
-hub's certificate folder.
+Remove the lab files (`ca/`, `clients/`) from a production hub's certificate
+folder.
 
 ## Rotating certificates
 
 The hub logs a warning at start-up when a certificate expires in less than
 30 days, but it doesn't renew anything itself. Put the expiry dates in your
-site's calendar or monitoring (`openssl x509 -enddate -noout -in
-operational-certificate.pem`).
+site's calendar or monitoring (`openssl x509 -enddate -noout -in opr-hub.pem`).
 
 **Renewing the hub's certificate** (same key, same CA): have the CA sign the
 existing CSR again, then install the new certificate over BACnet (write File 1,
 `ACTIVATE_CHANGES`). Devices reconnect within seconds; nothing changes on
 their side because the CA is the same.
 
-**Renewing with a new key**: make a new key and CSR on the hub machine (above),
-have it signed, then stop the hub, replace `private-key.pem` and
-`operational-certificate.pem` together, and start it. (A new key can't be
-installed over BACnet: the hub only accepts a certificate for the key it
-already has.)
+**Renewing with a new key**: use `GENERATE_CSR_FILE` over BACnet (above), or
+make a new key and CSR on the hub machine, have it signed, then stop the hub,
+replace `key-hub.pem` and `opr-hub.pem` together, and start it.
 
 **Device certificates** are renewed on each device the same way; the hub
 needs no change as long as the issuing CA stays the same.
@@ -215,7 +242,7 @@ and subjectAltName are mostly for people:
 - **Key usage**: `digitalSignature`.
   **Extended key usage**: `serverAuth, clientAuth` for the hub; `clientAuth`
   for devices (add `serverAuth` if the device also accepts direct
-  connections).
+  connections, or is itself a hub - a CARI port folder marked `hub/`).
 - **Algorithm**: ECDSA P-256 with SHA-256 (what `--generate-certs` uses) or
   RSA 2048 or larger. Every device must support the algorithm your CA uses.
 - **Validity**: 1-2 years for hub and device certificates is common. Longer
@@ -223,14 +250,17 @@ and subjectAltName are mostly for people:
 
 ## Protecting private keys
 
-- **The hub's key** (`private-key.pem`) must be readable only by the account
+- **The hub's key** (`key-hub.pem`) must be readable only by the account
   that runs the hub:
-  - Linux: `chown bacnethub: private-key.pem && chmod 600 private-key.pem`
-  - Windows: `icacls private-key.pem /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`
+  - Linux: `chown bacnethub: key-hub.pem && chmod 600 key-hub.pem`
+  - Windows: `icacls key-hub.pem /inheritance:r /grant:r *S-1-5-18:F *S-1-5-32-544:F "%USERNAME%:F"`
     (SYSTEM - the account the Windows service runs as - and Administrators
     keep access; name a different service account if you changed it).
-- **Keep the CA's key off the hub.** `issuer-private-key.pem` is only created
-  by `--generate-certs` for lab use. A production CA key belongs on the CA,
+  - A password-protected key works too: the hub asks for the password once
+    at start-up, or reads it from the config file's `sc-key-password`. That
+    password is also what unlocks the set-up guide's signing actions.
+- **Keep the CA's key off the hub.** `ca/ca-key.pem` is only created by
+  `--generate-certs` for lab use. A production CA key belongs on the CA,
   ideally offline or in an HSM.
 - **Back up** the hub's key and certificate somewhere as protected as the
   hub itself, or plan to reissue from a new CSR if the machine is lost.

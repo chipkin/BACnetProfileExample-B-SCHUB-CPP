@@ -91,12 +91,12 @@ python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47808 --cer
 
 Checks:
 
-- `AtomicReadFile(File 1, "Operational Certificate")` returns the bytes of `certs/hub.crt`
+- `AtomicReadFile(File 1, "Operational Certificate")` returns the bytes of the hub's certificate (`opr-hub.pem` in the CARI tree, or `hub.crt` in an older folder)
   byte-for-byte.
 - Network Port 2's `Issuer_Certificate_Files` (property 511) has exactly 2
   entries.
 - Negative test: File objects 1-4 are all read via AtomicReadFile and compared
-  against `certs/hub.key` - none may match (the private key has no File
+  against the hub's private key - none may match (the private key has no File
   object at all, so this proves the negative rather than assuming it).
 
 Exit code 0 = every check passed.
@@ -187,12 +187,20 @@ python tests/sc/http_test.py --http-port 18080 --token test-token-123 --cert-dir
 Without `--token` it only checks that the upload endpoint is disabled (503).
 Exit code 0 = every check passed.
 
-## `cert_files_test.py` (client files for Windows tools)
+## `cert_files_test.py` (device folders: CARI and Windows tools)
 
-Checks each `clients/<label>/` folder from `--generate-certs`: `<label>.pfx`
-loads with an empty password and holds the folder's certificate, matching key
-and issuer; `issuer-certificate.cer` is the issuer in DER; and
-`yabe-bacnetsc.config` names the hub URI and both files by absolute path.
+Checks each `clients/<label>/` folder from `--generate-certs`:
+
+- **The CARI response:** its `cert1/` is a CARI response, and
+  `<label>-cari-response.zip` holds exactly that tree, empty folders included.
+- **The certificate:** `opr-<label>.pem` is signed by `iss-1.pem` and is for
+  `key-<label>.pem` and `csr-<label>.pem`.
+- **`bacnetsc.config`:** names those files by relative path.
+- **The `.pfx`:** loads with an empty password and holds the certificate, the
+  matching key and the issuer.
+- **`iss-1.cer`:** the issuer in DER.
+- **`yabe-bacnetsc.config`:** names the hub URI and both files by absolute
+  path.
 
 ```
 BACnetExampleBSCHUB --sc-cert-dir certs --generate-certs 1
@@ -202,21 +210,67 @@ python tests/sc/cert_files_test.py --cert-dir certs
 ## `csr_test.py` (`--generate-csr` and `--sign-csr`)
 
 Runs the executable in a temporary certificate folder, so no hub needs to be
-running. `--generate-csr` should write a P-256 key and a valid CSR. `--sign-csr`
-should sign that CSR back into its own folder (with the `.pfx`/YABE files), and
-also sign a CSR made elsewhere, PEM or DER. That certificate keeps the CSR's
-subject and key, gets EKU clientAuth only, and the folder holds no private
-key. The test also checks refusals: a broken signature, RSA 1024, a file that
-isn't a CSR, a folder that already has a certificate, and a folder whose key
-isn't the CSR's.
+running.
+
+- **`--generate-csr`:** writes a CARI request,
+  `clients/<label>/cert1/device-<n>/port-<id>/csr-` and `key-<label>.pem`,
+  plus `<label>-cari-request.zip`, with a P-256 key and a valid CSR. It
+  refuses a port id CARI doesn't allow.
+- **`--sign-csr` on that folder:** signs in place. The folder gets
+  `opr-<label>.pem` next to the CSR, `cert1/issuer/iss-1.pem`, the response
+  zip and the `.pfx`/YABE files.
+- **`--sign-csr` on a CSR made elsewhere** (PEM or DER): the certificate keeps
+  the CSR's subject and key and gets EKU clientAuth only. The folder holds no
+  `key-` file and no `.pfx`.
+- **Refusals:** a broken signature, RSA 1024, a file that isn't a CSR, and a
+  folder that already has a certificate.
 
 ```
 python tests/sc/csr_test.py --exe build/Release/BACnetExampleBSCHUB.exe
 ```
 
-To check that the hub accepts such a certificate over TLS, sign a
-`--generate-csr` request and connect with it:
-`hub_listener_test.py --client-cert <label>`.
+## `cari_test.py` (CARI files, ANSI/ASHRAE 135-2024 Annex AA.2, issue #71)
+
+Builds CARI request zips with Python's `zipfile`, the way another vendor's
+tool would, and runs `--sign-csr` on them. Its site request has:
+
+- two ports on one device, one of them a hub function (`hub/`);
+- a router device (`router/`) with an optional `key-` file;
+- a CSR with a broken signature;
+- `vendor-data` and `request-notes.txt`.
+
+**The response** must:
+
+- keep every request file and empty folder byte for byte;
+- add `opr-<name>.pem` next to each good CSR, signed by `iss-1`, with the
+  CSR's subject and key (serverAuth too on the hub port);
+- add `cert1/issuer/iss-1.pem` (the hub's), `response-notes.txt`, and
+  `errors.txt` with one tab-separated line for the refused CSR;
+- exit with 1.
+
+**Also checked:**
+
+- a clean request exits 0 with no `errors.txt`;
+- a re-submitted response is signed again;
+- a `key-` file that isn't the CSR's key is refused for that CSR;
+- a whole request is refused, with no response written, for: not a zip, `..`
+  in a path, a file CARI doesn't name, a bad device folder, no `cert1/` root,
+  a `?` in an `<id>`, `vendor-data` over 1 MB, a zip over 4 MB, no CSR at all,
+  and device instance 4194303.
+
+**Against a running hub:**
+
+- a certificate from the CARI response completes a TLS 1.3 handshake;
+- a device signed by another CA is refused (the control);
+- a 1.4-style flat folder still runs and accepts a device;
+- `--migrate-certs` copies it into `cert1/` + `ca/` byte for byte, leaves the
+  old files alone, and refuses a second time;
+- the migrated folder runs as CARI;
+- `--add-client-certs` still signs with `ca/`.
+
+```
+python tests/sc/cari_test.py --exe build/Release/BACnetExampleBSCHUB.exe
+```
 
 ## `keylog_test.py` (`--sc-keylog-file`, issue #68)
 
@@ -240,5 +294,5 @@ for each pull request: `hub_listener_test.py` (normally and with
 `--bacnet-ip off`), `file_object_test.py`, `rpm_test.py`, `http_test.py`
 (upload disabled, then enabled with a token, device name, network numbers and
 a log file), `fake_hub_server.py` against the connector, and
-`cert_procedure_test.py`, `cert_files_test.py`, `csr_test.py` and `keylog_test.py`, plus the
+`cert_procedure_test.py`, `cert_files_test.py`, `csr_test.py`, `cari_test.py` and `keylog_test.py`, plus the
 connection-limit refusal.

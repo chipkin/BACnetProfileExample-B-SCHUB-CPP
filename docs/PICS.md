@@ -262,7 +262,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (certificate-signing-request.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated
+### File 2 "Certificate Signing Request" - read-only; serves the hub's certificate signing request (CARI cert1/device-<n>/port-2/csr-hub.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -278,7 +278,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 3 "Issuer Certificate Slot 1" - writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (issuer-certificate.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries
+### File 3 "Issuer Certificate Slot 1" - writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (CARI cert1/issuer/iss-1.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -294,7 +294,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### File 4 "Issuer Certificate Slot 2" - writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (issuer-certificate-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)
+### File 4 "Issuer Certificate Slot 2" - writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (CARI cert1/issuer/iss-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|

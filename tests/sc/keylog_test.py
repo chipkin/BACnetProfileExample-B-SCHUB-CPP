@@ -30,6 +30,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import cert_paths
+
 RESULTS = []
 LABELS = ("CLIENT_HANDSHAKE_TRAFFIC_SECRET", "SERVER_HANDSHAKE_TRAFFIC_SECRET", "CLIENT_TRAFFIC_SECRET_0",
           "SERVER_TRAFFIC_SECRET_0", "EXPORTER_SECRET")
@@ -122,8 +124,8 @@ def main():
         certs = tmp / "certs"
         subprocess.run([str(exe), "--sc-cert-dir", str(certs), "--generate-certs", "1"], check=True,
                        capture_output=True, timeout=60)
-        client = certs / "clients" / "client-01"
-        issuer = certs / "issuer-certificate.pem"
+        client_cert, client_key = cert_paths.client_files(certs, "client-01")
+        issuer = cert_paths.issuer_certificate(certs)
 
         # Start-up refuses a key log it can't open.
         proc = subprocess.run([str(exe), "--sc-cert-dir", str(certs), "--sc-keylog-file",
@@ -152,7 +154,7 @@ def main():
             ctx.minimum_version = ssl.TLSVersion.TLSv1_3
             ctx.check_hostname = False
             ctx.load_verify_locations(issuer)
-            ctx.load_cert_chain(client / "operational-certificate.pem", client / "private-key.pem")
+            ctx.load_cert_chain(client_cert, client_key)
             ctx.keylog_filename = str(peer_log)
             with socket.create_connection(("127.0.0.1", hub.sc_port), timeout=5) as raw:
                 with ctx.wrap_socket(raw) as tls:
@@ -181,7 +183,7 @@ def main():
         server_log = tmp / "server-keys.log"
         sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         sctx.minimum_version = ssl.TLSVersion.TLSv1_3
-        sctx.load_cert_chain(certs / "operational-certificate.pem", certs / "private-key.pem")
+        sctx.load_cert_chain(cert_paths.hub_certificate(certs), cert_paths.hub_private_key(certs))
         sctx.keylog_filename = str(server_log)
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

@@ -19,8 +19,53 @@ Open work is tracked in
   so at start-up. The Windows installer's firewall rule and the Linux install
   hint use 4443. Under `docs/SUPPORT.md` this is a breaking change; it ships
   in a minor release by decision, with this notice.
+- **Certificate files use the CARI layout** (#71): Certificate Authority
+  Requirements Interchange, ANSI/ASHRAE 135-2024 Annex AA.2, added to
+  135-2020 by Addendum cs. A new set is a CARI tree for the hub:
+  - `cert1/device-<deviceID>/port-2/` holds `hub/` (marks a hub function),
+    `opr-hub.pem` (File 1), `csr-hub.pem` (File 2) and `key-hub.pem`;
+  - `cert1/issuer/iss-1.pem` / `iss-2.pem` are Files 3/4;
+  - the lab CA is in `ca/`, and the pending key is `key-hub-pending.pem`.
+
+  Each `clients/<label>/` device folder is that device's CARI response, plus
+  `<label>-cari-response.zip`, `bacnetsc.config` (relative paths), `.pfx`,
+  `iss-1.cer` (was `issuer-certificate.cer`) and the YABE file.
+  **Existing folders keep working unchanged:** the 1.4 flat names and the
+  older `hub.crt`/`ca.crt` are still read, and the start-up log names the
+  layout in use.
 
 ### Added
+
+- **CARI request and response files** (#71). `--sign-csr` takes a CARI
+  request zip (for example from BACnet International's BACCARI) and writes
+  `<name>-response.zip` next to it. The response has:
+  - every request file kept byte for byte;
+  - `opr-<name>.pem` next to each CSR it signed;
+  - `cert1/issuer/iss-1.pem` (+ `iss-2.pem`) and `response-notes.txt`;
+  - `errors.txt`, one tab-separated line per refused CSR (and the command
+    exits 1).
+
+  The zip is checked against the CARI rules before anything is unpacked:
+  names, characters, device instances, no `..`, size limits. A `hub/` port
+  gets serverAuth as well as clientAuth. A `key-<name>.pem` that isn't its
+  CSR's key is refused.
+- **`--generate-csr` writes a CARI request** (`csr-`/`key-<label>.pem` and
+  `<label>-cari-request.zip`). **`--sign-csr <folder>`** signs a
+  `--generate-csr` folder in place. New options: **`--cert-device-instance`**
+  and **`--cert-port-id`** name a device's `device-<n>/port-<id>` folders.
+- **`--migrate-certs`** copies an older certificate folder into the CARI
+  layout without touching the old files.
+- Signing refuses a CA (`ca/ca-cert.pem`) that isn't one of the hub's own
+  issuers, since the hub would then refuse every device it signed.
+- `tests/sc/cari_test.py` (52 checks):
+  - the CARI request/response rules and refusals;
+  - a TLS handshake with a CARI-signed certificate, with a wrong-CA control;
+  - a flat-layout hub, and `--migrate-certs`.
+
+  `cert_files_test.py`, `csr_test.py`, `cert_procedure_test.py`,
+  `http_test.py`, `keylog_test.py` and `cert_paths.py` follow the new layout.
+- zlib (already built by vcpkg for libwebsockets) is now a direct dependency,
+  for the zip files; `THIRD-PARTY-NOTICES.md` and README updated.
 
 - **A password-protected private key is asked for once.** With an encrypted
   `private-key.pem` (as in the Plugfest 2026 certificate packages), OpenSSL

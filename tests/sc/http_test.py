@@ -122,8 +122,8 @@ def main():
         # A real CSR with the hub's private key appended (a combined file): the CSR
         # slot is served over AtomicReadFile as written, so anything but the one
         # CERTIFICATE REQUEST block must be refused.
-        csr_pem = (cert_dir / "certificate-signing-request.pem").read_bytes()
-        key_pem = (cert_dir / "private-key.pem").read_bytes()
+        csr_pem = cert_paths.hub_csr(cert_dir).read_bytes()
+        key_pem = cert_paths.hub_private_key(cert_dir).read_bytes()
         status, body = request(base, "/certs/csr", "POST", csr_pem + key_pem, token=args.token)
         record("upload of a CSR with a private key appended -> 400", status == 400 and "PRIVATE KEY" in body,
                f"HTTP {status}: {body.strip()}")

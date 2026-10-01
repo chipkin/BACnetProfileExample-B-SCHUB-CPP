@@ -2,10 +2,10 @@
 
 This example's own source code (everything in this repository outside
 `submodules/`) is dedicated to the public domain under [CC0-1.0](LICENSE).
-Building it, however, links two third-party libraries the BACnet/SC transport
-(`sc_transport/`) depends on - libwebsockets and OpenSSL - plus the libraries
-vcpkg builds for libwebsockets itself (libuv, zlib, and pthreads4w on
-Windows). All are fetched via [vcpkg](https://vcpkg.io/) (see `vcpkg.json`)
+Building it, however, links three third-party libraries directly - libwebsockets
+and OpenSSL (the BACnet/SC transport, `sc_transport/`) and zlib (CARI zip files,
+`cari.cpp`) - plus the libraries vcpkg builds for libwebsockets itself (libuv,
+and pthreads4w on Windows). All are fetched via [vcpkg](https://vcpkg.io/) (see `vcpkg.json`)
 and all are under permissive licences that allow this. Each release's
 software bills of materials (`sbom-windows.cdx.json` and `sbom-linux.cdx.json`,
 made by `tools/make-sbom.py`) list the exact versions. None is vendored into this repository - vcpkg downloads, builds, and caches each
@@ -84,7 +84,7 @@ after a build.
 | Library | Licence | Project | Used for |
 |---|---|---|---|
 | libuv | MIT | <https://libuv.org/> | libwebsockets' event-loop backend (linked; this example uses lws's default poll loop) |
-| zlib | Zlib | <https://zlib.net/> | libwebsockets' compression support (not used by BACnet/SC, which is binary-framed without compression) |
+| zlib | Zlib | <https://zlib.net/> | Reading and writing CARI certificate zip files (`cari.cpp`), and libwebsockets' compression support (not used by BACnet/SC, which is binary-framed without compression) |
 | pthreads4w (`pthreads` port, Windows only) | Apache-2.0 | <https://sourceforge.net/projects/pthreads4w/> | POSIX threads on Windows, for libwebsockets |
 
 ## The CAS BACnet Stack
