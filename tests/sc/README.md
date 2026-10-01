@@ -10,9 +10,9 @@ each one proves.
 pip install -r tests/sc/requirements.txt
 ./build/BACnetExampleBSCHUB --generate-certs   # from the repo root
 # in a separate terminal:
-./build/BACnetExampleBSCHUB.exe --sc-port 47819 --sc-cert-dir ./certs
+./build/BACnetExampleBSCHUB.exe --sc-port 4443 --sc-cert-dir ./certs
 # then:
-python tests/sc/hub_listener_test.py --port 47819 --cert-dir certs
+python tests/sc/hub_listener_test.py --port 4443 --cert-dir certs
 ```
 
 Checks:
@@ -160,9 +160,9 @@ BACnet/SC certificate page) does, over plain BACnet/IP:
 ```
 BACnetExampleBSCHUB --sc-cert-dir hub-certs --generate-certs 1
 BACnetExampleBSCHUB --sc-cert-dir other-certs --generate-certs 1
-BACnetExampleBSCHUB --port 47870 --sc-port 47819 --sc-cert-dir hub-certs
+BACnetExampleBSCHUB --port 47870 --sc-port 4443 --sc-cert-dir hub-certs
 # in a separate terminal:
-python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 47819 \
+python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 4443 \
     --cert-dir hub-certs --second-issuer-dir other-certs
 ```
 

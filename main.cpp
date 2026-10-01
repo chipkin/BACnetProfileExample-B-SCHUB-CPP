@@ -430,7 +430,7 @@ static std::string g_scTrustedIssuersPath;
 // The BACnet/SC hub accept role's WebSocket/TLS listener - CLI-configurable
 // (--sc-port, --sc-cert-dir; see ParseSCPortArg/ParseSCCertDirArg below), since
 // unlike the stub this replaces, ScTransport actually opens this port.
-static uint16_t g_scPort = 47819;
+static uint16_t g_scPort = 4443;
 static std::string g_scCertDir = "./certs";
 // Built from g_scPort once the CLI has been parsed - see main(). "0.0.0.0"
 // binds every interface (ScTransport::StartListening treats that host - or an
@@ -450,7 +450,7 @@ static std::string g_scFailoverUri; // optional failover hub URI; empty = none c
 // The read-only health/metrics HTTP endpoint (Task 3) and the certificate
 // upload endpoint (Task 4) - both served by g_httpServer below.
 // --http-port / config-file http-port; distinct from --port (BACnet/IP,
-// default 47808) and --sc-port (BACnet/SC, default 47819).
+// default 47808) and --sc-port (BACnet/SC, default 4443).
 static uint16_t g_httpPort = 8080;
 // --http-bind / config-file http-bind. Defaults to loopback-only; see
 // HttpServer.h's Start() doc comment for why binding this anywhere else is
@@ -2112,7 +2112,7 @@ static int RunHub(int argc, char** argv) {
                 printf("                      off = BACnet/SC only: no UDP socket and no Network Port 1;\n");
                 printf("                      the device is reachable only over BACnet/SC. Default on.\n");
                 printf("\nBACnet/SC options (NM-SCH-B hub function):\n");
-                printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 47819.\n");
+                printf("  --sc-port <n>       WebSocket/TLS port for the hub accept URI. Default 4443.\n");
                 printf("  --sc-cert-dir <dir> Directory holding operational-certificate.pem,\n");
                 printf("                      private-key.pem and issuer-certificate.pem (or the older\n");
                 printf("                      hub.crt/hub.key/ca.crt; see\n");
@@ -2316,6 +2316,13 @@ static int RunHub(int argc, char** argv) {
         g_httpUploadToken = fileConfig.httpUploadToken;  // config file only, like dcc-password
     }
     g_scPort = ParseScPortArg(argc, argv, fileConfig.hasScPort ? fileConfig.scPort : g_scPort);
+    if (!fileConfig.hasScPort && ParseStringArg(argc, argv, "--sc-port").empty()) {
+        // The default changed in 1.5.0 (issue #70): say so once, so a site whose
+        // devices still dial :47819 can see why they no longer connect.
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+            "BACnet/SC port %u (the default; before 1.5.0 it was 47819 - set sc-port = 47819 or --sc-port 47819 "
+            "if your devices still use that)", (unsigned)g_scPort);
+    }
     g_scCertDir = ParseScCertDirArg(argc, argv, fileConfig.hasScCertDir ? fileConfig.scCertDir : g_scCertDir);
     if (g_scCertDir.empty()) {
         // Every path is built as g_scCertDir + "/<file>", so "" would mean the

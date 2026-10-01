@@ -38,8 +38,8 @@ over plain BACnet/IP:
 Setup (two certificate sets from the example itself):
     BACnetExampleBSCHUB --sc-cert-dir hub-certs --generate-certs 1
     BACnetExampleBSCHUB --sc-cert-dir other-certs --generate-certs 1
-    BACnetExampleBSCHUB --port 47870 --sc-port 47819 --sc-cert-dir hub-certs
-    python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 47819 \\
+    BACnetExampleBSCHUB --port 47870 --sc-port 4443 --sc-cert-dir hub-certs
+    python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 4443 \\
         --cert-dir hub-certs --second-issuer-dir other-certs
 
 WARNING: this rewrites the hub's certificate files in --cert-dir. Use a throwaway set.
@@ -224,7 +224,7 @@ async def main():
     parser.set_defaults(address="127.0.0.1/32:47811")
     parser.add_argument("--target", default="127.0.0.1")
     parser.add_argument("--target-port", type=int, default=47808)
-    parser.add_argument("--sc-port", type=int, default=47819)
+    parser.add_argument("--sc-port", type=int, default=4443)
     parser.add_argument("--cert-dir", required=True, help="the hub's --sc-cert-dir (REWRITTEN by this test)")
     parser.add_argument("--second-issuer-dir", required=True, help="another --generate-certs set: the new CA")
     args = parser.parse_args()

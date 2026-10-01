@@ -135,7 +135,7 @@ std::string ResolveCertFile(const std::string& certDir, const char* name, const 
 // the issuer invalidates every certificate already handed out; with `force`
 // the old set, the clients/ folder and certificates.txt are deleted first.
 // Prints what it wrote. Returns true on success.
-// `hubUri` (e.g. "wss://192.168.1.10:47819/") is the primary hub URI written
+// `hubUri` (e.g. "wss://192.168.1.10:4443/") is the primary hub URI written
 // into each client's bacnetsc.config.
 bool GenerateCertificateSet(const std::string& certDir, unsigned clientCount,
                             const std::string& clientLabel, const std::string& hubUri, bool force);

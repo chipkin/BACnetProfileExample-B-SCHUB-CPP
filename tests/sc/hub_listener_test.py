@@ -46,12 +46,12 @@ USAGE
     Start the example first (a separate process/terminal), pointed at the
     same certs/ this script uses:
 
-        BACnetExampleBSCHUB.exe --sc-port 47819 --sc-cert-dir ./certs
+        BACnetExampleBSCHUB.exe --sc-port 4443 --sc-cert-dir ./certs
 
     Then, from the repository root:
 
         pip install -r tests/sc/requirements.txt
-        python tests/sc/hub_listener_test.py [--host 127.0.0.1] [--port 47819]
+        python tests/sc/hub_listener_test.py [--host 127.0.0.1] [--port 4443]
                                               [--cert-dir certs]
 
     Exit code 0 = every check passed. Non-zero = at least one failed (see
@@ -341,7 +341,7 @@ async def v2_duplicate_vmac_gets_nak(uri: str, cert_dir: Path):
 async def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=47819)
+    parser.add_argument("--port", type=int, default=4443)
     parser.add_argument("--cert-dir", default="certs")
     parser.add_argument("--client-cert", default=None,
                         help="client certificate label to connect with, e.g. client-02 "

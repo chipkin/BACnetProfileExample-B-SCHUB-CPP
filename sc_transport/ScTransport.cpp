@@ -79,7 +79,7 @@ bool FileReadable(const std::string& path) {
 
 // Parses "wss://host:port/path...". Only wss:// is accepted (BACnet/SC
 // requires it - AddBACnetSCAcceptUri's own doc comment). host may be empty
-// (e.g. "wss://:47819/") or "0.0.0.0", both of which mean "bind all
+// (e.g. "wss://:4443/") or "0.0.0.0", both of which mean "bind all
 // interfaces" - both map to a NULL lws iface (listener use only).
 // outPath is optional (nullptr for the listener, which does not route by
 // path); when non-null it is set to the path component, defaulting to "/"

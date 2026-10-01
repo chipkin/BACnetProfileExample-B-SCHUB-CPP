@@ -119,7 +119,7 @@ struct ExampleConfig {
     // (Task 3) and the certificate-upload endpoint (Task 4) - both served by
     // sc_transport/HttpServer. Distinct from --port (BACnet/IP UDP) and
     // --sc-port (BACnet/SC WebSocket/TLS TCP) - three different listeners,
-    // three different defaults (47808 / 47819 / 8080), no overlap.
+    // three different defaults (47808 / 4443 / 8080), no overlap.
     bool hasHttpPort = false;
     uint16_t httpPort = 0;
 

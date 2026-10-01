@@ -9,6 +9,17 @@ Open work is tracked in
 
 ## [1.5.0] - unreleased
 
+### Changed
+
+- **The default BACnet/SC port is now 4443** (was 47819) (#70). **Existing
+  sites:** devices, `bacnetsc.config`/YABE files and firewall rules made for
+  47819 stop matching after this update. Either keep the old port with
+  `sc-port = 47819` in the config file (or `--sc-port 47819`), or move the
+  devices and the firewall rule to 4443. When no port is set, the hub says
+  so at start-up. The Windows installer's firewall rule and the Linux install
+  hint use 4443. Under `docs/SUPPORT.md` this is a breaking change; it ships
+  in a minor release by decision, with this notice.
+
 ### Added
 
 - **A password-protected private key is asked for once.** With an encrypted

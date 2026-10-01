@@ -42,7 +42,7 @@ UDP devices. This program is that hub, built on the
 It implements the **B-SCHUB** device profile (ANSI/ASHRAE 135 Annex L):
 
 - **BACnet/SC hub function** (BIBB NM-SCH-B) on Network Port 2: listens on
-  `wss://0.0.0.0:47819/` (TLS 1.3, mutual certificate authentication,
+  `wss://0.0.0.0:4443/` (TLS 1.3, mutual certificate authentication,
   WebSocket subprotocol `hub.bsc.bacnet.org`) and relays traffic between the
   connected devices (up to 4 at a time - see
   [Connection limit](#connection-limit)), including this hub's own BACnet
@@ -94,7 +94,7 @@ Download from the
 
 | Download | What it is |
 |---|---|
-| `BACnetSCHub-<version>-setup.exe` | **Windows installer.** Installs the program in `C:\Program Files\Chipkin\BACnet SC Hub`; settings, certificates and logs go in `C:\ProgramData\Chipkin\BACnetSCHub`. Optionally sets up the **BACnetSCHub** Windows service (starts on boot, restarts on failure) and firewall rules for UDP 47808 and TCP 47819. |
+| `BACnetSCHub-<version>-setup.exe` | **Windows installer.** Installs the program in `C:\Program Files\Chipkin\BACnet SC Hub`; settings, certificates and logs go in `C:\ProgramData\Chipkin\BACnetSCHub`. Optionally sets up the **BACnetSCHub** Windows service (starts on boot, restarts on failure) and firewall rules for UDP 47808 and TCP 4443. |
 | `bacnet-schub-hub_<version>_amd64.deb` | **Debian/Ubuntu package**: `sudo apt install ./bacnet-schub-hub_<version>_amd64.deb`. The program goes in `/opt/bacnet-schub`, settings in `/etc/bacnet-schub/hub.conf`, certificates in `/etc/bacnet-schub/certs`, logs in `/var/log/bacnet-schub`, and the **bacnet-schub-hub** systemd service is enabled and started, running as the `bacnethub` user. |
 | `BACnetSCHub-<version>-linux-x64.tar.gz` | The same for other Linux distributions: unpack it and run `sudo ./install.sh`. `sudo ./uninstall.sh` removes it (`--purge` also removes settings and certificates). |
 | `BACnetExampleBSCHUB.exe`, `BACnetExampleBSCHUB` | The bare program, to run from a folder of your choice. |
@@ -136,7 +136,7 @@ Allow in:
 
 | Port | Protocol | For |
 |---|---|---|
-| 47819 | TCP | BACnet/SC devices connecting to the hub (`--sc-port`). |
+| 4443 | TCP | BACnet/SC devices connecting to the hub (`--sc-port`). |
 | 47808 | UDP | BACnet/IP discovery and management (`--port`), unless BACnet/IP is off. |
 | 8080 | TCP | The status page and HTTP endpoints (`--http-port`) - only if you bind it beyond 127.0.0.1. |
 
@@ -201,7 +201,7 @@ CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
 FYI: Device 389022 ("Chipkin Example B-SCHUB") ready. Vendor ID 389. Press 'h' for help, 'm' for a health/metrics snapshot.
-BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:47819/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
+BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:4443/ (subprotocol "hub.bsc.bacnet.org", TLS 1.3, mutual auth)
 ```
 
 At start-up the hub also checks its certificates and logs each one's subject,
@@ -345,7 +345,7 @@ BACnetExampleBSCHUB [options]
 | `--ip-network-number <n>`, `--sc-network-number <n>` | not set | `Network_Number` of Network Port 1 / 2 (1..65534), reported with quality `configured`. Unset ports report 0, quality `unknown`. |
 | `--log-file <path>` | none | Also write everything the hub prints to this file (see [Logging](#logging)). |
 | `--log-max-size-mb <n>`, `--log-max-files <n>` | `10`, `5` | Rotate the log file at this size, keeping this many old files (`<path>.1`, `.2`, ...). |
-| `--sc-port <n>` | `47819` | BACnet/SC hub (wss://) port. |
+| `--sc-port <n>` | `4443` | BACnet/SC hub (wss://) port. |
 | `--sc-cert-dir <dir>` | `./certs` | Certificate folder. |
 | `--sc-hub-uri <wss://host:port/>` | off | Also connect out to this BACnet/SC hub. |
 | `--sc-failover-uri <wss://host:port/>` | off | Failover hub for `--sc-hub-uri`. |
@@ -487,7 +487,7 @@ For each BACnet/SC device:
 4. **Any other BACnet/SC device:** install `operational-certificate.pem` and
    `private-key.pem` as its operational certificate and key, and
    `issuer-certificate.pem` as its issuer certificate. Set its primary hub URI
-   to `wss://<hub address>:47819/`.
+   to `wss://<hub address>:4443/`.
 
 The hub URI in `bacnetsc.config` is this computer's LAN address unless you
 generated the set with `--cert-hub-uri`. The hub logs refused TLS handshakes
@@ -497,8 +497,8 @@ presented, then its BACnet/SC VMAC and device UUID once the hub accepts it,
 and the same identity again when it disconnects:
 
 ```
-2026-09-26 18:10:21 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=3" connected from 10.0.0.31:64150, certificate "O = Chipkin Automation Systems (lab test), CN = Chipkin Example B-SCHUB client-01"
-2026-09-26 18:10:21 [INFO] SC audit: peer "wss://0.0.0.0:47819/|client=3" (10.0.0.31:64150) is BACnet/SC device VMAC 0a:0b:0c:0d:0e:0f, UUID 50515253-5455-5657-5859-5a5b5c5d5e5f, certificate "O = Chipkin Automation Systems (lab test), CN = Chipkin Example B-SCHUB client-01" - connected
+2026-09-26 18:10:21 [INFO] SC audit: peer "wss://0.0.0.0:4443/|client=3" connected from 10.0.0.31:64150, certificate "O = Chipkin Automation Systems (lab test), CN = Chipkin Example B-SCHUB client-01"
+2026-09-26 18:10:21 [INFO] SC audit: peer "wss://0.0.0.0:4443/|client=3" (10.0.0.31:64150) is BACnet/SC device VMAC 0a:0b:0c:0d:0e:0f, UUID 50515253-5455-5657-5859-5a5b5c5d5e5f, certificate "O = Chipkin Automation Systems (lab test), CN = Chipkin Example B-SCHUB client-01" - connected
 ```
 
 The status page lists the devices connected right now the same way.
@@ -658,7 +658,8 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | `lws_create_context failed ... retrying every 5 s` | The BACnet/SC port is in use, or a certificate file doesn't load. The hub keeps retrying; fix the cause and it starts listening without a restart. |
 | `SC TLS handshake REJECTED - client certificate failed verification` | The device's certificate isn't signed by an issuer the hub trusts, has expired, or is revoked (`certificate revoked`, `unable to get certificate CRL` when `issuer-crl.pem` has no CRL for its issuer, `CRL has expired`). Check it with `openssl verify -CAfile issuer-certificate.pem operational-certificate.pem` (add `-crl_check -CRLfile issuer-crl.pem` with a CRL). |
 | `private key ... DOES NOT MATCH` at start-up | `private-key.pem` and `operational-certificate.pem` are from different sets. |
-| A device can't reach the hub | Check the hub URI in its `bacnetsc.config`, TCP 47819 in the firewall, and whether 4 devices are already connected (the [connection limit](#connection-limit)). The `SC audit:` lines show what the hub saw. |
+| Devices that connected before an update to 1.5.0 no longer do | The default BACnet/SC port is 4443; before 1.5.0 it was 47819. Either set `sc-port = 47819` in the config file (or `--sc-port 47819`), or point the devices (and the firewall rule) at port 4443. The start-up log names the port in use. |
+| A device can't reach the hub | Check the hub URI in its `bacnetsc.config`, TCP 4443 in the firewall, and whether 4 devices are already connected (the [connection limit](#connection-limit)). The `SC audit:` lines show what the hub saw. |
 | `refusing a WebSocket upgrade ... (HTTP 400)` | The device asked for a WebSocket subprotocol other than `hub.bsc.bacnet.org`. Check its BACnet/SC settings. |
 | `Connect-Request refused by the hub` | Another connected device has the same VMAC, or the hub is full. |
 | `SC rate limit: refusing a new connection` | A device (or something else) is reconnecting faster than `--sc-rate-limit` allows. |
@@ -678,7 +679,7 @@ secrets to a key log file, and give that file to Wireshark:
 BACnetExampleBSCHUB --sc-keylog-file sc-keys.log
 ```
 
-1. Start the capture (for example `tcp port 47819`; on Windows, capture
+1. Start the capture (for example `tcp port 4443`; on Windows, capture
    traffic to the same computer with Npcap's loopback adapter), then start
    the hub with `--sc-keylog-file`. Only connections made while the option is
    on can be decoded, because Wireshark needs each TLS handshake.

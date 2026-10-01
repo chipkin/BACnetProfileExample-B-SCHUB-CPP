@@ -128,7 +128,7 @@ The device instance is configurable with `--deviceID` or the config file's
 removes it, leaving a BACnet/SC-only device without Network Port 1.
 
 **BACnet/SC (Annex AB)** on Network Port 2: hub function on
-`wss://0.0.0.0:47819/` by default (configurable with `--sc-port`), and an
+`wss://0.0.0.0:4443/` by default (configurable with `--sc-port`), and an
 optional hub connector (`--sc-hub-uri`, `--sc-failover-uri`). TLS 1.3 with
 mutual authentication, WebSocket subprotocol `hub.bsc.bacnet.org`.
 

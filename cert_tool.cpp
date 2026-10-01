@@ -548,7 +548,7 @@ HOW TO USE THESE FILES
 
        BACnetExampleBSCHUB --sc-cert-dir <this folder>
 
-   It listens for BACnet/SC connections on wss://<this computer>:47819/
+   It listens for BACnet/SC connections on wss://<this computer>:4443/
    (change the port with --sc-port).
 
 2. Give each device that will connect to the hub its own clients/<label>/
@@ -566,7 +566,7 @@ HOW TO USE THESE FILES
      - install issuer-certificate.pem as its issuer (trusted CA)
        certificate, in both issuer slots if it has two;
      - set its primary hub URI to the primaryHubURI in bacnetsc.config
-       (wss://<hub address>:47819/ by default).
+       (wss://<hub address>:4443/ by default).
    Hand each folder to one device only. Two devices sharing a certificate
    can't be told apart by the hub.
 

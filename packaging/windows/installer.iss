@@ -54,7 +54,7 @@ UninstallDisplayIcon={app}\BACnetExampleBSCHUB.exe
 
 [Tasks]
 Name: "service"; Description: "Run the hub as a Windows service (starts on boot)"; Flags: checkedonce
-Name: "firewall"; Description: "Allow BACnet/IP (UDP 47808) and BACnet/SC (TCP 47819) through Windows Firewall"; Flags: checkedonce
+Name: "firewall"; Description: "Allow BACnet/IP (UDP 47808) and BACnet/SC (TCP 4443) through Windows Firewall"; Flags: checkedonce
 
 [Dirs]
 Name: "{commonappdata}\Chipkin\BACnetSCHub"
@@ -117,7 +117,7 @@ Filename: "{sys}\sc.exe"; Parameters: "start BACnetSCHub"; Flags: runhidden wait
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BACnet SC Hub (BACnet/IP)"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""BACnet SC Hub (BACnet/SC)"""; Flags: runhidden waituntilterminated; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BACnet SC Hub (BACnet/IP)"" dir=in action=allow protocol=UDP localport=47808 program=""{app}\BACnetExampleBSCHUB.exe"""; Flags: runhidden waituntilterminated; Tasks: firewall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BACnet SC Hub (BACnet/SC)"" dir=in action=allow protocol=TCP localport=47819 program=""{app}\BACnetExampleBSCHUB.exe"""; Flags: runhidden waituntilterminated; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""BACnet SC Hub (BACnet/SC)"" dir=in action=allow protocol=TCP localport=4443 program=""{app}\BACnetExampleBSCHUB.exe"""; Flags: runhidden waituntilterminated; Tasks: firewall
 
 [UninstallRun]
 Filename: "{app}\BACnetExampleBSCHUB.exe"; Parameters: "--uninstall-service"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveService"
