@@ -127,6 +127,10 @@ bool WriteClientFolder(const CertLayout::HubCertPaths& paths, const std::string&
 bool BareCsrToRequest(const std::string& csrBytes, const ClientOptions& client, const std::string& label,
                       Cari::Tree* request, std::string* error);
 
+// True if the hub's CA can sign (ca-cert.pem + ca-key.pem readable, matching,
+// and one of the hub's issuers). *error says why not.
+bool CheckSigningCa(const CertLayout::HubCertPaths& paths, std::string* error);
+
 // The label --sign-csr/--generate-csr/the web guide would use: client.label,
 // or the next free client-NN.
 std::string NextClientLabel(const std::string& certDir, const ClientOptions& client);

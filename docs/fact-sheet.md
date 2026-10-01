@@ -42,7 +42,13 @@ own product on the CAS BACnet Stack, contact **support@chipkin.com**.
 - **Audit trail** naming each device by address, certificate, VMAC and
   device UUID.
 - **BACnet/SC-only mode** for sites that allow no unencrypted BACnet traffic.
-- Lab certificate generator for testing; guide for production PKI.
+- **Certificate set-up guide** in the browser: sign a device's CSR (or a
+  CARI request) or make its files, see every field of every file, and see
+  live why a connection attempt failed and what to change. Signing is gated
+  by the hub key's password.
+- **CARI files** (ANSI/ASHRAE 135-2024 Annex AA.2) in and out, for BACCARI
+  and other CA tools; lab certificate generator for testing; guide for
+  production PKI.
 
 ## Operations
 

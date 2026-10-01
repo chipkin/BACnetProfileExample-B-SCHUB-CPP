@@ -97,7 +97,7 @@ class Hub:
         return self.log.read_text(errors="replace") if self.log.exists() else ""
 
     def wait_listening(self):
-        return wait_for(lambda: "listening for WebSocket/TLS connections" in self.output())
+        return wait_for(lambda: "listening for WebSocket/TLS connections" in self.output(), 30)
 
     def stop(self):
         self.proc.kill()

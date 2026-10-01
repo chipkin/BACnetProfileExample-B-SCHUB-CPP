@@ -36,6 +36,47 @@ Open work is tracked in
 
 ### Added
 
+- **Certificate set-up guide** at `/setup` (#72). A page served by the hub
+  that walks you from "I have a device" to "my device is connected", in four
+  steps:
+  1. How trust works: the hub URI, and the hub's and the CA's certificates
+     with every field and check. Download `iss-1.pem`/`.cer` here.
+  2. Get the files: upload the device's CSR or a CARI request and **Sign**,
+     or **Generate** a key and certificate for a tool that can't make its own.
+     Every file downloads singly or as a CARI zip.
+  3. Install: which file goes into which Network Port property.
+  4. Test: a live view of what the hub sees for each connection attempt, with
+     every failure explained in plain language with its fix (wrong CA,
+     expired, no clientAuth, revoked, no client certificate or TLS 1.2,
+     wrong subprotocol, refused Connect-Request) - and "Connected!".
+
+  Plus:
+  - a **file inspector** for any certificate, CSR, key, `.pfx` or CARI zip
+    (every field, every check, each failure with what to do), also on the
+    command line as **`--inspect <file>`**;
+  - the device folders made so far, with their downloads;
+  - a **diagnostic report** for support (no secrets).
+
+  **The gate.** Signing, key generation and private downloads need the
+  password of the hub's private key (`sc-key-password`, or the one typed at
+  start-up). It is:
+  - compared in constant time;
+  - limited to 5 wrong passwords a minute per address (30 in total; then
+    HTTP 429);
+  - never accepted over plain HTTP from another computer;
+  - logged with every action.
+
+  Without a key password (the lab set), these actions work only from
+  loopback. Either way, a privileged request must carry an
+  `Authorization: HubKey ...` header (`HubKey -` without a password), so
+  another web site's page in the hub computer's browser can't use the hub
+  (CSRF). Without a password the `Host` must also be a loopback name, which
+  stops DNS rebinding. `/api/...` endpoints let curl do the same.
+  `sc_transport/ScDiagnostics` keeps the last 100 connection events behind
+  `/api/diagnostics`. `tests/sc/setup_portal_test.py` (53 checks) covers
+  the page, the inspector, signing, CARI, generated files connecting to the
+  hub, diagnostics, the gate with and without a password, the rate limit and
+  the remote-plain-HTTP refusal.
 - **CARI request and response files** (#71). `--sign-csr` takes a CARI
   request zip (for example from BACnet International's BACCARI) and writes
   `<name>-response.zip` next to it. The response has:
@@ -98,6 +139,17 @@ Open work is tracked in
   listening, `/health` reports `"tls_keylog": true`, and the status page shows
   a banner. `tests/sc/keylog_test.py` checks that the hub's secrets match the
   peer's own key log for the same session (11 checks).
+
+### Fixed
+
+- **HTTP responses to a browser could be cut short.** When a browser asked
+  for compression (`Accept-Encoding: gzip, deflate`), libwebsockets compressed
+  the response as chunked transfer encoding. The hub never marked the last
+  write final, so the compressor wasn't flushed, and the response could end
+  early (`ERR_INCOMPLETE_CHUNKED_ENCODING`). curl doesn't ask for compression
+  and never saw it. The last write is now `LWS_WRITE_HTTP_FINAL`, and the
+  transaction completes only after lws has sent everything.
+  `setup_portal_test.py` checks the compressed path byte for byte.
 
 ## [1.4.0] - 2026-09-27
 

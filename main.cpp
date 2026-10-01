@@ -132,6 +132,11 @@
 #include "config.h" // --config <path> support (Task 2) - see config.h
 #include "sc_transport/TlsKeyLog.h" // --sc-keylog-file: TLS secrets for Wireshark (issue #68)
 #include "cert_layout.h" // where each certificate file is in --sc-cert-dir (CARI tree, issue #71)
+#include "cert_portal.h" // GET /setup: the certificate set-up guide (issue #72)
+#include "cert_inspect.h" // --inspect <file>, the guide's file inspector on the command line
+#include <fstream>
+#include <iterator>
+#include "json_writer.h"
 #include "cert_tool.h" // --generate-certs / --add-client-certs - see cert_tool.h
 #include "cert_store.h" // certificate File object contents + clause 19.8.3 staging - see cert_store.h
 #include "log_file.h"   // --log-file: console output also to a rotating file - see log_file.h
@@ -1603,6 +1608,8 @@ static std::string BuildStatusPage() {
             "</style></head><body>\n";
     html += "<h1>" + HtmlEscape(g_deviceName) + "</h1><p class=\"sub\">Version " + HtmlEscape(APP_VERSION) +
             " &middot; BACnet/SC hub &middot; refreshes every 5 s</p>\n";
+    html += "<p class=\"sub\" style=\"margin-top:10px\"><a href=\"/setup\">Connecting a device? Open the certificate "
+            "set-up guide &rarr;</a></p>\n";
     if (CASSc::TlsKeyLog::IsOpen()) {
         html += "<p class=\"warn\"><strong>TLS key log is ON.</strong> The session secrets of every BACnet/SC connection are "
                 "being written to " + HtmlEscape(CASSc::TlsKeyLog::Path()) + " (--sc-keylog-file). Anyone with that "
@@ -1637,6 +1644,8 @@ static std::string BuildStatusPage() {
         html += "</table>\n";
     }
     html += "<h2>Endpoints</h2><table>"
+            "<tr><td><a href=\"/setup\">/setup</a></td><td>Connecting a device? The certificate set-up guide: sign "
+            "its CSR or make its files, see every field, and see why a connection failed.</td></tr>"
             "<tr><td><a href=\"/health\">/health</a></td><td>Is the hub working? JSON; HTTP 200 when ok, "
             "503 when degraded.</td></tr>"
             "<tr><td><a href=\"/metrics\">/metrics</a></td><td>Uptime, connection and traffic counters. "
@@ -1984,7 +1993,7 @@ static const char* const kValueOptions[] = {
     "--sc-rate-limit", "--sc-rate-limit-total", "--bacnet-ip", "--device-name", "--ip-network-number",
     "--sc-network-number", "--log-file", "--log-max-size-mb", "--log-max-files", "--config",
     "--cert-label", "--cert-hub-uri", "--sign-csr", "--sc-keylog-file",
-    "--cert-device-instance", "--cert-port-id"};
+    "--cert-device-instance", "--cert-port-id", "--inspect"};
 // Switches; the first group also takes an optional on/off (see ParseSwitchArg).
 static const char* const kOnOffSwitches[] = {"--http-tls", "--sc-accept-hub-without-hello",
                                              "--sc-accept-device-without-hello"};
@@ -2203,6 +2212,9 @@ static int RunHub(int argc, char** argv) {
                 printf("                      --add-client-certs; the exact name otherwise). The lab\n");
                 printf("                      subject is CN=\"Chipkin Example B-SCHUB <label>\". Every\n");
                 printf("                      certificate is also listed in <sc-cert-dir>/certificates.txt.\n");
+                printf("  --inspect <file>    Say what a certificate, CSR, key, .pfx or CARI zip is, list\n");
+                printf("                      every field, and check it against this hub's certificates\n");
+                printf("                      (the set-up guide's file inspector). Exits 1 if a check fails.\n");
                 printf("  --cert-device-instance <n>, --cert-port-id <id>\n");
                 printf("                      The device's CARI folder names, device-<n>/port-<id>.\n");
                 printf("                      Default: the client number, and 1.\n");
@@ -2363,6 +2375,23 @@ static int RunHub(int argc, char** argv) {
         const std::string signCsrFile = ParseStringArg(argc, argv, "--sign-csr");
         const bool signCsr = !signCsrFile.empty();
         const bool migrate = HasFlag(argc, argv, "--migrate-certs");
+        // --inspect <file>: the set-up guide's file inspector on the command
+        // line (issue #72) - what the file is, every field, and the checks
+        // against this hub's certificates. Exits 1 if a check failed.
+        const std::string inspectFile = ParseStringArg(argc, argv, "--inspect");
+        if (!inspectFile.empty()) {
+            std::ifstream in(inspectFile, std::ios::binary);
+            if (!in) {
+                fprintf(stderr, "Error: could not read \"%s\".\n", inspectFile.c_str());
+                return 1;
+            }
+            const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            bool anyFailure = false;
+            printf("%s", CertInspect::InspectText(bytes, inspectFile,
+                                                  CertLayout::ResolveHubCertPaths(g_scCertDir, g_deviceInstance),
+                                                  &anyFailure).c_str());
+            return anyFailure ? 1 : 0;
+        }
         if (generate || add || generateCsr || signCsr || migrate) {
             if (!generateValid || !addValid) {
                 return 1;
@@ -2947,7 +2976,48 @@ static int RunHub(int argc, char** argv) {
         httpConfig.buildHealthJson = BuildHealthJson;
         httpConfig.buildMetricsJson = BuildMetricsJson;
         httpConfig.buildStatusPage = BuildStatusPage;  // GET / - see BuildStatusPage()
-        g_httpServer.Start(httpConfig);
+
+        // GET /setup and /api/...: the certificate set-up guide (issue #72) -
+        // see cert_portal.h, including who may sign (the hub key's password).
+        CertPortal::Config portal;
+        portal.certPaths = []() { return g_certPaths; };
+        portal.hubUris = []() {
+            std::vector<std::string> uris = {LabHubUri()};
+            const std::string local = "wss://127.0.0.1:" + std::to_string(g_scPort) + "/";
+            if (uris[0] != local) {
+                uris.push_back(local);  // for a tool on the hub's own computer
+            }
+            return uris;
+        };
+        portal.connectedDevicesJson = []() {
+            Json::Array devices;
+            for (const CASSc::ScPeerInfo& peer : g_scTransport.GetPeers()) {
+                devices.Add(Json::Object()
+                                .Add("address", Json::Str(peer.address))
+                                .Add("subject", Json::Str(peer.certificateSubject))
+                                .Add("vmac", Json::Str(peer.vmac))
+                                .Add("uuid", Json::Str(peer.uuid))
+                                .Add("accepted", Json::Bool(peer.accepted))
+                                .Text());
+            }
+            return devices.Text();
+        };
+        portal.keyPassword = []() { return CASSc::KeyPassword::Get(); };
+        portal.appName = APP_NAME;
+        portal.appVersion = APP_VERSION;
+        portal.stackVersion = g_firmwareRevision;
+        portal.deviceName = g_deviceName;
+        portal.deviceInstance = g_deviceInstance;
+        portal.scPort = g_scPort;
+        CertPortal::Configure(portal);
+        httpConfig.routePrefixes = {"/setup", "/api/"};
+        httpConfig.handleRoute = CertPortal::HandleRoute;
+        if (g_httpServer.Start(httpConfig)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                "certificate set-up guide: %s://%s:%u/setup - signs a device's CSR or makes its files, shows every "
+                "field, and says why a connection failed", g_httpTls ? "https" : "http",
+                g_httpBindAddress == "0.0.0.0" ? "127.0.0.1" : g_httpBindAddress.c_str(), (unsigned)g_httpPort);
+        }
     }
 
     // --- Run the stack ------------------------------------------------------

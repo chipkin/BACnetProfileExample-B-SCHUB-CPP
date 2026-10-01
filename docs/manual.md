@@ -189,7 +189,11 @@ BACnetExampleBSCHUB
 3. Open **<http://127.0.0.1:8080/>** in a browser. The status page shows the
    version, whether the BACnet/SC hub is listening, and the connected
    devices.
-4. Give each BACnet/SC device one `certs/clients/<label>/` folder. In the
+4. Connect a device: open **<http://127.0.0.1:8080/setup>**, the
+   [set-up guide](#connecting-a-device-with-the-set-up-guide). It signs the
+   device's CSR or makes its files, says where each file goes, and shows live
+   why a connection attempt failed. Or give each device one
+   `certs/clients/<label>/` folder by hand. In the
    [CAS BACnet Explorer](https://store.chipkin.com/products/tools/cas-bacnet-explorer), import that folder's `bacnetsc.config` (see
    [Connecting devices](#6-connecting-devices)).
 
@@ -396,6 +400,10 @@ A service has no console to ask on: set the password in the config file as
 permissions as described in [Configuration file](#configuration-file)). When
 it is set, the hub doesn't ask.
 
+The same password unlocks the [set-up guide](#connecting-a-device-with-the-set-up-guide)'s
+signing from any computer that reaches it over HTTPS. Without one, signing works only on the
+hub's own computer.
+
 ## 5. Configuration
 
 ```bash
@@ -435,6 +443,7 @@ BACnetExampleBSCHUB [options]
 | `--migrate-certs` | - | Copy an older release's certificate folder into the CARI layout, then exit. |
 | `--cert-label <label>` | `client` | Device folder name: a prefix with `--generate-certs`/`--add-client-certs`, the exact name with `--generate-csr`/`--sign-csr` (default: the next `client-NN`). |
 | `--cert-device-instance <n>`, `--cert-port-id <id>` | client number, `1` | The device's CARI folder names, `device-<n>/port-<id>`. |
+| `--inspect <file>` | - | Say what a certificate, CSR, key, `.pfx` or CARI zip is, list every field and check it against this hub (the set-up guide's file inspector), then exit; 1 if a check fails. |
 | `--cert-hub-uri <wss://host:port/>` | this computer's IPv4 and `--sc-port` | Hub URI written into each device's `bacnetsc.config` (and the hub certificate's subjectAltName). |
 | `--force` | - | With `--generate-certs`: replace an existing certificate set. |
 | `--install-service`, `--uninstall-service` | - | Windows: set up or remove the BACnetSCHub service (see [Running as a service](#running-as-a-service)). |
@@ -538,6 +547,63 @@ For a production BACnet/SC hub with more connections, contact Chipkin at
 **support@chipkin.com**.
 
 ## 6. Connecting devices
+
+### Connecting a device with the set-up guide
+
+The easiest way to connect a device is the hub's **certificate set-up guide**.
+On the hub's computer, open **<http://127.0.0.1:8080/setup>** (the status page
+links to it). It takes you through four steps:
+
+1. **How it works.** What a device needs, and which file goes where. This
+   step shows the URI devices dial, and the hub's and the CA's certificates
+   with every field and every check. Download `iss-1.pem` (or `iss-1.cer` for
+   Windows tools) here: every device needs it.
+2. **Get the device's files**, one of two ways:
+   - **"My device made a CSR"** (recommended - the device's key never leaves
+     it). Drop in the CSR the device exported, PEM or DER, or paste it, or
+     use a CARI request zip from BACCARI or a vendor tool. The guide says
+     what the file is, shows every field, and checks it. Give the device a
+     folder name, its BACnet device instance and port id, then **Sign**. A
+     CARI request is answered with a CARI response zip.
+   - **"Make everything for me".** For tools that can't make their own key,
+     such as YABE or test tools, the hub makes the key, the CSR and the
+     certificate.
+
+   You can then download each file, or the whole folder as a CARI response
+   zip. The device folder is also kept as `clients/<label>/`, so the files
+   can be downloaded again later from **Device folders**.
+3. **Install.** Which file goes into which Network Port property of the device:
+   `opr-*.pem` into Operational_Certificate_File, `iss-1.pem` into
+   Issuer_Certificate_Files, the key, and the hub URI.
+4. **Test the connection.** Start the device. The guide shows, live, what the
+   hub sees, and turns each failure into a sentence and a fix:
+   - a TCP connection with nothing after it: the device sent no certificate,
+     only speaks TLS 1.2, or doesn't trust the hub's certificate;
+   - a refused certificate: OpenSSL's reason, such as signed by another CA,
+     expired, not yet valid, no clientAuth, or revoked;
+   - the wrong WebSocket subprotocol;
+   - a refused Connect-Request (duplicate VMAC, missing Hello);
+   - and finally, "Connected!" with the device's VMAC and UUID.
+
+Two tools are always available:
+
+- **File inspector.** Drop in any certificate, CSR, key, `.pfx` (empty
+  password) or CARI zip. It shows every field and checks it against this
+  hub; nothing is stored. The same inspector runs on the command line as
+  `BACnetExampleBSCHUB --inspect <file>`, which exits with 1 if a check fails.
+- **Diagnostic report.** A text summary to send to support: versions, the hub
+  URI, the certificates with their checks, connected devices and recent
+  connection attempts. It contains no keys or passwords.
+
+**Who may sign.** Signing a CSR, making a device's key and downloading a
+private file need the **password of the hub's private key**: the config file's
+`sc-key-password`, or the password typed when the hub started (see
+[Password-protected private keys](#password-protected-private-keys)). With the
+lab set, whose key has no password, these actions work only on the hub's own
+computer (from 127.0.0.1). Everything else in the guide is open, like the
+status page. See [Security](#9-security).
+
+### Connecting a device by hand
 
 For each BACnet/SC device:
 
@@ -649,6 +715,7 @@ start-up.
 | Path | What it returns |
 |---|---|
 | `GET /` | Status page for a browser: versions, device, health, BACnet/SC state, metrics, the connected devices (address, certificate, VMAC and UUID), and links to this project and the CAS BACnet Stack. Refreshes every 5 seconds. |
+| `GET /setup` | The [certificate set-up guide](#connecting-a-device-with-the-set-up-guide), and the `/api/...` endpoints it uses ([below](#set-up-guide-api)). |
 | `GET /health` | *Is the hub working?* JSON with `status` `ok` (HTTP 200) or `degraded` (HTTP 503 - the BACnet/SC hub isn't listening, usually because of missing or bad certificates). Point uptime monitors and load balancers here. |
 | `GET /metrics` | *How much is it doing?* JSON counters: uptime, connected devices, connects, disconnects, rate-limit refusals, messages and bytes in and out, and connections closed because the device stopped reading (`sc_tx_queue_overflows`). |
 | `POST /certs/<slot>` | Upload a certificate file (`operational`, `csr`, `issuer1`, `issuer2`). Needs `Authorization: Bearer <http-upload-token>`; disabled when no `http-upload-token` is set. At most 5 attempts a minute from one address and 30 in total; more get HTTP 429 and a log line. |
@@ -679,6 +746,39 @@ curl -X POST --data-binary @new-hub-cert.pem \
      -H "Authorization: Bearer $UPLOAD_TOKEN" http://127.0.0.1:8080/certs/operational
 ```
 
+### Set-up guide API
+
+The [set-up guide](#connecting-a-device-with-the-set-up-guide) is a page in
+front of these endpoints, which also work with curl. Request bodies are the
+raw file (PEM, DER or zip), not a form. Answers are JSON except downloads and
+the report. **Privileged** endpoints need the hub key's password (see
+[Security](#9-security)), sent as `Authorization: HubKey <base64 of the
+password>`. When the key has no password, send `Authorization: HubKey -`: the
+header itself is required, because it is what keeps other web sites from using
+the hub.
+
+| Path | What it does |
+|---|---|
+| `GET /api/setup/info` | The hub URI(s) a device dials, the hub's and the CA's certificates with every field and check, whether the hub can sign, and whether this caller may. |
+| `GET /api/setup/issuer/iss-1.pem` (`iss-1.cer`, `iss-2.pem`) | The issuer certificate(s) every device needs. Public. |
+| `POST /api/inspect?name=<file>` | What a file is (certificate, CSR, key, `.pfx` with an empty password, CRL, CARI zip), every field, and the checks against this hub, each with a fix. Nothing is stored. |
+| `POST /api/sign?label=&instance=&port=&name=` | **Privileged.** Sign a CSR into `clients/<label>/` (folders `device-<instance>/port-<port>`), or a CARI request zip into a CARI response (kept in `cari-responses/`). Answers with what was signed or refused, and download links. |
+| `POST /api/generate?label=&instance=&port=` | **Privileged.** Make a device's key, CSR and certificate: a full device folder. |
+| `POST /api/check-password` | **Privileged.** 200 if the password is right. Counts as an attempt. |
+| `GET /api/clients` | The device folders and their files. |
+| `GET /api/download/<label>/<file>`, `GET /api/cari/<file>` | A file from a device folder or a CARI response. Private files - `key-*.pem`, `.pfx`, a zip holding a key - are **privileged**. |
+| `GET /api/diagnostics?after=<n>` | The last 100 BACnet/SC connection events (each with a `sequence` number; `after` returns only newer ones) and the devices connected now. |
+| `GET /api/report` | A plain-text diagnostic report for support: versions, hub URI, certificates and their checks, connected devices, recent events. No keys or passwords. |
+
+```bash
+# Sign a device's CSR from the hub's own computer (lab key, no password):
+curl --data-binary @ahu7.csr -H "Authorization: HubKey -" "http://127.0.0.1:8080/api/sign?label=ahu-7&instance=7007"
+curl -OJ http://127.0.0.1:8080/api/download/ahu-7/bacnetsc.config
+# With a password-protected hub key:
+curl --data-binary @site-request.zip -H "Authorization: HubKey $(printf %s "$PW" | base64)" \
+     "http://127.0.0.1:8080/api/sign?name=site-request.zip"
+```
+
 ## 9. Security
 
 - **BACnet/SC** uses TLS 1.3 only, with mutual authentication. A device is
@@ -705,6 +805,26 @@ curl -X POST --data-binary @new-hub-cert.pem \
   HTTP. `/`, `/health` and `/metrics` have no authentication, even over HTTPS.
 - **Private keys** (`key-hub.pem`, `ca/ca-key.pem`, any `key-<label>.pem` and `.pfx`) must stay
   private. Keep the CA's key off the hub in production.
+- **The set-up guide's signing** (`/setup`, `/api/sign`, `/api/generate` and
+  private downloads) adds devices to your BACnet/SC network, so it is gated by
+  the hub key's password (`sc-key-password`, or the one typed at start-up):
+  - **Comparison:** the password is compared in constant time.
+  - **Rate limit:** at most 5 wrong passwords a minute from one address, and
+    30 in total; then HTTP 429, and every refusal is logged.
+  - **No clear text:** it is never accepted over plain HTTP from another
+    computer, where it would cross the network unencrypted. Turn on
+    `--http-tls` to sign from elsewhere.
+  - **No password on the key** (the lab set): signing works only from the
+    hub's own computer, to a page loaded as `127.0.0.1` or `localhost`.
+  - **Other web sites can't use it:** every privileged request must carry an
+    `Authorization: HubKey ...` header, which another web site's page can't
+    add without a CORS preflight that the hub never answers. A page loaded
+    under any name other than a loopback one (DNS rebinding) is refused too
+    while the key has no password.
+  - **Audit log:** every signing, key and private download is logged with the
+    address, the subject and the serial number.
+  - **Separate token:** `http-upload-token` for `POST /certs/<slot>` is a
+    different secret, and unaffected.
 - **TLS key log.** `--sc-keylog-file` writes the BACnet/SC session secrets to
   a file, so that anyone with the file and a capture can read the traffic.
   It's for debugging only, and is off unless given on the command line (see
@@ -730,6 +850,9 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 | `lws_create_context failed ... retrying every 5 s` | The BACnet/SC port is in use, or a certificate file doesn't load. The hub keeps retrying; fix the cause and it starts listening without a restart. |
 | `SC TLS handshake REJECTED - client certificate failed verification` | The device's certificate isn't signed by an issuer the hub trusts, has expired, or is revoked (`certificate revoked`, `unable to get certificate CRL` when `issuer-crl.pem` has no CRL for its issuer, `CRL has expired`). Check it with `openssl verify -CAfile cert1/issuer/iss-1.pem <the device's opr-*.pem>` (add `-crl_check -CRLfile issuer-crl.pem` with a CRL). |
 | `private key ... DOES NOT MATCH` at start-up | The hub's key and certificate (`key-hub.pem` and `opr-hub.pem`, or `private-key.pem` and `operational-certificate.pem` in an older folder) are from different sets. |
+| A device won't connect, and you don't know why | Open `/setup`, step 4 "Test the connection", and start the device: it shows what the hub saw and what to change. The file inspector (or `--inspect <file>`) checks the device's certificate against the hub. |
+| The set-up guide says "Signing is not available here" | The hub key has no password and you're not on the hub's computer: open the guide there (127.0.0.1), or give the key a password and set `sc-key-password`. With a password, plain HTTP from another computer is refused too: start the hub with `--http-tls`. |
+| The set-up guide says "The hub can't sign" | There is no CA to sign with (`ca/ca-cert.pem` + `ca/ca-key.pem`), or it isn't one of the hub's issuers. With your own PKI, have your CA sign devices instead; the guide's inspector still checks their files. |
 | Devices that connected before an update to 1.5.0 no longer do | The default BACnet/SC port is 4443; before 1.5.0 it was 47819. Either set `sc-port = 47819` in the config file (or `--sc-port 47819`), or point the devices (and the firewall rule) at port 4443. The start-up log names the port in use. |
 | A device can't reach the hub | Check the hub URI in its `bacnetsc.config`, TCP 4443 in the firewall, and whether 4 devices are already connected (the [connection limit](#connection-limit)). The `SC audit:` lines show what the hub saw. |
 | `refusing a WebSocket upgrade ... (HTTP 400)` | The device asked for a WebSocket subprotocol other than `hub.bsc.bacnet.org`. Check its BACnet/SC settings. |

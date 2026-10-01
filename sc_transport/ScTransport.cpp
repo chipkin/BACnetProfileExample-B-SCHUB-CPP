@@ -5,6 +5,7 @@
 #include "KeyPassword.h"
 #include "LogSafe.h"
 #include "TlsKeyLog.h"
+#include "ScDiagnostics.h"
 
 #include "CASExampleLog.h"
 
@@ -388,6 +389,10 @@ int LogClientCertVerificationResult(void* user, void* in, std::size_t len) {
         "SC TLS handshake REJECTED - client certificate failed verification: \"%s\" (OpenSSL error code %d); "
         "presented cert subject CN=\"%s\" issuer CN=\"%s\"",
         errorText, errorCode, SafeForLog(subjectCn).c_str(), SafeForLog(issuerCn).c_str());
+    // For the set-up guide (issue #72): no wsi here, so no address - the
+    // "tcp" event just before it names the connection.
+    ScDiagnostics::Record("tls-refused", std::string(), SafeForLog(subjectCn), SafeForLog(issuerCn),
+                          std::string(errorText) + " (OpenSSL verify error " + std::to_string(errorCode) + ")");
     return 1;  // fail the cert - mirrors OpenSSL's own preverify_ok=0 decision, does not override it
 }
 
@@ -1381,6 +1386,8 @@ void ScTransport::AuditSentFrame(PeerConnection* peer, const uint8_t* data, cons
             "SC audit: peer \"%s\" (%s) is BACnet/SC device VMAC %s, UUID %s, certificate \"%s\" - connected",
             peer->connectionString.c_str(), peer->peerAddress.c_str(), peer->vmac.c_str(), peer->uuid.c_str(),
             peer->certificateSubject.c_str());
+        ScDiagnostics::Record("accepted", peer->peerAddress, peer->certificateSubject, std::string(),
+                              "VMAC " + peer->vmac + ", UUID " + peer->uuid);
     } else if (data[0] == kBvlcResult) {
         // A BVLC-Result to a peer that hasn't been accepted is the stack
         // refusing its Connect-Request. The NAK carries the stack's reason
@@ -1401,6 +1408,8 @@ void ScTransport::AuditSentFrame(PeerConnection* peer, const uint8_t* data, cons
             "Connect-Request refused by the hub: %s",
             peer->connectionString.c_str(), peer->peerAddress.c_str(), peer->vmac.c_str(), peer->uuid.c_str(),
             peer->certificateSubject.c_str(), reason.c_str());
+        ScDiagnostics::Record("refused", peer->peerAddress, peer->certificateSubject, std::string(),
+                              "Connect-Request refused: " + reason + " (VMAC " + peer->vmac + ")");
     }
 }
 
@@ -1462,6 +1471,8 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             const char* limitHit = "";
             if (!AllowNewConnectionAttempt(address, &limitHit)) {
                 ++m_rateLimitRejections;
+                ScDiagnostics::Record("rate-limited", address, std::string(), std::string(),
+                                      std::string(limitHit) + " limit reached (--sc-rate-limit)");
                 // One line per kRateLimitLogInterval at most: a flood from many
                 // addresses would otherwise write thousands of lines a second on
                 // the thread that runs the stack, and rotate the useful history
@@ -1484,6 +1495,7 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                     std::strcmp(limitHit, "total") == 0 ? "-total" : "", more.c_str());
                 return -1;
             }
+            ScDiagnostics::Record("tcp", address, std::string(), std::string(), "TCP connection to " + m_listenUri);
             break;
         }
 
@@ -1512,6 +1524,9 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                     "BACnet/SC: refusing a WebSocket upgrade from %s - it asked for subprotocol(s) \"%s\", "
                     "this hub speaks \"%s\" (HTTP 400)", peerAddress.c_str(), SafeForLog(requested).c_str(),
                     m_acceptSubprotocol.c_str());
+                ScDiagnostics::Record("subprotocol", peerAddress, std::string(), std::string(),
+                                      "asked for \"" + SafeForLog(requested) + "\"; this hub speaks \"" +
+                                          m_acceptSubprotocol + "\"");
                 // Written by hand rather than with lws_return_http_status(): at
                 // this point lws hasn't recorded the request's HTTP version, so
                 // that helper answers "HTTP/1.0", which WebSocket clients
@@ -1585,6 +1600,8 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
                 "SC audit: peer \"%s\" connected from %s, certificate \"%s\"", connStr.c_str(),
                 peer.peerAddress.c_str(), peer.certificateSubject.c_str());
+            ScDiagnostics::Record("connected", peer.peerAddress, peer.certificateSubject, std::string(),
+                                  "TLS and WebSocket done; waiting for its Connect-Request");
             // Deliberately NOT queuing a Connected(2) status event here - see
             // ScStatusEvent's doc comment and plan open risk #7: an accepted
             // socket is not yet a BACnet/SC "connection" until the stack's own
@@ -1664,6 +1681,9 @@ int ScTransport::HandleServerCallback(lws* wsi, int reasonInt, void* user, void*
                     peer->connectionString.c_str(), peer->peerAddress.c_str(), (unsigned)peer->lastCloseCode,
                     peer->vmac.empty() ? "?" : peer->vmac.c_str(), peer->uuid.empty() ? "?" : peer->uuid.c_str(),
                     peer->certificateSubject.c_str());
+                ScDiagnostics::Record("disconnected", peer->peerAddress, peer->certificateSubject, std::string(),
+                                      "close code " + std::to_string(peer->lastCloseCode) +
+                                          (peer->lastCloseCode == 0 ? " (no close frame: the connection dropped)" : ""));
                 m_connStringToWsi.erase(peer->connectionString);
                 m_peers.erase(wsi);
             }
@@ -1784,6 +1804,8 @@ int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void*
             const std::string peerAddr = (wsi != nullptr) ? PeerAddressPort(wsi) : std::string("?:?");
             fprintf(stderr, "BACnet/SC: Connect(\"%s\") failed (peer %s): %s\n", conn->uri.c_str(),
                     peerAddr.c_str(), detail.c_str());
+            ScDiagnostics::Record("connector", peerAddr, std::string(), std::string(),
+                                  "connecting to " + conn->uri + " failed: " + SafeForLog(detail));
             ScStatusEvent evt;
             evt.uri = conn->uri;
             evt.status = 4;  // WebsocketStatus_Error (plan fact 3)

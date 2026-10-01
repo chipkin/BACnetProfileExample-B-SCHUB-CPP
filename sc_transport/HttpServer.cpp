@@ -13,6 +13,7 @@
 #include <openssl/evp.h>     // SHA-256 - SecretsEqual()
 #include <openssl/ssl.h>     // SSL_OP_NO_* - HTTPS protocol versions
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,7 +59,14 @@ struct HttpServer::Session {
     size_t responseSent = 0;
     bool headersWritten = false;
 
+    // A routed path (config.routePrefixes, issue #72): the request as the
+    // handler sees it, filled in at LWS_CALLBACK_HTTP; the body follows.
+    bool routed = false;
+    HttpRequest request;
+
     void Reset() {
+        routed = false;
+        request = HttpRequest();
         isPost = false;
         uri.clear();
         authOk = false;
@@ -79,6 +87,48 @@ namespace {
 
 // Largest piece of a response body handed to one lws_write() call.
 const size_t kWriteChunk = 4096;
+
+// "%41b+c" -> "Ab c".
+std::string UrlDecode(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '+') {
+            out += ' ';
+        } else if (s[i] == '%' && i + 2 < s.size() && std::isxdigit((unsigned char)s[i + 1]) &&
+                   std::isxdigit((unsigned char)s[i + 2])) {
+            out += static_cast<char>(std::strtol(s.substr(i + 1, 2).c_str(), nullptr, 16));
+            i += 2;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+// True for 127.0.0.0/8, ::1 and their IPv4-mapped forms.
+bool IsLoopbackAddress(const std::string& address) {
+    std::string a = address;
+    if (a.compare(0, 7, "::ffff:") == 0) {
+        a = a.substr(7);
+    }
+    return a == "::1" || a.compare(0, 4, "127.") == 0 || a == "localhost";
+}
+
+// The ?a=b&c=d arguments: lws keeps each as one fragment of WSI_TOKEN_HTTP_URI_ARGS.
+std::map<std::string, std::string> QueryArguments(lws* wsi) {
+    std::map<std::string, std::string> args;
+    for (int i = 0; i < 64; ++i) {
+        char buf[1024];
+        const int n = lws_hdr_copy_fragment(wsi, buf, static_cast<int>(sizeof(buf)), WSI_TOKEN_HTTP_URI_ARGS, i);
+        if (n <= 0) {
+            break;
+        }
+        const std::string arg(buf, static_cast<size_t>(n));
+        const size_t eq = arg.find('=');
+        args[UrlDecode(arg.substr(0, eq))] = eq == std::string::npos ? std::string() : UrlDecode(arg.substr(eq + 1));
+    }
+    return args;
+}
 
 int LwsHttpCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user, void* in, std::size_t len) {
     (void)user;
@@ -266,14 +316,21 @@ void HttpServer::Service() {
 }
 
 void HttpServer::SendResponse(lws* wsi, Session* session, const int statusCode,
-                              const std::string& contentType, const std::string& body) {
-    uint8_t buf[LWS_PRE + 1024];
+                              const std::string& contentType, const std::string& body,
+                              const std::vector<std::pair<std::string, std::string>>& headers) {
+    uint8_t buf[LWS_PRE + 2048];
     uint8_t* start = &buf[LWS_PRE];
     uint8_t* p = start;
     uint8_t* end = &buf[sizeof(buf) - 1];
 
     lws_add_http_common_headers(wsi, static_cast<unsigned int>(statusCode), contentType.c_str(),
                                 static_cast<lws_filepos_t>(body.size()), &p, end);
+    for (const auto& header : headers) {
+        const std::string name = header.first + ":";  // lws wants the name with its colon
+        lws_add_http_header_by_name(wsi, reinterpret_cast<const unsigned char*>(name.c_str()),
+                                    reinterpret_cast<const unsigned char*>(header.second.data()),
+                                    static_cast<int>(header.second.size()), &p, end);
+    }
     // Force a fresh connection per request (no HTTP keep-alive) - simpler and
     // safer for a tutorial server that does not otherwise reset session
     // state defensively between requests on a reused socket.
@@ -310,7 +367,24 @@ void HttpServer::HandleGet(lws* wsi, Session* session) {
                 "not found. Try GET /, GET /health, GET /metrics, or POST /certs/<slot>.\n");
 }
 
+void HttpServer::HandleRoute(lws* wsi, Session* session) {
+    HttpResponse response;
+    if (session->request.body.size() > kMaxRouteBodyBytes) {
+        response.status = 413;
+        response.body = "request body too large (limit " + std::to_string(kMaxRouteBodyBytes) + " bytes)\n";
+    } else if (!m_config.handleRoute || !m_config.handleRoute(session->request, &response)) {
+        response = HttpResponse();
+        response.status = 404;
+        response.body = "not found.\n";
+    }
+    SendResponse(wsi, session, response.status, response.contentType, response.body, response.headers);
+}
+
 void HttpServer::HandlePostBodyComplete(lws* wsi, Session* session) {
+    if (session->routed) {
+        HandleRoute(wsi, session);
+        return;
+    }
     char peer[128] = {0};
     lws_get_peer_simple(wsi, peer, sizeof(peer));
 
@@ -403,6 +477,42 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
             const bool isPost = lws_hdr_total_length(wsi, WSI_TOKEN_POST_URI) > 0;
             session->isPost = isPost;
 
+            // A routed path (the set-up guide, issue #72): hand the whole
+            // request to config.handleRoute - now for a GET, once the body is
+            // in for a POST.
+            for (const std::string& prefix : m_config.routePrefixes) {
+                if (session->uri.compare(0, prefix.size(), prefix) == 0) {
+                    session->routed = true;
+                }
+            }
+            if (session->routed) {
+                HttpRequest& request = session->request;
+                request.method = isPost ? "POST" : "GET";
+                request.path = session->uri;
+                request.query = QueryArguments(wsi);
+                char header[1024] = {0};
+                if (lws_hdr_copy(wsi, header, static_cast<int>(sizeof(header)), WSI_TOKEN_HTTP_AUTHORIZATION) > 0) {
+                    request.authorization = header;
+                }
+                header[0] = '\0';
+                if (lws_hdr_copy(wsi, header, static_cast<int>(sizeof(header)), WSI_TOKEN_HTTP_CONTENT_TYPE) > 0) {
+                    request.contentType = header;
+                }
+                header[0] = '\0';
+                if (lws_hdr_copy(wsi, header, static_cast<int>(sizeof(header)), WSI_TOKEN_HOST) > 0) {
+                    request.host = header;
+                }
+                char peer[128] = {0};
+                lws_get_peer_simple(wsi, peer, sizeof(peer));
+                request.peerAddress = peer;
+                request.peerIsLoopback = IsLoopbackAddress(peer);
+                request.tls = !m_config.tlsCertPath.empty();
+                if (!isPost) {
+                    HandleRoute(wsi, session);
+                }
+                return 0;
+            }
+
             if (!isPost) {
                 HandleGet(wsi, session);
                 return 0;
@@ -459,6 +569,14 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
                 break;
             }
             Session* session = it->second;
+            if (session->routed) {
+                // Kept up to one byte past the limit, so HandleRoute() can tell
+                // "too large" without buffering the rest.
+                if (session->request.body.size() <= kMaxRouteBodyBytes) {
+                    session->request.body.append(static_cast<const char*>(in), len);
+                }
+                break;
+            }
             if (session->tooLarge || session->rateLimited) {
                 break;  // already known to be rejected - discard rather than buffer
             }
@@ -499,16 +617,24 @@ int HttpServer::HandleHttp(lws* wsi, const int reasonInt, void* in, const std::s
             const size_t chunk = remaining < kWriteChunk ? remaining : kWriteChunk;
             std::vector<unsigned char> buf(LWS_PRE + chunk);
             std::memcpy(&buf[LWS_PRE], &session->response[session->responseSent], chunk);
-            const int written = lws_write(wsi, &buf[LWS_PRE], chunk, LWS_WRITE_HTTP);
+            // The last piece is LWS_WRITE_HTTP_FINAL: when a browser asks for
+            // gzip (Accept-Encoding), lws compresses the response as chunked
+            // transfer encoding, and only the FINAL write flushes the
+            // compressor and ends the chunk stream. Without it a browser got a
+            // truncated page (ERR_INCOMPLETE_CHUNKED_ENCODING); curl, which
+            // doesn't ask for gzip, never saw it.
+            const bool last = chunk == remaining;
+            const int written = lws_write(wsi, &buf[LWS_PRE], chunk, last ? LWS_WRITE_HTTP_FINAL : LWS_WRITE_HTTP);
             if (written < 0) {
                 return -1;
             }
             session->responseSent += chunk;
-            if (session->responseSent < session->response.size()) {
-                lws_callback_on_writable(wsi);
-            } else if (lws_http_transaction_completed(wsi)) {
-                return -1;
-            }
+            // Always come back once more, even after the last chunk: lws_write()
+            // may have kept part of it in lws's own buffer (a busy socket), and
+            // lws only calls WRITEABLE again once that is sent. Completing the
+            // transaction here instead closed the connection with the tail of a
+            // large response unsent (a browser saw a truncated /setup page).
+            lws_callback_on_writable(wsi);
             break;
         }
 

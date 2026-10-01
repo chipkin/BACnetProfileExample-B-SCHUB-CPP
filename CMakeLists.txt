@@ -132,13 +132,29 @@ set(SC_TRANSPORT_SOURCES
     "sc_transport/ScTransportRouter.cpp"
     "sc_transport/HttpServer.cpp"
     "sc_transport/KeyPassword.cpp"
-    "sc_transport/TlsKeyLog.cpp")
+    "sc_transport/TlsKeyLog.cpp"
+    "sc_transport/ScDiagnostics.cpp")
+
+# The set-up guide's page (issue #72) is edited as web/setup.html and embedded
+# into the executable as a generated header, so the hub serves it with no
+# files beside it.
+set(SETUP_PAGE_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/cert_portal_page.h")
+add_custom_command(
+    OUTPUT "${SETUP_PAGE_HEADER}"
+    COMMAND "${CMAKE_COMMAND}" -DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/web/setup.html
+            -DOUTPUT=${SETUP_PAGE_HEADER} -DNAME=SETUP_PAGE_HTML
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/setup.html" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_file.cmake"
+    COMMENT "Embedding web/setup.html")
 
 add_executable(BACnetExampleBSCHUB
     main.cpp
     config.cpp
     cari.cpp
+    cert_inspect.cpp
     cert_layout.cpp
+    cert_portal.cpp
+    "${SETUP_PAGE_HEADER}"
     cert_tool.cpp
     cert_store.cpp
     log_file.cpp
@@ -148,7 +164,8 @@ add_executable(BACnetExampleBSCHUB
 
 target_include_directories(BACnetExampleBSCHUB PRIVATE
     "${EXAMPLES_COMMON_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}")
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 target_link_libraries(BACnetExampleBSCHUB PRIVATE
     CASBACnetStack::Adapter

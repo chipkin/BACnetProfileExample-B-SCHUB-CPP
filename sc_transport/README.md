@@ -106,6 +106,40 @@ attached: the key log is for BACnet/SC. Checked by `tests/sc/keylog_test.py`,
 which compares the hub's secrets with the peer's own key log for the same
 session.
 
+## Connection diagnostics (ScDiagnostics)
+
+The set-up guide's "test the connection" panel (`/api/diagnostics`, issue
+#72) reads `ScDiagnostics`, a process-wide ring buffer of the last 100
+connection events:
+
+- `tcp`, `rate-limited` (`FILTER_NETWORK_CONNECTION`);
+- `tls-refused` (`LogClientCertVerificationResult`, with OpenSSL's verify
+  error);
+- `subprotocol` (`HTTP_CONFIRM_UPGRADE`);
+- `connected` (`ESTABLISHED`);
+- `accepted` / `refused` (`AuditSentFrame`);
+- `disconnected` (`CLOSED`);
+- `connector` (`CLIENT_CONNECTION_ERROR`).
+
+It is process-wide rather than per connection because the verify callback
+gets no wsi. The panel reads the events as a timeline, and a `tcp` with
+nothing after it means TLS failed before a certificate was checked. Never
+put secrets in it.
+
+## HTTP server: routes and the final write
+
+`HttpServer` serves the built-in `/`, `/health`, `/metrics` and
+`POST /certs/<slot>`, and hands paths under `routePrefixes` (`/setup`,
+`/api/`) to `handleRoute` with the method, query, `Authorization`, body (up to
+`kMaxRouteBodyBytes`), peer address, loopback flag and TLS flag.
+
+**The last write must be `LWS_WRITE_HTTP_FINAL`.** When a browser asks for
+compression, lws compresses and uses chunked transfer encoding. Only the
+FINAL write flushes the compressor and ends the chunk stream; without it a
+browser gets a truncated response. The transaction also completes only on the
+writable callback *after* the last write, once lws has sent its own buffered
+bytes.
+
 ## Testing
 
 `../tests/sc/` has the verification scripts (`hub_listener_test.py`,

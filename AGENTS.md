@@ -59,6 +59,18 @@ This repository is self-contained:
   `--add-client-certs` and `--sign-csr` must keep signing with the existing
   CA (and `SignCariTree` refuses a CA that isn't one of the hub's issuers),
   never a new one, or running hubs stop trusting the new clients.
+- `cert_portal.{h,cpp}` + `web/setup.html` - the certificate set-up guide at
+  `GET /setup` and its `/api/...` endpoints (issue #72), served through
+  `HttpServer`'s route hook. `web/setup.html` is embedded at build time
+  (`cmake/embed_file.cmake` -> `cert_portal_page.h`); keep it self-contained
+  (no external resources - the CSP forbids them) and put every value on the
+  page with `textContent`, never `innerHTML`. **The gate**: signing,
+  generating and private downloads need the hub key's password
+  (`KeyPassword`); without one, loopback only; never over plain HTTP from
+  another computer. Don't add a privileged action without `Authorize()`.
+- `cert_inspect.{h,cpp}` - the file inspector (`/api/inspect`, `--inspect`):
+  every field and the checks a peer will make, each failing check with a fix.
+  `json_writer.h` is the tiny JSON writer the API uses.
 - `cert_store.{h,cpp}` - the 4 certificate File objects' contents and the
   device-B side of the BACnet/SC certificate procedures (clause 19.8.3):
   File_Size/AtomicWriteFile writes are STAGED in memory, and main.cpp's
@@ -68,7 +80,7 @@ This repository is self-contained:
   `ValidateStaged()` - that is what stops the hub locking itself out.
 - `tests/sc/` - the BACnet/SC verification scripts
   (`hub_listener_test.py`, `fake_hub_server.py`, `file_object_test.py`,
-  `cert_procedure_test.py`, `rpm_test.py`, `http_test.py`, `csr_test.py`, `cari_test.py`, `keylog_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
+  `cert_procedure_test.py`, `rpm_test.py`, `http_test.py`, `csr_test.py`, `cari_test.py`, `setup_portal_test.py`, `keylog_test.py`) and their own README. Re-run the relevant one after any `sc_transport/` or
   BACnet/SC-related `main.cpp` change.
 - `log_file.{h,cpp}` - `--log-file`: copies stdout/stderr to a rotating log
   file through a pipe, so every line (stack and lws output included) is kept

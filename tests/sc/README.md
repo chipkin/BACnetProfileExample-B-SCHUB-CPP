@@ -272,6 +272,56 @@ tool would, and runs `--sign-csr` on them. Its site request has:
 python tests/sc/cari_test.py --exe build/Release/BACnetExampleBSCHUB.exe
 ```
 
+## `setup_portal_test.py` (the certificate set-up guide, issue #72)
+
+Starts the executable on free ports in a temporary folder.
+
+**`--inspect`** on another CA's certificate exits 1 with the reason; on its
+own CARI response it exits 0.
+
+**Hub A** (lab key, no password):
+
+- `GET /setup`: the whole page, with a CSP and no external resources, byte
+  for byte even when a browser asks for compression (chunked + deflate/gzip).
+- `GET /api/setup/info`: the hub URIs, every field and check of the hub's
+  certificate, and the gate.
+- `POST /api/inspect` on each kind of file:
+  - certificate + key (they match);
+  - another CA's certificate ("Signed by this hub's CA" fails, with OpenSSL's
+    reason and a fix);
+  - a weak CSR, DER, a `.pfx`, a CARI zip, garbage.
+- `POST /api/sign` from loopback:
+  - a CSR, into a CARI device folder;
+  - the same name again (409);
+  - a weak CSR (400);
+  - a CARI request (1 signed, 1 refused, `errors.txt`), and its response
+    downloaded.
+- `POST /api/generate`: the downloaded `opr-`/`key-` files complete a
+  BACnet/SC WebSocket handshake, and `/api/diagnostics` shows `tcp` then
+  `connected`.
+- A device from another CA is refused, and diagnostics records `tls-refused`
+  with OpenSSL's reason.
+- Downloads with `..` (plain or encoded) are refused; `/api/report`
+  contains no keys; `/api/clients` lists the device folders.
+- From a non-loopback address (HTTP bound to the LAN address), signing is
+  refused with 403.
+- Signing without the `Authorization: HubKey` header (what a cross-site
+  request would send), or with a non-loopback `Host` (DNS rebinding), is
+  refused with 403.
+
+**Hub B** (encrypted key, `sc-key-password`):
+
+- no password or a wrong one gives 401, the right one (non-ASCII) gives 200;
+- private downloads need it, public ones don't;
+- 5 wrong passwords a minute give 429, even for the right one until the
+  minute is up;
+- refusals are logged;
+- plain HTTP from another address gives 403, even with the password.
+
+```
+python tests/sc/setup_portal_test.py --exe build/Release/BACnetExampleBSCHUB.exe
+```
+
 ## `keylog_test.py` (`--sc-keylog-file`, issue #68)
 
 Starts the executable on free ports in a temporary folder. For each BACnet/SC
@@ -294,5 +344,5 @@ for each pull request: `hub_listener_test.py` (normally and with
 `--bacnet-ip off`), `file_object_test.py`, `rpm_test.py`, `http_test.py`
 (upload disabled, then enabled with a token, device name, network numbers and
 a log file), `fake_hub_server.py` against the connector, and
-`cert_procedure_test.py`, `cert_files_test.py`, `csr_test.py`, `cari_test.py` and `keylog_test.py`, plus the
+`cert_procedure_test.py`, `cert_files_test.py`, `csr_test.py`, `cari_test.py`, `setup_portal_test.py` and `keylog_test.py`, plus the
 connection-limit refusal.

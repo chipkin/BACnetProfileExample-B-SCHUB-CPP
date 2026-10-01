@@ -56,6 +56,8 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct lws_context;
 struct lws;
@@ -90,6 +92,36 @@ using MetricsJsonBuilder = std::function<std::string()>;
 // main.cpp for the same single-source-of-truth reason as HealthJsonBuilder.
 using StatusPageBuilder = std::function<std::string()>;
 
+// One request to a routed path (HttpServerConfig::routePrefixes), for a
+// handler outside this class - the set-up guide's /setup and /api/... (issue
+// #72). The body is the raw request body (bytes, not form-decoded).
+struct HttpRequest {
+    std::string method;          // "GET" or "POST"
+    std::string path;            // without the query string
+    std::map<std::string, std::string> query;  // URL-decoded ?name=value pairs
+    std::string authorization;   // the Authorization header, as sent
+    std::string host;            // the Host header, as sent (e.g. "127.0.0.1:8080")
+    std::string contentType;
+    std::string body;
+    std::string peerAddress;     // e.g. "127.0.0.1"
+    bool peerIsLoopback = false; // 127.0.0.0/8 or ::1
+    bool tls = false;            // the server is HTTPS (--http-tls)
+};
+
+struct HttpResponse {
+    int status = 404;
+    std::string contentType = "text/plain";
+    std::string body;
+    std::vector<std::pair<std::string, std::string>> headers;  // e.g. {"content-disposition", "attachment; ..."}
+};
+
+// Handles a request to a routed path. Returns false if it doesn't know the
+// path (the server then answers 404).
+using RouteHandler = std::function<bool(const HttpRequest& request, HttpResponse* response)>;
+
+// Largest body a routed POST may carry (a CARI zip is up to 4 MiB).
+const std::size_t kMaxRouteBodyBytes = 4 * 1024 * 1024 + 64 * 1024;
+
 struct HttpServerConfig {
     uint16_t port = 0;             // TCP port to bind - see Start()
     // Interface to bind. Defaults to "127.0.0.1" (main.cpp's own default,
@@ -112,6 +144,11 @@ struct HttpServerConfig {
     HealthJsonBuilder buildHealthJson;
     MetricsJsonBuilder buildMetricsJson;
     StatusPageBuilder buildStatusPage;
+    // Paths starting with one of these go to handleRoute, GET or POST, instead
+    // of the built-in endpoints above. Routed POSTs don't count against the
+    // /certs upload attempt limit - the handler applies its own.
+    std::vector<std::string> routePrefixes;
+    RouteHandler handleRoute;
 };
 
 // Compares two secrets (a presented token or password against the configured
@@ -179,8 +216,10 @@ private:
 
     void HandleGet(lws* wsi, Session* session);
     void HandlePostBodyComplete(lws* wsi, Session* session);
+    void HandleRoute(lws* wsi, Session* session);
     void SendResponse(lws* wsi, Session* session, int statusCode, const std::string& contentType,
-                      const std::string& body);
+                      const std::string& body,
+                      const std::vector<std::pair<std::string, std::string>>& headers = {});
 
     HttpServerConfig m_config;
     lws_context* m_context = nullptr;

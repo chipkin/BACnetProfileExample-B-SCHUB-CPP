@@ -347,6 +347,12 @@ jobs:
         shell: bash
         run: python tests/sc/keylog_test.py --exe "${{ matrix.exe }}"
 
+      - name: Certificate set-up guide (/setup, /api/..., the password gate)
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tests/sc/setup_portal_test.py --exe "${{ matrix.exe }}"
+
       - name: Start the example with BACnet/SC enabled
         shell: bash
         run: |

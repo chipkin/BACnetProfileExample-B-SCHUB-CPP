@@ -130,7 +130,7 @@ class Hub:
     def output(self):
         return self.log.read_text(errors="replace") if self.log.exists() else ""
 
-    def wait_listening(self, timeout=10):
+    def wait_listening(self, timeout=30):
         end = time.time() + timeout
         while time.time() < end:
             if "listening for WebSocket/TLS connections" in self.output():

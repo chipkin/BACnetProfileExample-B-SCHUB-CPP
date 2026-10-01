@@ -869,6 +869,11 @@ bool IssueHub(const CertLayout::HubCertPaths& paths, const Credential& issuer, c
 // Building blocks
 // =============================================================================
 
+bool CheckSigningCa(const CertLayout::HubCertPaths& paths, std::string* error) {
+    Credential issuer;
+    return LoadIssuer(paths, &issuer, error);
+}
+
 bool IsValidLabel(const std::string& label) {
     return !label.empty() && label.size() <= 64 && label != HUB_LABEL && label != ISSUER_LABEL &&
            std::regex_match(label, std::regex("[A-Za-z0-9_.-]+"));

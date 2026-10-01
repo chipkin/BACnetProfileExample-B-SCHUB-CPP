@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BACnet/SC set-up guide</title>
+<!--
+  The certificate set-up guide (issue #72), served by the hub at GET /setup.
+  Embedded into the executable at build time (cmake/embed_file.cmake), so it
+  must stay self-contained: no external scripts, styles, fonts or images.
+  Everything it shows comes from the hub's /api/... endpoints (cert_portal.cpp);
+  every value is put on the page as text (textContent), never as HTML.
+-->
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --fg: #1d2330; --muted: #5d6675; --line: #dde1e7;
+  --accent: #1f6feb; --accent-fg: #ffffff; --soft: #eef3fd;
+  --ok: #1a7f37; --ok-bg: #e7f5ec; --warn: #9a6700; --warn-bg: #fff6dc;
+  --bad: #c62828; --bad-bg: #fdecec; --info: #4b5565; --info-bg: #eef0f3;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218; --card: #171b23; --fg: #e3e7ee; --muted: #9aa3b2; --line: #2a303b;
+    --accent: #4c8dff; --accent-fg: #0b0e14; --soft: #1a2333;
+    --ok: #4ac26b; --ok-bg: #13261a; --warn: #e3b341; --warn-bg: #2a2410;
+    --bad: #ff7b72; --bad-bg: #2d1517; --info: #aab3c2; --info-bg: #1f242d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+header { background: var(--card); border-bottom: 1px solid var(--line); }
+.wrap { max-width: 1060px; margin: 0 auto; padding: 0 16px; }
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 14px 0 10px; }
+.top h1 { font-size: 1.25em; margin: 0; flex: 1 1 auto; }
+.top .sub { color: var(--muted); font-size: 0.9em; }
+nav { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 0; }
+nav a { padding: 8px 12px; border-radius: 8px 8px 0 0; text-decoration: none; color: var(--muted);
+  white-space: nowrap; border-bottom: 2px solid transparent; }
+nav a.on { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+nav .gap { flex: 0 0 12px; }
+main { padding: 20px 0 60px; }
+section { display: none; }
+section.on { display: block; }
+h2 { font-size: 1.2em; margin: 0 0 4px; }
+h3 { font-size: 1.02em; margin: 18px 0 8px; }
+p.lead { color: var(--muted); margin: 0 0 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 0 0 14px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.row > * { min-width: 0; }
+label.f { display: flex; flex-direction: column; gap: 4px; font-size: 0.88em; color: var(--muted); }
+input[type=text], input[type=password], input[type=number], textarea {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 9px; width: 100%; }
+textarea { font-family: var(--mono); font-size: 0.85em; min-height: 110px; resize: vertical; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  padding: 7px 13px; border-radius: 7px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 0.8em; font-weight: 600; }
+.pass { color: var(--ok); background: var(--ok-bg); }
+.warn { color: var(--warn); background: var(--warn-bg); }
+.fail { color: var(--bad); background: var(--bad-bg); }
+.info { color: var(--info); background: var(--info-bg); }
+.banner { border-radius: 9px; padding: 10px 14px; margin: 0 0 14px; border: 1px solid transparent; }
+.banner.fail { border-color: var(--bad); } .banner.warn { border-color: var(--warn); }
+.banner.pass { border-color: var(--ok); } .banner.info { border-color: var(--line); }
+.tabs { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
+.tabs button.on { background: var(--soft); border-color: var(--accent); font-weight: 600; }
+.drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px; text-align: center; color: var(--muted); }
+.drop.over { border-color: var(--accent); background: var(--soft); }
+.checks { list-style: none; padding: 0; margin: 6px 0 0; }
+.checks li { display: grid; grid-template-columns: 52px 1fr; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.checks li:first-child { border-top: 0; }
+.checks .name { font-weight: 600; }
+.checks .fix { color: var(--muted); font-size: 0.92em; }
+table.fields { width: 100%; border-collapse: collapse; font-size: 0.88em; margin-top: 6px; table-layout: fixed; }
+table.fields td { border-top: 1px solid var(--line); padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere; }
+table.fields td:first-child { width: 34%; color: var(--muted); }
+details > summary { cursor: pointer; color: var(--accent); margin-top: 6px; }
+.item { border: 1px solid var(--line); border-radius: 9px; padding: 12px; margin: 10px 0; background: var(--card); }
+.item .title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-weight: 600; overflow-wrap: anywhere; }
+.dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; }
+.dl .what { color: var(--muted); font-size: 0.88em; }
+.timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li { border-left: 3px solid var(--line); padding: 6px 0 8px 12px; margin-left: 4px; }
+.timeline li.pass { border-left-color: var(--ok); background: none; color: inherit; }
+.timeline li.fail { border-left-color: var(--bad); background: none; color: inherit; }
+.timeline li.warn { border-left-color: var(--warn); background: none; color: inherit; }
+.timeline li.info { background: none; color: inherit; }
+.timeline .when { color: var(--muted); font-size: 0.82em; font-family: var(--mono); }
+.timeline .say { font-weight: 600; }
+.timeline .hint { color: var(--muted); font-size: 0.92em; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 0.92em; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.steps { counter-reset: s; list-style: none; padding: 0; }
+.steps li { counter-increment: s; position: relative; padding: 4px 0 10px 36px; }
+.steps li::before { content: counter(s); position: absolute; left: 0; top: 3px; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--soft); color: var(--accent); font-weight: 700; text-align: center; line-height: 24px; font-size: 0.85em; }
+.muted { color: var(--muted); }
+.copy { font-size: 0.8em; padding: 2px 8px; }
+svg.diagram { width: 100%; max-width: 620px; height: auto; display: block; margin: 8px 0; }
+svg.diagram text { fill: var(--fg); font: 13px system-ui, sans-serif; }
+svg.diagram .box { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+svg.diagram .ca { fill: var(--soft); stroke: var(--accent); }
+svg.diagram .arrow { stroke: var(--muted); stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+svg.diagram .tls { stroke: var(--ok); stroke-width: 2.5; fill: none; }
+.hide { display: none !important; }
+@media (max-width: 640px) {
+  .checks li { grid-template-columns: 1fr; }
+  table.fields td:first-child { width: 40%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="top">
+      <h1>BACnet/SC set-up guide</h1>
+      <span class="sub" id="hubline">loading...</span>
+    </div>
+    <nav id="nav">
+      <a href="#trust" data-s="trust">1 How it works</a>
+      <a href="#files" data-s="files">2 Get the files</a>
+      <a href="#install" data-s="install">3 Install</a>
+      <a href="#test" data-s="test">4 Test the connection</a>
+      <span class="gap"></span>
+      <a href="#inspect" data-s="inspect">File inspector</a>
+      <a href="#devices" data-s="devices">Device folders</a>
+      <a href="#report" data-s="report">Diagnostic report</a>
+      <a href="/">Status page</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="loaderror" class="banner fail hide"></div>
+
+  <!-- 1 ------------------------------------------------------------------- -->
+  <section id="trust">
+    <h2>How BACnet/SC trust works</h2>
+    <p class="lead">Every BACnet/SC connection is TLS 1.3 with <b>mutual authentication</b>: the device and the hub
+      each show a certificate, and each accepts the other only if a CA (certificate authority) it trusts signed it.</p>
+    <div class="card">
+      <svg class="diagram" viewBox="0 0 620 210" role="img" aria-label="The CA signs both the hub's and the device's certificates; each side trusts the CA">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor" style="color: var(--muted)"></path></marker></defs>
+        <rect class="box ca" x="230" y="10" width="160" height="52" rx="8"></rect>
+        <text x="310" y="32" text-anchor="middle" font-weight="600">CA (iss-1.pem)</text>
+        <text x="310" y="51" text-anchor="middle">signs both certificates</text>
+        <rect class="box" x="20" y="130" width="200" height="64" rx="8"></rect>
+        <text x="120" y="155" text-anchor="middle" font-weight="600">Your device</text>
+        <text x="120" y="176" text-anchor="middle">opr-*.pem + its key</text>
+        <rect class="box" x="400" y="130" width="200" height="64" rx="8"></rect>
+        <text x="500" y="155" text-anchor="middle" font-weight="600">This hub</text>
+        <text x="500" y="176" text-anchor="middle">opr-hub.pem + its key</text>
+        <path class="arrow" d="M270,64 L150,126"></path>
+        <path class="arrow" d="M350,64 L470,126"></path>
+        <path class="tls" d="M222,162 L398,162"></path>
+        <text x="310" y="152" text-anchor="middle">TLS 1.3, both directions</text>
+      </svg>
+      <ol class="steps">
+        <li><b>The device needs</b> its own operational certificate (<code>opr-*.pem</code>) and private key, signed by
+          the hub's CA - plus the CA certificate <code>iss-1.pem</code>, to check the hub.</li>
+        <li><b>The hub needs nothing new</b> for each device: it trusts every certificate its CA signed, right away.</li>
+        <li><b>The file names</b> follow CARI (ANSI/ASHRAE 135-2024 Annex AA.2), the layout BACnet uses to carry
+          certificate requests to a CA and certificates back: <code>csr-</code> (request), <code>opr-</code>
+          (certificate), <code>key-</code> (private key), <code>iss-1</code> (issuer).</li>
+      </ol>
+    </div>
+    <h3>This hub</h3>
+    <div class="card">
+      <dl class="kv" id="hubfacts"></dl>
+      <h3>Devices dial</h3>
+      <div id="uris"></div>
+      <h3>The CA every device must trust</h3>
+      <p class="muted">Install this as the device's issuer certificate (both slots, if it has two).</p>
+      <div class="row">
+        <button data-get="/api/setup/issuer/iss-1.pem" data-name="iss-1.pem">Download iss-1.pem (PEM)</button>
+        <button data-get="/api/setup/issuer/iss-1.cer" data-name="iss-1.cer">Download iss-1.cer (DER, Windows)</button>
+        <button data-get="/api/setup/issuer/iss-2.pem" data-name="iss-2.pem" id="iss2btn" class="hide">Download iss-2.pem</button>
+      </div>
+    </div>
+    <div id="hubcerts"></div>
+    <p><button class="primary" data-go="files">Next: get the device's files</button></p>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------------- -->
+  <section id="files">
+    <h2>Get the device's files</h2>
+    <p class="lead">Two ways. If the device can make its own key and CSR (certificate signing request), use the first:
+      its private key then never leaves the device.</p>
+    <div id="gatebanner" class="banner info"></div>
+    <div class="card" id="pwcard">
+      <div class="row">
+        <label class="f" style="flex: 1 1 260px">Hub key password
+          <input type="password" id="pw" autocomplete="off" placeholder="sc-key-password, or the one typed at start-up">
+        </label>
+        <button id="pwcheck">Check</button>
+        <span id="pwstate" class="muted"></span>
+      </div>
+      <p class="muted" style="margin: 8px 0 0">Kept in this page only (not saved), and sent with each signing request.</p>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="on" data-tab="csr">A. My device made a CSR</button>
+      <button data-tab="gen">B. Make everything for me</button>
+    </div>
+
+    <div class="card" id="tab-csr">
+      <p style="margin-top: 0">Export the CSR from the device (often a <code>.csr</code>, <code>.req</code> or
+        <code>.pem</code> file), or a CARI request <code>.zip</code> (e.g. from BACCARI). PEM or DER both work.</p>
+      <div class="drop" id="drop">Drop the file here, or <label style="color: var(--accent); cursor: pointer">choose it
+        <input type="file" id="file" class="hide"></label></div>
+      <details style="margin-top: 8px"><summary>... or paste the CSR text</summary>
+        <textarea id="paste" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
+        <p><button id="pasteuse">Use the pasted text</button></p>
+      </details>
+      <div id="csrcheck"></div>
+      <div id="csropts" class="hide">
+        <h3>Name the device's folder</h3>
+        <div class="row">
+          <label class="f" style="flex: 1 1 180px">Device name (folder)
+            <input type="text" id="label" placeholder="e.g. ahu-7 (blank: next client-NN)"></label>
+          <label class="f" style="flex: 0 1 170px">BACnet device instance
+            <input type="number" id="instance" min="0" max="4194302" placeholder="e.g. 7007"></label>
+          <label class="f" style="flex: 0 1 120px">Port id
+            <input type="text" id="port" placeholder="1"></label>
+          <button class="primary" id="sign">Sign</button>
+        </div>
+        <p class="muted hide" id="cariopts"></p>
+      </div>
+    </div>
+
+    <div class="card hide" id="tab-gen">
+      <p style="margin-top: 0">The hub makes a new private key and certificate for the device and gives you every file,
+        including the key. Use this for tools and devices that can't make their own key (YABE, test tools).</p>
+      <div class="row">
+        <label class="f" style="flex: 1 1 180px">Device name (folder)
+          <input type="text" id="glabel" placeholder="e.g. yabe-laptop (blank: next client-NN)"></label>
+        <label class="f" style="flex: 0 1 170px">BACnet device instance
+          <input type="number" id="ginstance" min="0" max="4194302" placeholder="e.g. 7008"></label>
+        <label class="f" style="flex: 0 1 120px">Port id
+          <input type="text" id="gport" placeholder="1"></label>
+        <button class="primary" id="gen">Generate</button>
+      </div>
+    </div>
+
+    <div id="result"></div>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------------- -->
+  <section id="install">
+    <h2>Install the files on the device</h2>
+    <p class="lead">Each file goes into one setting of the device's BACnet/SC Network Port.</p>
+    <div class="card">
+      <div id="installfor" class="muted">Get the files in step 2 first - this step then names them.</div>
+      <table class="fields" style="font-size: 0.95em">
+        <tbody>
+          <tr><td>Operational certificate<br><span class="muted">Operational_Certificate_File</span></td><td id="i-opr"><code>opr-&lt;name&gt;.pem</code></td></tr>
+          <tr><td>Private key</td><td id="i-key"><code>key-&lt;name&gt;.pem</code> - or, if the device made its own CSR, the key it already has</td></tr>
+          <tr><td>Issuer certificate(s)<br><span class="muted">Issuer_Certificate_Files</span></td><td><code>iss-1.pem</code> (load it into both slots if there are two)</td></tr>
+          <tr><td>Primary hub URI</td><td id="i-uri"></td></tr>
+        </tbody>
+      </table>
+      <h3>Tools</h3>
+      <ul>
+        <li><b>CAS BACnet Explorer:</b> import <code>bacnetsc.config</code> from the device folder (keep the folder together).</li>
+        <li><b>YABE:</b> Communication Channel &rarr; BACnet/Secure Connect &rarr; Select <code>yabe-bacnetsc.config</code>
+          &rarr; Start. Needs Windows 11 or later (TLS 1.3).</li>
+        <li><b>A tool that reads CARI files:</b> give it the <code>*-cari-response.zip</code>.</li>
+      </ul>
+    </div>
+    <p><button class="primary" data-go="test">Next: test the connection</button></p>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------------- -->
+  <section id="test">
+    <h2>Test the connection</h2>
+    <p class="lead">Start the device's BACnet/SC connection now. This page shows what the hub sees, live, and why an
+      attempt failed.</p>
+    <div class="card">
+      <h3 style="margin-top: 0">Connected right now</h3>
+      <div id="connected" class="muted">nobody</div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content: space-between; align-items: center">
+        <h3 style="margin: 0">What the hub saw <span class="muted" style="font-weight: 400">(newest first)</span></h3>
+        <span><span id="livedot" class="pill info">live</span> <button id="clearev" class="copy">Only new</button></span>
+      </div>
+      <ul class="timeline" id="events"><li class="info"><span class="muted">Waiting for a device...</span></li></ul>
+    </div>
+  </section>
+
+  <!-- tools --------------------------------------------------------------- -->
+  <section id="inspect">
+    <h2>File inspector</h2>
+    <p class="lead">Drop any certificate, CSR, private key, <code>.pfx</code> (empty password) or CARI zip: it says what
+      it is, shows every field, and checks it against this hub. Nothing is stored. Don't upload a production private key
+      to any tool - a key is only used here to check it matches.</p>
+    <div class="card">
+      <div class="drop" id="idrop">Drop a file here, or <label style="color: var(--accent); cursor: pointer">choose it
+        <input type="file" id="ifile" class="hide"></label></div>
+      <details style="margin-top: 8px"><summary>... or paste PEM text</summary>
+        <textarea id="ipaste" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+        <p><button id="ipasteuse">Inspect the pasted text</button></p>
+      </details>
+    </div>
+    <div id="iresult"></div>
+  </section>
+
+  <section id="devices">
+    <h2>Device folders</h2>
+    <p class="lead">Every device folder this hub has made (<code>clients/&lt;name&gt;/</code>). Private files need the
+      same permission as signing.</p>
+    <div id="clientlist" class="muted">loading...</div>
+  </section>
+
+  <section id="report">
+    <h2>Diagnostic report</h2>
+    <p class="lead">Everything support needs: versions, the hub URI, the hub's and CA's certificates with their checks,
+      connected devices and the recent connection attempts. No keys or passwords.</p>
+    <div class="card">
+      <p><button class="primary" id="mkreport">Make the report</button> <button id="cpreport" disabled>Copy</button></p>
+      <textarea id="reporttext" style="min-height: 320px" readonly></textarea>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+var state = { info: null, upload: null, uploadName: "", lastSeq: 0, events: [], shownAfter: 0, lastResult: null };
+
+// --- small helpers ---------------------------------------------------------------
+function $(id) { return document.getElementById(id); }
+function el(tag, attrs, kids) {
+  var e = document.createElement(tag);
+  if (attrs) for (var k in attrs) {
+    if (k === "text") e.textContent = attrs[k];
+    else if (k === "cls") e.className = attrs[k];
+    else e.setAttribute(k, attrs[k]);
+  }
+  (kids || []).forEach(function (c) { if (c != null) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+  return e;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); return node; }
+function pill(status, text) { return el("span", { cls: "pill " + status, text: text || status }); }
+// Sent with every privileged request, also when there is no password ("HubKey -"):
+// the hub refuses a privileged request without it, which is what stops another
+// web site's page from using this hub (it can't add the header without a CORS
+// preflight the hub never answers).
+function authHeader() {
+  var pw = $("pw").value;
+  if (!pw) return { "Authorization": "HubKey -" };
+  var bytes = new TextEncoder().encode(pw), bin = "";
+  bytes.forEach(function (b) { bin += String.fromCharCode(b); });
+  return { "Authorization": "HubKey " + btoa(bin) };
+}
+function api(path, opts) {
+  opts = opts || {};
+  var headers = opts.auth ? authHeader() : {};
+  if (opts.body) headers["Content-Type"] = "application/octet-stream";
+  return fetch(path, { method: opts.method || "GET", headers: headers, body: opts.body || null, cache: "no-store" })
+    .then(function (r) {
+      var ct = r.headers.get("content-type") || "";
+      if (ct.indexOf("application/json") >= 0) return r.json().then(function (j) { return { status: r.status, json: j }; });
+      return r.blob().then(function (b) { return { status: r.status, blob: b }; });
+    })
+    .catch(function (e) { return { status: 0, json: { ok: false, error: "the hub didn't answer (" + e + ")",
+      fix: "Is the hub still running? Reload this page." } }; });
+}
+function showError(container, res) {
+  var j = res.json || {};
+  container.appendChild(el("div", { cls: "banner fail" }, [
+    el("b", { text: (j.error || ("HTTP " + res.status)) }),
+    j.fix ? el("div", { text: j.fix }) : null,
+    j.detail ? el("pre", { cls: "mono", style: "white-space: pre-wrap; margin: 6px 0 0", text: j.detail }) : null
+  ]));
+}
+function saveBlob(blob, name) {
+  var a = el("a", { href: URL.createObjectURL(blob), download: name });
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function download(url, name, isPrivate, statusNode) {
+  api(url, { auth: isPrivate }).then(function (res) {
+    if (res.blob && res.status === 200) { saveBlob(res.blob, name); if (statusNode) statusNode.textContent = ""; }
+    else if (statusNode) { clear(statusNode); showError(statusNode, res); }
+    else alert((res.json && res.json.error) || ("download failed: HTTP " + res.status));
+  });
+}
+function copyText(text, btn) {
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+    .then(function () { btn.textContent = "copied"; setTimeout(function () { btn.textContent = "copy"; }, 1500); })
+    .catch(function () { prompt("Copy this:", text); });
+}
+
+// --- navigation ---------------------------------------------------------------------
+function show(name) {
+  var any = false;
+  document.querySelectorAll("main > section").forEach(function (s) {
+    var on = s.id === name; s.classList.toggle("on", on); any = any || on;
+  });
+  if (!any) { name = "trust"; $("trust").classList.add("on"); }
+  document.querySelectorAll("#nav a[data-s]").forEach(function (a) { a.classList.toggle("on", a.dataset.s === name); });
+  if (name === "devices") loadClients();
+  window.scrollTo(0, 0);
+}
+window.addEventListener("hashchange", function () { show(location.hash.slice(1)); });
+document.addEventListener("click", function (e) {
+  var t = e.target.closest("[data-go]");
+  if (t) { location.hash = t.dataset.go; }
+  var g = e.target.closest("[data-get]");
+  if (g) { download(g.dataset.get, g.dataset.name, false); }
+});
+
+// --- items (fields + checks) -----------------------------------------------------------
+var KIND = { "certificate": "certificate", "csr": "certificate signing request", "private-key": "private key",
+  "encrypted-private-key": "encrypted private key", "crl": "revocation list", "pkcs12": ".pfx (PKCS#12)",
+  "cari": "CARI file", "missing": "missing", "unknown": "not recognised" };
+function worst(checks) {
+  var order = { fail: 3, warn: 2, info: 1, pass: 0 }, w = "pass";
+  (checks || []).forEach(function (c) { if (order[c.status] > order[w]) w = c.status; });
+  return w;
+}
+function renderItems(container, items, openFields) {
+  (items || []).forEach(function (it) {
+    var w = worst(it.checks);
+    var box = el("div", { cls: "item" });
+    box.appendChild(el("div", { cls: "title" }, [pill(w, w === "pass" ? "ok" : w === "fail" ? "problem" : w),
+      el("span", { text: it.label }), el("span", { cls: "muted", style: "font-weight: 400", text: KIND[it.kind] || it.kind })]));
+    if (it.checks && it.checks.length) {
+      var ul = el("ul", { cls: "checks" });
+      it.checks.forEach(function (c) {
+        ul.appendChild(el("li", null, [pill(c.status),
+          el("div", null, [el("span", { cls: "name", text: c.name + ": " }), el("span", { text: c.detail }),
+            c.fix && c.status !== "pass" ? el("div", { cls: "fix", text: "→ " + c.fix }) : null])]));
+      });
+      box.appendChild(ul);
+    }
+    if (it.fields && it.fields.length) {
+      var d = el("details", openFields ? { open: "" } : null, [el("summary", { text: "All " + it.fields.length + " fields" })]);
+      var tb = el("tbody");
+      it.fields.forEach(function (f) { tb.appendChild(el("tr", null, [el("td", { text: f.name }), el("td", { cls: "mono", text: f.value })])); });
+      d.appendChild(el("table", { cls: "fields" }, [tb]));
+      box.appendChild(d);
+    }
+    container.appendChild(box);
+  });
+}
+
+// --- 1: hub info -------------------------------------------------------------------------
+function loadInfo() {
+  return api("/api/setup/info").then(function (res) {
+    if (res.status !== 200 || !res.json) {
+      var b = $("loaderror"); b.classList.remove("hide");
+      b.textContent = "Couldn't read the hub's details (HTTP " + res.status + "). Reload the page.";
+      return;
+    }
+    var i = state.info = res.json;
+    $("hubline").textContent = i.deviceName + " · v" + i.version + " · device " + i.deviceInstance;
+    var facts = clear($("hubfacts"));
+    [["Device", i.deviceName + " (instance " + i.deviceInstance + ")"], ["Software", i.app + " v" + i.version + ", CAS BACnet Stack " + i.stack],
+     ["BACnet/SC port", String(i.scPort)], ["Certificate folder", i.certDir + " (" + i.layout + ")"],
+     ["Can sign devices", i.canSign ? "yes" : "no - " + i.signingProblem]].forEach(function (kv) {
+      facts.appendChild(el("dt", { text: kv[0] })); facts.appendChild(el("dd", { text: kv[1] }));
+    });
+    var uris = clear($("uris"));
+    (i.hubUris || []).forEach(function (u, n) {
+      var b = el("button", { cls: "copy", text: "copy" });
+      b.addEventListener("click", function () { copyText(u, b); });
+      uris.appendChild(el("div", { style: "margin: 4px 0" }, [el("code", { text: u }), " ", b,
+        n === 0 ? el("span", { cls: "muted", text: "  (written into bacnetsc.config)" }) : null]));
+    });
+    $("i-uri").textContent = (i.hubUris || [])[0] || "";
+    var certs = clear($("hubcerts"));
+    certs.appendChild(el("h3", { text: "The hub's certificate - " + i.hubCertificate.path }));
+    renderItems(certs, i.hubCertificate.items, false);
+    (i.issuers || []).forEach(function (s) {
+      certs.appendChild(el("h3", { text: "Issuer slot " + s.slot + " - " + s.path }));
+      renderItems(certs, s.items, false);
+      if (s.slot === 2) $("iss2btn").classList.remove("hide");
+    });
+    renderGate();
+  });
+}
+
+function canDoPrivileged() {
+  var g = state.info && state.info.gate;
+  if (!g) return false;
+  if (g.passwordProtectedKey) return g.tls || g.youAreLoopback;
+  return g.allowedWithoutPassword;
+}
+function renderGate() {
+  var g = state.info.gate, b = $("gatebanner");
+  b.className = "banner " + (canDoPrivileged() ? (g.passwordProtectedKey ? "info" : "pass") : "fail");
+  b.textContent = (canDoPrivileged() ? "" : "Signing is not available here. ") + g.explanation;
+  $("pwcard").classList.toggle("hide", !g.passwordProtectedKey);
+  ["sign", "gen"].forEach(function (id) { $(id).disabled = !canDoPrivileged() || !state.info.canSign; });
+  if (!state.info.canSign) {
+    b.className = "banner fail";
+    b.textContent = "The hub can't sign: " + state.info.signingProblem;
+  }
+}
+$("pwcheck").addEventListener("click", function () {
+  var s = $("pwstate"); s.textContent = "checking...";
+  api("/api/check-password", { method: "POST", auth: true }).then(function (res) {
+    s.textContent = res.status === 200 ? "✔ correct" : ((res.json && res.json.error) || ("HTTP " + res.status));
+    s.style.color = res.status === 200 ? "var(--ok)" : "var(--bad)";
+  });
+});
+
+// --- 2: CSR / generate ---------------------------------------------------------------------
+document.querySelectorAll("[data-tab]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    document.querySelectorAll("[data-tab]").forEach(function (x) { x.classList.toggle("on", x === b); });
+    $("tab-csr").classList.toggle("hide", b.dataset.tab !== "csr");
+    $("tab-gen").classList.toggle("hide", b.dataset.tab !== "gen");
+  });
+});
+function wireDrop(dropId, fileId, onBytes) {
+  var drop = $(dropId), input = $(fileId);
+  function take(file) {
+    if (!file) return;
+    file.arrayBuffer().then(function (buf) { onBytes(new Uint8Array(buf), file.name); });
+  }
+  input.addEventListener("change", function () { take(input.files[0]); input.value = ""; });
+  drop.addEventListener("dragover", function (e) { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
+  drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("over"); take(e.dataTransfer.files[0]); });
+}
+function inspectInto(container, bytes, name, after) {
+  clear(container).appendChild(el("p", { cls: "muted", text: "Checking " + (name || "the file") + "..." }));
+  api("/api/inspect?name=" + encodeURIComponent(name || ""), { method: "POST", body: bytes }).then(function (res) {
+    clear(container);
+    if (res.status !== 200) { showError(container, res); return; }
+    var j = res.json, w = "pass";
+    (j.items || []).forEach(function (it) { var x = worst(it.checks); if (x === "fail" || (x === "warn" && w !== "fail")) w = x; });
+    container.appendChild(el("div", { cls: "banner " + (w === "pass" ? "pass" : w) }, [el("b", { text: "This is " + j.detected + "." }),
+      el("div", { text: j.summary })]));
+    if (j.cari && j.cari.problems && j.cari.problems.length) {
+      var ul = el("ul");
+      j.cari.problems.forEach(function (p) { ul.appendChild(el("li", { cls: "mono", text: p })); });
+      container.appendChild(el("div", { cls: "banner fail" }, [el("b", { text: "CARI problems" }), ul]));
+    }
+    renderItems(container, j.items, false);
+    if (after) after(j);
+  });
+}
+function takeCsr(bytes, name) {
+  state.upload = bytes; state.uploadName = name || "";
+  clear($("result"));
+  inspectInto($("csrcheck"), bytes, name, function (j) {
+    var kinds = (j.items || []).map(function (i) { return i.kind; });
+    var isCari = j.detected.indexOf("CARI") >= 0;
+    var hasCsr = kinds.indexOf("csr") >= 0;
+    $("csropts").classList.toggle("hide", !(hasCsr || isCari));
+    ["label", "instance", "port"].forEach(function (id) { $(id).parentNode.classList.toggle("hide", isCari); });
+    var note = $("cariopts");
+    note.classList.toggle("hide", !isCari);
+    note.textContent = isCari ? "A CARI request names its own device and port folders; Sign answers with a CARI response zip." : "";
+    if (!hasCsr && !isCari) {
+      $("csrcheck").appendChild(el("div", { cls: "banner warn" }, [el("b", { text: "That's not a CSR." }),
+        el("div", { text: kinds.indexOf("certificate") >= 0 ? "It's a certificate - already signed. Check it in the file inspector, or install it."
+          : kinds.indexOf("private-key") >= 0 ? "It's a private key. Never send a device's private key anywhere; send its CSR."
+          : "Export the device's certificate signing request (CSR) and try again." })]));
+    }
+  });
+}
+wireDrop("drop", "file", takeCsr);
+$("pasteuse").addEventListener("click", function () { takeCsr(new TextEncoder().encode($("paste").value), "pasted.csr"); });
+
+function query(labelId, instId, portId) {
+  var q = [];
+  [["label", labelId], ["instance", instId], ["port", portId]].forEach(function (p) {
+    var v = $(p[1]).value.trim(); if (v) q.push(p[0] + "=" + encodeURIComponent(v));
+  });
+  return q.join("&");
+}
+function renderResult(res, verb) {
+  var box = clear($("result"));
+  if (res.status !== 200 || !res.json || !res.json.ok) { showError(box, res); return; }
+  var j = res.json; state.lastResult = j;
+  var ok = (j.items || []).filter(function (i) { return i.signed; }).length, all = (j.items || []).length;
+  box.appendChild(el("div", { cls: "banner " + (ok === all ? "pass" : "warn") }, [
+    el("b", { text: verb + ": " + ok + " of " + all + " certificate" + (all === 1 ? "" : "s") + (j.label ? " - device folder \"" + j.label + "\"" : "") }),
+    j.errors ? el("pre", { cls: "mono", style: "white-space: pre-wrap; margin: 6px 0 0", text: "errors.txt:\n" + j.errors }) : null]));
+  var card = el("div", { cls: "card" });
+  (j.items || []).forEach(function (i) {
+    card.appendChild(el("div", { style: "margin: 4px 0" }, [pill(i.signed ? "pass" : "fail", i.signed ? "signed" : "refused"), " ",
+      el("code", { text: i.where }), " ", el("span", { text: i.signed ? i.subject + " · serial " + i.serial + " · expires " + i.expires + (i.hubPort ? " · hub port (serverAuth too)" : "") : i.error })]));
+  });
+  card.appendChild(el("h3", { text: "Download" }));
+  var dl = el("div", { cls: "dl" }), msg = el("div");
+  (j.downloads || []).forEach(function (d) {
+    var b = el("button", { text: (d["private"] ? "🔒 " : "") + "Download" });
+    b.addEventListener("click", function () { download(d.url, d.name.split("/").pop(), d["private"], msg); });
+    dl.appendChild(el("div", null, [el("code", { text: d.name }), el("div", { cls: "what", text: d.description + (d["private"] ? " (private)" : "") })]));
+    dl.appendChild(b);
+  });
+  card.appendChild(dl); card.appendChild(msg);
+  card.appendChild(el("p", null, [el("button", { cls: "primary", "data-go": "install", text: "Next: install them" })]));
+  box.appendChild(card);
+  var opr = (j.downloads || []).filter(function (d) { return /(^|\/)opr-[^/]*\.pem$/.test(d.name); })[0];
+  var key = (j.downloads || []).filter(function (d) { return /(^|\/)key-[^/]*\.pem$/.test(d.name); })[0];
+  $("installfor").textContent = j.label ? "For device folder \"" + j.label + "\":" : "For the CARI response:";
+  if (opr) clear($("i-opr")).appendChild(el("code", { text: opr.name }));
+  clear($("i-key")).appendChild(key ? el("code", { text: key.name }) : el("span", { text: "the key the device made with its CSR (it never left the device)" }));
+}
+$("sign").addEventListener("click", function () {
+  if (!state.upload) return;
+  $("sign").disabled = true;
+  var q = "name=" + encodeURIComponent(state.uploadName) + "&" + query("label", "instance", "port");
+  api("/api/sign?" + q, { method: "POST", body: state.upload, auth: true }).then(function (res) {
+    renderGate(); renderResult(res, "Signed");
+  });
+});
+$("gen").addEventListener("click", function () {
+  $("gen").disabled = true;
+  api("/api/generate?" + query("glabel", "ginstance", "gport"), { method: "POST", auth: true }).then(function (res) {
+    renderGate(); renderResult(res, "Made");
+  });
+});
+
+// --- 4: live diagnostics -----------------------------------------------------------------
+var VERIFY = [
+  [/unable to get (local )?issuer|self.signed/i, "The device's certificate wasn't signed by this hub's CA.",
+    "Sign the device's CSR here (step 2), or add the CA that signed it as the hub's second issuer (File 4)."],
+  [/has expired/i, "The device's certificate has expired.", "Sign a new certificate from its CSR."],
+  [/not yet valid/i, "The device's certificate isn't valid yet.", "A clock is wrong - check the time on the hub and on the device."],
+  [/unsupported certificate purpose|invalid purpose/i, "The device's certificate isn't allowed for TLS clients (no clientAuth).", "Sign a new one here - the hub adds the right usages."],
+  [/revoked/i, "The device's certificate is revoked (issuer-crl.pem).", "Issue it a new certificate."],
+  [/unable to get certificate CRL/i, "The hub has issuer-crl.pem but no CRL from this device's CA, so it refuses it.", "Add that CA's CRL to issuer-crl.pem, or remove the file."],
+  [/CRL has expired/i, "The revocation list (issuer-crl.pem) is out of date.", "Publish a fresh CRL from the CA."]
+];
+function explain(e, next) {
+  var r = { cls: "info", say: e.kind, hint: "" };
+  if (e.kind === "tcp") {
+    r.say = "A connection arrived from " + e.address + ".";
+    if (!next) { r.hint = "Waiting for the TLS handshake..."; }
+    else if (next.kind === "tcp" || next.kind === "rate-limited") {
+      r.cls = "fail";
+      r.say += " Then the TLS handshake failed before the hub saw a certificate.";
+      r.hint = "Usual causes: the device sent no certificate (install its opr-*.pem and key), it only does TLS 1.2 " +
+        "(BACnet/SC needs TLS 1.3 - e.g. YABE on Windows 10), or the device didn't trust the HUB's certificate " +
+        "(install iss-1.pem as its issuer). The device's own log usually says which.";
+    }
+  } else if (e.kind === "tls-refused") {
+    r.cls = "fail"; r.say = "The hub refused the device's certificate (CN \"" + e.subject + "\", issued by \"" + e.issuer + "\").";
+    r.hint = e.detail;
+    for (var i = 0; i < VERIFY.length; i++) if (VERIFY[i][0].test(e.detail)) { r.say = VERIFY[i][1] + " (CN \"" + e.subject + "\")"; r.hint = VERIFY[i][2] + "  [" + e.detail + "]"; break; }
+  } else if (e.kind === "connected") {
+    r.cls = "pass"; r.say = "TLS worked: the hub accepted the certificate of \"" + e.subject + "\" (" + e.address + ").";
+    r.hint = "Waiting for its BACnet/SC Connect-Request...";
+  } else if (e.kind === "accepted") {
+    r.cls = "pass"; r.say = "Connected! \"" + e.subject + "\" is on the hub.";
+    r.hint = e.detail + " - the device is now on the BACnet/SC network.";
+  } else if (e.kind === "refused") {
+    r.cls = "fail"; r.say = "The hub refused the device's BACnet/SC Connect-Request.";
+    r.hint = /duplicate VMAC/i.test(e.detail) ? "Another connected device already uses this VMAC. Give each device its own VMAC (or restart the duplicate)."
+      : /Hello/i.test(e.detail) ? "The device leaves out the Hello option the standard requires (YABE does). Start the hub with --sc-accept-device-without-hello on."
+      : e.detail;
+  } else if (e.kind === "subprotocol") {
+    r.cls = "fail"; r.say = "The device asked for the wrong WebSocket subprotocol.";
+    r.hint = e.detail + ". Set the device to connect to a hub (hub.bsc.bacnet.org), not a direct connection.";
+  } else if (e.kind === "disconnected") {
+    r.cls = "warn"; r.say = "\"" + e.subject + "\" disconnected (" + e.address + ").";
+    r.hint = e.detail;
+  } else if (e.kind === "rate-limited") {
+    r.cls = "warn"; r.say = e.address + " is reconnecting too fast; the hub refused an attempt.";
+    r.hint = e.detail + ". It is let in again within a second.";
+  } else if (e.kind === "connector") {
+    r.cls = "warn"; r.say = "The hub's own connection to another hub failed."; r.hint = e.detail;
+  }
+  return r;
+}
+function renderEvents() {
+  var list = clear($("events")), evs = state.events.filter(function (e) { return e.sequence > state.shownAfter; });
+  if (!evs.length) { list.appendChild(el("li", { cls: "info" }, [el("span", { cls: "muted", text: "Waiting for a device..." })])); return; }
+  for (var n = evs.length - 1; n >= 0; n--) {
+    var e = evs[n], x = explain(e, evs[n + 1]);
+    list.appendChild(el("li", { cls: x.cls }, [el("div", { cls: "when", text: e.time + "  " + e.kind }),
+      el("div", { cls: "say", text: x.say }), x.hint ? el("div", { cls: "hint", text: x.hint }) : null]));
+  }
+}
+function poll() {
+  api("/api/diagnostics?after=" + state.lastSeq).then(function (res) {
+    var dot = $("livedot");
+    if (res.status !== 200 || !res.json) { dot.className = "pill fail"; dot.textContent = "offline"; return; }
+    dot.className = "pill pass"; dot.textContent = "live";
+    (res.json.events || []).forEach(function (e) { state.events.push(e); state.lastSeq = Math.max(state.lastSeq, e.sequence); });
+    if (state.events.length > 200) state.events = state.events.slice(-200);
+    renderEvents();
+    var c = clear($("connected")), devs = res.json.connected || [];
+    if (!devs.length) c.textContent = "nobody";
+    devs.forEach(function (d) {
+      c.appendChild(el("div", { style: "margin: 4px 0" }, [pill(d.accepted ? "pass" : "warn", d.accepted ? "connected" : "TLS only"), " ",
+        el("b", { text: d.subject || "?" }), el("span", { cls: "muted", text: "  " + d.address + (d.vmac ? "  VMAC " + d.vmac : "") + (d.uuid ? "  UUID " + d.uuid : "") })]));
+    });
+  });
+}
+$("clearev").addEventListener("click", function () { state.shownAfter = state.lastSeq; renderEvents(); });
+
+// --- tools --------------------------------------------------------------------------------
+wireDrop("idrop", "ifile", function (bytes, name) { inspectInto($("iresult"), bytes, name); });
+$("ipasteuse").addEventListener("click", function () { inspectInto($("iresult"), new TextEncoder().encode($("ipaste").value), "pasted.pem"); });
+
+function loadClients() {
+  api("/api/clients").then(function (res) {
+    var box = clear($("clientlist"));
+    var list = (res.json && res.json.clients) || [];
+    if (!list.length) { box.textContent = "No device folders yet - make one in step 2."; return; }
+    list.forEach(function (c) {
+      var card = el("div", { cls: "card" });
+      card.appendChild(el("div", { cls: "title", style: "font-weight: 600" }, [el("span", { text: c.label + "  " }),
+        pill(c.signed ? "pass" : "warn", c.signed ? "signed" : "request only"), " ", c.hasKey ? pill("info", "key here") : pill("info", "device kept its key")]));
+      var d = el("details", null, [el("summary", { text: c.downloads.length + " files" })]);
+      var dl = el("div", { cls: "dl", style: "margin-top: 6px" }), msg = el("div");
+      c.downloads.forEach(function (f) {
+        var b = el("button", { cls: "copy", text: (f["private"] ? "🔒 " : "") + "Download" });
+        b.addEventListener("click", function () { download(f.url, f.name.split("/").pop(), f["private"], msg); });
+        dl.appendChild(el("div", null, [el("code", { text: f.name }), el("div", { cls: "what", text: f.description })]));
+        dl.appendChild(b);
+      });
+      d.appendChild(dl); d.appendChild(msg); card.appendChild(d); box.appendChild(card);
+    });
+  });
+}
+$("mkreport").addEventListener("click", function () {
+  api("/api/report").then(function (res) {
+    if (res.blob) res.blob.text().then(function (t) { $("reporttext").value = t; $("cpreport").disabled = false; });
+  });
+});
+$("cpreport").addEventListener("click", function () { copyText($("reporttext").value, $("cpreport")); });
+
+// --- start ------------------------------------------------------------------------------------
+show(location.hash.slice(1) || "trust");
+loadInfo();
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
