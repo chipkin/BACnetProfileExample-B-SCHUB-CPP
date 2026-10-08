@@ -1,0 +1,191 @@
+{
+  "objects": [
+    {
+      "type": "Device",
+      "instance": 389022,
+      "name": "Chipkin Example B-SCHUB",
+      "app": [
+        "Object_Name",
+        "Vendor_Name",
+        "Vendor_Identifier",
+        "Model_Name",
+        "Firmware_Revision",
+        "Application_Software_Version",
+        "Description"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [],
+      "accepted": [
+        "System_Status",
+        "Max_APDU_Length_Accepted",
+        "APDU_Timeout",
+        "Number_Of_APDU_Retries",
+        "Database_Revision"
+      ],
+      "stack": [
+        "Object_List",
+        "Protocol_Version",
+        "Protocol_Revision",
+        "Protocol_Services_Supported",
+        "Protocol_Object_Types_Supported",
+        "Device_Address_Binding",
+        "Segmentation_Supported"
+      ],
+      "note": "vendor 389 (Chipkin Automation Systems); the series' device instance for B-SCHUB. The stack rows are device-wide facts only the stack knows - the protocol version and revision it implements, the services and object types it was configured with, the live object list and address-binding table. The accepted rows are the stack's configured defaults for APDU limits, segmentation, system status and database revision; an application that answered them from its own constants could contradict the stack, so the example does not. Segmentation_Supported is segmented-both, the CAS BACnet Stack's segmentation configuration (6.x default, cas-bacnet-stack#2992); with it the stack also serves Max_Segments_Accepted (16) and APDU_Segment_Timeout (5000 ms) - see section 5"
+    },
+    {
+      "type": "Analog Input",
+      "instance": 1,
+      "name": "Bronze",
+      "app": [
+        "Present_Value",
+        "Object_Name",
+        "Units",
+        "Out_Of_Service",
+        "Description"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [],
+      "accepted": [
+        "Event_State"
+      ],
+      "note": "REAL, degrees Celsius; starts at 21.5; read-only (a sample value, changed with the arrow keys)"
+    },
+    {
+      "type": "Network Port",
+      "instance": 1,
+      "name": "BACnet IP",
+      "app": [
+        "Object_Name",
+        "Description",
+        "Out_Of_Service",
+        "Network_Type",
+        "Protocol_Level",
+        "Changes_Pending"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [
+        "Command"
+      ],
+      "accepted": [
+        "Reliability"
+      ],
+      "note": "BACnet/IP; kept active throughout so the hub stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack"
+    },
+    {
+      "type": "Network Port",
+      "instance": 2,
+      "name": "BACnet SC",
+      "app": [
+        "Object_Name",
+        "Description",
+        "Out_Of_Service",
+        "Network_Type",
+        "Protocol_Level",
+        "Changes_Pending"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [
+        "Command"
+      ],
+      "accepted": [
+        "Reliability"
+      ],
+      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp"
+    },
+    {
+      "type": "File",
+      "instance": 1,
+      "name": "Operational Certificate",
+      "app": [
+        "Object_Name",
+        "Description",
+        "File_Type",
+        "File_Size",
+        "Modification_Date",
+        "Archive",
+        "Read_Only"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [
+        "File_Size"
+      ],
+      "accepted": [],
+      "note": "writable over BACnet (clause 19.8.3): File_Size and AtomicWriteFile, staged until ReinitializeDevice ACTIVATE_CHANGES/WARMSTART, which validates the set (parses, matches the hub's private key, chains to an issuer) before writing opr-hub.pem and reloading TLS. Serves the hub's operational certificate via AtomicReadFile (stream access) - bound to Network Port 2's Operational_Certificate_File. File_Size/Modification_Date come from the staged copy or the file on disk"
+    },
+    {
+      "type": "File",
+      "instance": 2,
+      "name": "Certificate Signing Request",
+      "app": [
+        "Object_Name",
+        "Description",
+        "File_Type",
+        "File_Size",
+        "Modification_Date",
+        "Archive",
+        "Read_Only"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [],
+      "accepted": [],
+      "note": "read-only; serves the hub's certificate signing request (CARI cert1/device-<n>/port-2/csr-hub.pem) - bound to Network Port 2's Certificate_Signing_Request_File. rewritten by the hub on Network Port 2 Command GENERATE_CSR_FILE, for a new key that replaces the hub's key when a certificate signed for it is activated"
+    },
+    {
+      "type": "File",
+      "instance": 3,
+      "name": "Issuer Certificate Slot 1",
+      "app": [
+        "Object_Name",
+        "Description",
+        "File_Type",
+        "File_Size",
+        "Modification_Date",
+        "Archive",
+        "Read_Only"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [
+        "File_Size"
+      ],
+      "accepted": [],
+      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 1 (CARI cert1/issuer/iss-1.pem) - one of Network Port 2's 2 Issuer_Certificate_Files entries"
+    },
+    {
+      "type": "File",
+      "instance": 4,
+      "name": "Issuer Certificate Slot 2",
+      "app": [
+        "Object_Name",
+        "Description",
+        "File_Type",
+        "File_Size",
+        "Modification_Date",
+        "Archive",
+        "Read_Only"
+      ],
+      "enabled": [
+        "Description"
+      ],
+      "writable": [
+        "File_Size"
+      ],
+      "accepted": [],
+      "note": "writable over BACnet (clause 19.8.3), same staging as File 1; issuer certificate slot 2 (CARI cert1/issuer/iss-2.pem once written; until then it serves slot 1's certificate). TLS trusts every issuer in both slots (trusted-issuers.pem)"
+    }
+  ]
+}

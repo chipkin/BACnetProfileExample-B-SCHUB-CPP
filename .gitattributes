@@ -1,0 +1,3 @@
+# The demo certificate set: keep every file byte-for-byte the same on every
+# checkout (no line-ending conversion), so Windows and Linux packages match.
+certs/** -text

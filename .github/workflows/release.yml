@@ -1,0 +1,468 @@
+# Build the B-SCHUB example and publish a GitHub Release (binaries + metrics.json) when a
+# vX.Y.Z tag is pushed. PRs run the same build + smoke test without
+# publishing. The build is exactly what README.md tells a customer to run: plain CMake in
+# the adapter's default SOURCE mode, which compiles the stack into the executable.
+#
+# The CAS BACnet Stack is a PRIVATE git submodule: the repository secret CAS_STACK_PAT must
+# hold a PAT with read access to chipkin/cas-bacnet-stack.
+# SC-TRANSPORT:BEGIN - what this workflow adds for BACnet/SC
+#
+# Between "SC-TRANSPORT:BEGIN/END" markers (tools/check-series.sh check 11 compares
+# everything outside them with the series template): the vcpkg dependencies
+# (libwebsockets, OpenSSL, zlib) and their binary cache, Windows code signing on tag
+# builds (Azure Artifact Signing - see docs/code-signing.md), the BACnet/SC tests
+# (tests/sc/), the release archives (a Windows .zip and a Linux .tar.gz with the
+# executable, the demo certificates in certs/ and the documents) and SHA256SUMS.txt.
+#
+# Signing needs the repository variables AS_ENDPOINT, AS_SIGNING_ACCOUNT_NAME and
+# AS_CERTIFICATE_PROFILE_NAME, and the "release" environment's secrets AZURE_CLIENT_ID,
+# AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID.
+# SC-TRANSPORT:END
+name: build-and-release
+
+on:
+  pull_request:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # SC-TRANSPORT:BEGIN - code signing. azure/login uses GitHub OIDC, which needs an ID
+    # token; packages: write is for the vcpkg NuGet binary cache (pull requests only read
+    # it). The Windows leg of a vX.Y.Z tag build runs in the "release" environment, which
+    # the Azure federated credential trusts (subject
+    # repo:chipkin@14987761/BACnetProfileExample-B-SCHUB-CPP@1409496357:environment:release -
+    # see docs/code-signing.md). Every other run (PRs, Linux) gets no environment and never signs.
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    environment: ${{ (startsWith(github.ref, 'refs/tags/v') && matrix.os == 'windows-2022') && 'release' || '' }}
+    # SC-TRANSPORT:END
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows-2022 pins the VS 2022 (v143) toolset the released binaries are built
+          # with, so the published metrics stay comparable release to release.
+          - os: windows-2022
+            artifact: BACnetExampleBSCHUB-windows-x64
+            exe: build/Release/BACnetExampleBSCHUB.exe
+            metrics: metrics-windows.json
+          - os: ubuntu-latest
+            artifact: BACnetExampleBSCHUB-linux-x64
+            exe: build/BACnetExampleBSCHUB
+            metrics: metrics-linux.json
+    steps:
+      # SC-TRANSPORT:BEGIN - Code signing, part 1 (Windows, tag builds only): Azure Artifact
+      # Signing through GitHub OIDC, no certificate or password stored in GitHub. These steps
+      # run FIRST so a signing misconfiguration fails the run in seconds, before checkout and
+      # the long build. A tag build that can't sign fails - no unsigned releases. Part 2 (the
+      # signing itself) runs after "Build".
+      - name: Validate signing configuration inputs exist
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          AS_ENDPOINT: ${{ vars.AS_ENDPOINT }}
+          AS_ACCOUNT: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
+          AS_PROFILE: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AS_ENDPOINT)) { throw "Missing repo variable AS_ENDPOINT" }
+          if ([string]::IsNullOrWhiteSpace($env:AS_ACCOUNT)) { throw "Missing repo variable AS_SIGNING_ACCOUNT_NAME" }
+          if ([string]::IsNullOrWhiteSpace($env:AS_PROFILE)) { throw "Missing repo variable AS_CERTIFICATE_PROFILE_NAME" }
+          Write-Host "Signing endpoint: $env:AS_ENDPOINT"
+          Write-Host "Signing account:  $env:AS_ACCOUNT"
+          Write-Host "Cert profile:     $env:AS_PROFILE"
+
+      - name: Azure login (OIDC)
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Check a code-signing token can be issued
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $null = az account get-access-token --resource https://codesigning.azure.net --query expiresOn -o tsv
+          if ($LASTEXITCODE -ne 0) { throw "Could not get an Azure Artifact Signing token for this identity" }
+          Write-Host "Azure Artifact Signing token OK"
+      # SC-TRANSPORT:END
+      - name: Enable git long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout (with the CAS BACnet Stack submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CAS_STACK_PAT || github.token }}
+
+      - name: Stack commit (recorded in metrics.json)
+        id: stack
+        shell: bash
+        run: echo "sha=$(git -C submodules/cas-bacnet-stack rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # SC-TRANSPORT:BEGIN - vcpkg binary cache for libwebsockets/OpenSSL/zlib (manifest
+      # mode: point at the runner's own vcpkg via VCPKG_ROOT, cache what it builds under a
+      # workspace-local directory, and pre-fetch the manifest's builtin-baseline commit if
+      # the runner's bundled vcpkg clone predates it).
+      - name: vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ matrix.os }}-
+
+      - name: Point at the runner's vcpkg
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+          mkdir -p vcpkg-binary-cache
+          echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite" >> "$GITHUB_ENV"
+          # x64-windows-static matches CMakeLists.txt's Windows default (the CAS BACnet Stack
+          # adapter's static runtime); x64-linux is vcpkg's own default there.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "VCPKG_TARGET_TRIPLET=x64-windows-static" >> "$GITHUB_ENV"
+          fi
+
+      # A binary cache that doesn't expire: actions/cache above is evicted after 7 days
+      # unused, and this workflow only runs on pull requests and tags. This adds the
+      # repository owner's GitHub Packages NuGet feed as a second vcpkg binary source, using
+      # the workflow's own GITHUB_TOKEN (packages: write). Pull requests read from it; tags
+      # and manual runs also write to it. If the feed can't be set up (a pull request from a
+      # fork), the step is skipped and the files cache above still works.
+      - name: vcpkg binary cache on GitHub Packages (NuGet)
+        continue-on-error: true
+        shell: bash
+        env:
+          FEED_URL: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+          FEED_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEED_MODE: ${{ github.event_name == 'pull_request' && 'read' || 'readwrite' }}
+        run: |
+          set -e
+          # nuget.exe is a .NET program; on Linux vcpkg (and this step) run it with mono.
+          if [ "${{ runner.os }}" != "Windows" ] && ! command -v mono > /dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends mono-devel > /dev/null
+          fi
+          nuget=$("$VCPKG_ROOT/vcpkg" fetch nuget | tail -n 1)
+          run_nuget() {
+            if [ "${{ runner.os }}" = "Windows" ]; then "$nuget" "$@"; else mono "$nuget" "$@"; fi
+          }
+          run_nuget sources add -Source "$FEED_URL" -StorePasswordInClearText -Name GitHubPackages \
+            -UserName "${{ github.repository_owner }}" -Password "$FEED_TOKEN"
+          run_nuget setapikey "$FEED_TOKEN" -Source "$FEED_URL"
+          echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite;nuget,${FEED_URL},${FEED_MODE}" >> "$GITHUB_ENV"
+          echo "vcpkg binary cache: files + GitHub Packages NuGet (${FEED_MODE})"
+
+      # The runner image's vcpkg clone is usually older than the manifest's builtin-baseline,
+      # and vcpkg then fails with "failed to git show versions/baseline.json". Fetch exactly
+      # that commit (read from vcpkg.json so the two cannot drift) when it is missing.
+      - name: Make sure the runner vcpkg has the manifest baseline
+        shell: bash
+        run: |
+          baseline=$(python -c "import json;print(json.load(open('vcpkg.json'))['builtin-baseline'])")
+          echo "builtin-baseline: $baseline"
+          if ! git -C "$VCPKG_ROOT" cat-file -e "${baseline}^{commit}" 2>/dev/null; then
+            git -C "$VCPKG_ROOT" fetch --depth=1 origin "$baseline"
+          fi
+      # SC-TRANSPORT:END
+      - name: Configure
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      # The README documents `cmake -B build -S .` with no link-mode flag, so assert the
+      # adapter's default really is SOURCE. If that default ever changes, the documented
+      # build silently starts needing a prebuilt library and fails for customers first.
+      - name: Confirm the link mode CMake actually used
+        shell: bash
+        run: |
+          mode=$(grep -E '^CAS_BACNET_STACK_LINK:' build/CMakeCache.txt | cut -d= -f2)
+          echo "CAS_BACNET_STACK_LINK=$mode"
+          [ "$mode" = "SOURCE" ] || { echo "FAIL: expected SOURCE, got '$mode'"; exit 1; }
+
+      - name: Build
+        run: cmake --build build --config Release
+      # SC-TRANSPORT:BEGIN - Code signing, part 2: sign the executable (Windows, tag builds
+      # only; part 1 ran first). Signs before the smoke test, the tests and the package, so
+      # the published binary, its metrics and its checksum are all the signed one.
+      - name: Sign executable with Azure Artifact Signing
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AS_ENDPOINT }}
+          signing-account-name: ${{ vars.AS_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AS_CERTIFICATE_PROFILE_NAME }}
+          files: |
+            ${{ github.workspace }}\${{ matrix.exe }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signature
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXE_PATH: ${{ github.workspace }}\${{ matrix.exe }}
+        run: |
+          if (-not (Test-Path -LiteralPath $env:EXE_PATH)) { throw "Executable does not exist: $env:EXE_PATH" }
+
+          $searchRoots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\bin",
+            "${env:ProgramFiles(x86)}\Windows Kits\11\bin"
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
+          $signtool = $null
+          foreach ($root in $searchRoots) {
+            $candidate = Get-ChildItem -Path $root -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match "\\x64\\signtool\.exe$" } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if ($candidate) {
+              $signtool = $candidate.FullName
+              break
+            }
+          }
+
+          if (-not $signtool) {
+            throw "signtool.exe not found under Windows Kits SDK paths."
+          }
+
+          Write-Host "Using signtool: $signtool"
+          & $signtool verify /pa /v "$env:EXE_PATH"
+          if ($LASTEXITCODE -ne 0) { throw "signtool verify failed ($LASTEXITCODE)" }
+      # SC-TRANSPORT:END
+
+      - name: Smoke test + metrics (starts, binds, stays up; measures time to 'ready')
+        shell: bash
+        run: |
+          start=$(date +%s%3N)
+          "${{ matrix.exe }}" --port 47821 > smoke.log 2>&1 &
+          PID=$!
+          ready_ms=""
+          for i in $(seq 1 100); do
+            if grep -q "ready" smoke.log; then ready_ms=$(( $(date +%s%3N) - start )); break; fi
+            sleep 0.1
+          done
+          sleep 2
+          if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null || true; else echo "FAIL: device exited early"; cat smoke.log; exit 1; fi
+          [ -n "$ready_ms" ] || { echo "FAIL: no 'ready' line"; cat smoke.log; exit 1; }
+          cat smoke.log
+          bytes=$(stat -c %s "${{ matrix.exe }}" 2>/dev/null || wc -c < "${{ matrix.exe }}")
+          sha=$(sha256sum "${{ matrix.exe }}" | cut -c1-16)
+          stackver=$(grep -oE 'CAS BACnet Stack version: [0-9.]+' smoke.log | head -1 | grep -oE '[0-9.]+' || true)
+          appver=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' smoke.log | head -1 || true)
+          # CMAKE_CXX_COMPILER is not a CMakeCache.txt entry under the multi-config Visual
+          # Studio generator (only single-config generators like the Linux Unix Makefiles
+          # one cache it directly) - grep finding nothing here is expected on Windows, and
+          # with pipefail that makes the pipeline's exit status non-zero, so `|| true` keeps
+          # a genuinely missing compiler string from aborting the whole metrics step.
+          compiler=$(grep -E '^CMAKE_CXX_COMPILER_VERSION|^CMAKE_CXX_COMPILER:' build/CMakeCache.txt | head -2 | tr '\n' ' ' || true)
+          [ -n "$compiler" ] || compiler="$(grep -E '^CMAKE_GENERATOR:' build/CMakeCache.txt | cut -d= -f2 || true) ${{ matrix.os }}"
+          cat > "${{ matrix.metrics }}" <<EOF
+          {
+            "example": "BACnetExampleBSCHUB",
+            "app_version": "$appver",
+            "os": "${{ matrix.os }}",
+            "link_mode": "SOURCE",
+            "stack_commit": "${{ steps.stack.outputs.sha }}",
+            "stack_version": "$stackver",
+            "binary_bytes": $bytes,
+            "binary_sha256_prefix": "$sha",
+            "startup_ms_to_ready": $ready_ms,
+            "compiler": "$compiler",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "git_ref": "${{ github.ref_name }}"
+          }
+          EOF
+          cat "${{ matrix.metrics }}"
+          { echo '### metrics (${{ matrix.os }})'; echo '```json'; cat "${{ matrix.metrics }}"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # SC-TRANSPORT:BEGIN - the BACnet/SC tests (tests/sc/README.md). The hub runs on the
+      # committed demo certificates (certs/) where a test only reads them, and on throwaway
+      # tools/make_test_certs.py sets where a test rewrites them.
+      - name: Set up Python (for the BACnet/SC test scripts)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install BACnet/SC test dependencies
+        run: python -m pip install -r tests/sc/requirements.txt
+
+      - name: Test certificate files (a fresh tools/make_test_certs.py set, and the demo set)
+        shell: bash
+        run: |
+          python tools/make_test_certs.py --cert-dir ci-certs --devices 3
+          python tests/sc/cert_files_test.py --cert-dir ci-certs
+          python tests/sc/cert_files_test.py --cert-dir certs
+
+      - name: The hub's own certificate (--generate-csr, --import-cari, removed options)
+        shell: bash
+        run: python tests/sc/hub_cert_test.py --exe "${{ matrix.exe }}"
+
+      - name: Connection limit (start-up banner, 4 devices, the 5th refused)
+        shell: bash
+        run: python tests/sc/connection_limit_test.py --exe "${{ matrix.exe }}"
+
+      - name: Start the example on the demo certificates
+        shell: bash
+        run: |
+          "${{ matrix.exe }}" --port 47822 --sc-port 47823 > sc-smoke.log 2>&1 &
+          echo $! > sc-smoke.pid
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" sc-smoke.log && break
+            sleep 0.2
+          done
+          grep -q "listening for WebSocket/TLS connections" sc-smoke.log || { echo "FAIL: SC listener never came up"; cat sc-smoke.log; exit 1; }
+
+      - name: BACnet/SC listener test
+        run: python tests/sc/hub_listener_test.py --port 47823 --cert-dir certs
+
+      # The no-Hello Connect-Request in the listener test is refused by the stack; the hub
+      # must log the stack's own reason from the NAK, not a guess.
+      - name: Refused Connect-Request is logged with the stack's reason
+        shell: bash
+        run: |
+          grep "Connect-Request refused by the hub" sc-smoke.log
+          grep -q 'Connect-Request refused by the hub: "' sc-smoke.log || { echo "FAIL: no reason in the refusal log line"; exit 1; }
+
+      - name: BACnet/SC File objects test
+        run: python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47822 --cert-dir certs
+
+      - name: ReadPropertyMultiple (DS-RPM-B)
+        run: python tests/sc/rpm_test.py --target 127.0.0.1 --target-port 47822
+
+      - name: Segmentation, both directions (Segmentation_Supported = segmented-both)
+        run: python tests/sc/segmentation_test.py --target 127.0.0.1 --target-port 47822
+
+      # --sc-accept-device-without-hello (stack flag 0x02): the same no-Hello
+      # Connect-Request - what YABE sends - must be accepted.
+      - name: Connect-Request without Hello accepted with --sc-accept-device-without-hello
+        shell: bash
+        run: |
+          "${{ matrix.exe }}" --sc-accept-device-without-hello --port 47835 --sc-port 47836 > ci-nohello.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" ci-nohello.log && break
+            sleep 0.2
+          done
+          rc=0
+          python tests/sc/hub_listener_test.py --port 47836 --cert-dir certs --expect-no-hello-accepted || rc=1
+          grep -q "sc-accept-device-without-hello" ci-nohello.log || { echo "FAIL: no compatibility warning at start-up"; rc=1; }
+          kill $pid 2>/dev/null || true
+          [ $rc = 0 ] || cat ci-nohello.log
+          exit $rc
+
+      # The clause 19.8.3 certificate procedures over BACnet. A SECOND instance on its own
+      # throwaway certificate sets, because the test rewrites the hub's certificates.
+      - name: BACnet/SC certificate procedures over BACnet (clause 19.8.3)
+        shell: bash
+        run: |
+          python tools/make_test_certs.py --cert-dir ci-hub-certs --devices 1
+          python tools/make_test_certs.py --cert-dir ci-other-certs --devices 1
+          "${{ matrix.exe }}" --port 47824 --sc-port 47825 --sc-cert-dir ci-hub-certs > cert-proc.log 2>&1 &
+          echo $! > cert-proc.pid
+          for i in $(seq 1 50); do
+            grep -q "listening for WebSocket/TLS connections" cert-proc.log && break
+            sleep 0.2
+          done
+          rc=0
+          python tests/sc/cert_procedure_test.py --target-port 47824 --sc-port 47825 \
+            --cert-dir ci-hub-certs --second-issuer-dir ci-other-certs || rc=$?
+          kill "$(cat cert-proc.pid)" 2>/dev/null || true
+          [ "$rc" -eq 0 ] || { cat cert-proc.log; exit "$rc"; }
+
+      - name: Stop the example
+        shell: bash
+        if: always()
+        run: |
+          [ -f sc-smoke.pid ] && kill "$(cat sc-smoke.pid)" 2>/dev/null || true
+          cat sc-smoke.log || true
+      # SC-TRANSPORT:END
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
+          cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
+          cp docs/PICS.md dist/ 2>/dev/null || true
+
+      # SC-TRANSPORT:BEGIN - the release archive: one .zip (Windows) or .tar.gz (Linux) with
+      # the executable, the demo certificates (certs/, exactly as committed), README, licence,
+      # third-party notices, tutorial and PICS. The archive and the metrics file are this
+      # leg's only release assets.
+      - name: Release archive
+        shell: bash
+        run: |
+          version=$(grep -oE 'APP_VERSION = "[0-9.]+"' main.cpp | grep -oE '[0-9.]+')
+          platform=${{ runner.os == 'Windows' && 'windows' || 'linux' }}
+          stage="BACnetExampleBSCHUB-$version-$platform-x64"
+          rm -rf "$stage" && mkdir -p "$stage/docs"
+          cp "${{ matrix.exe }}" "$stage/"
+          git ls-files -z certs | xargs -0 -I{} cp --parents {} "$stage/"
+          cp README.md LICENSE THIRD-PARTY-NOTICES.md TUTORIAL.md SECURITY.md "$stage/"
+          cp docs/PICS.md "$stage/docs/"
+          find dist -type f ! -name "${{ matrix.metrics }}" -delete
+          if [ "$platform" = windows ]; then
+            7z a -tzip "dist/$stage.zip" "$stage" > /dev/null
+          else
+            chmod +x "$stage/BACnetExampleBSCHUB"
+            tar -czf "dist/$stage.tar.gz" "$stage"
+          fi
+          ls -l dist
+      # SC-TRANSPORT:END
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      # Every platform artifact carries the same docs (README.md, LICENSE, ...).
+      # Uploading two assets with one name makes the release action fail part-way
+      # and leaves a draft release behind (a real tagged release hit this). Flatten the
+      # artifacts into one folder with a single copy of each file name, and stop
+      # if two files share a name but differ.
+      - name: Collect release assets (one copy of each file name)
+        shell: bash
+        run: |
+          mkdir -p release
+          find artifacts -type f | sort | while read -r f; do
+            name=$(basename "$f")
+            if [ -e "release/$name" ]; then
+              cmp -s "$f" "release/$name" || { echo "FAIL: two different files are both named $name ($f)"; exit 1; }
+            else
+              cp "$f" "release/$name"
+            fi
+          done
+          ls -l release
+      # SC-TRANSPORT:BEGIN - SHA-256 checksums of every release asset, so a download can be
+      # checked (sha256sum -c SHA256SUMS.txt, or Get-FileHash on Windows).
+      - name: Checksums
+        shell: bash
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      # SC-TRANSPORT:END
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release/*

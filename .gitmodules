@@ -1,0 +1,4 @@
+[submodule "submodules/cas-bacnet-stack"]
+	path = submodules/cas-bacnet-stack
+	url = https://github.com/chipkin/cas-bacnet-stack.git
+	branch = 6.x

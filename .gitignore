@@ -1,0 +1,20 @@
+# CMake build output
+build/
+build-static/
+
+# vcpkg build artifacts (manifest mode - vcpkg.json - restores these locally;
+# never commit them)
+vcpkg_installed/
+
+# certs/ IS committed: it is the public demo certificate set (see
+# certs/README.md). These are the files the hub and the tests write into a
+# certificate folder at run time - never commit them.
+certs/trusted-issuers.pem
+certs/key-hub-pending.pem
+certs/hub-cari-request.zip
+certs/**/*.tmp
+certs/.test-extract/
+**/.test-extract/
+
+# Python bytecode
+__pycache__/
