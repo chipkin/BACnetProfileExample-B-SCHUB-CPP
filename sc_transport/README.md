@@ -15,9 +15,9 @@ full design rationale; this file is the summary.
   speaks WebSocket+TLS. It
   knows nothing about BACnet or the CAS BACnet Stack's C API.
 - **`ScTransportRouter`** - the glue: registers the stack's
-  `ReceiveMessageForPort`/`SendMessageForPort` callbacks, dispatches between
-  BACnet/IP (its own `SimpleUDP`) and BACnet/SC (`ScTransport`) by
-  `networkPortInstance`, and drains `ScTransport`'s status-event queue into
+  `ReceiveMessageForPort`/`SendMessageForPort` callbacks, moves the BACnet/SC
+  Network Port's messages to and from `ScTransport` (the example has no
+  BACnet/IP port), and drains `ScTransport`'s status-event queue into
   `BACnetStack_SetBACnetSCWebSocketStatus`.
 
 ## The facts that make this correct (not obvious from the stack's own docs)

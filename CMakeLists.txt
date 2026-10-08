@@ -129,8 +129,9 @@ set(SC_TRANSPORT_SOURCES
     "sc_transport/ScTransportRouter.cpp"
     "sc_transport/KeyPassword.cpp")
 
-# The hub's certificates: the CARI files (cari.cpp, cert_layout.cpp), --generate-csr /
-# --import-cari (cert_tool.cpp) and the certificate File objects (cert_store.cpp).
+# The hub's certificates: the CARI files (cari.cpp, cert_layout.cpp), the start-up
+# certificate request and --import-cari (cert_tool.cpp) and the certificate File
+# objects (cert_store.cpp).
 set(CERT_SOURCES
     cari.cpp
     cert_layout.cpp
@@ -139,6 +140,7 @@ set(CERT_SOURCES
 
 add_executable(BACnetExampleBSCHUB
     main.cpp
+    log_file.cpp
     ${CERT_SOURCES}
     ${SC_TRANSPORT_SOURCES}
     ${COMMON_SOURCES})
@@ -164,11 +166,11 @@ if(MSVC)
 else()
     set(EXAMPLE_WARNINGS "-Wall;-Wextra")
 endif()
-set_source_files_properties(main.cpp ${CERT_SOURCES} ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
+set_source_files_properties(main.cpp log_file.cpp ${CERT_SOURCES} ${SC_TRANSPORT_SOURCES} ${COMMON_SOURCES}
     PROPERTIES COMPILE_OPTIONS "${EXAMPLE_WARNINGS}")
 
 # --- Platform sockets --------------------------------------------------------
-# ws2_32  = Winsock (UDP); iphlpapi = GetAdaptersInfo (local broadcast address);
+# ws2_32  = Winsock (common/'s helpers, gethostname()); iphlpapi = GetAdaptersInfo (local broadcast address);
 # dbghelp/winmm = required by libuv (pulled in transitively by libwebsockets'
 # static libuv event-loop backend, even though sc_transport doesn't use it):
 # without them the link fails on SymSetOptions/SymGetOptions/MiniDumpWriteDump
@@ -179,5 +181,5 @@ endif()
 
 # --- Certificates -------------------------------------------------------------
 # No build step: certs/ holds a ready-made demo set (made with
-# tools/make_test_certs.py), and the hub makes its own key and certificate request
-# with --generate-csr. See README.md "Certificates".
+# tools/make_test_certs.py), and the hub makes its own certificate request (and, if
+# it has none, its key) at start-up. See README.md "Certificates".

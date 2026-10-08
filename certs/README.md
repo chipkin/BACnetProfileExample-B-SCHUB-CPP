@@ -31,7 +31,8 @@ ANSI/ASHRAE 135-2024 Annex AA.2), the format the hub reads.
 | `certificates.txt` | Every certificate's serial number, expiry date and SHA-256 fingerprint. |
 
 The hub writes `trusted-issuers.pem` here when it starts (every issuer it
-trusts); it is not part of the set.
+trusts), and `hub-cari-request.zip` (its certificate request, for a CA) if it
+isn't here yet; neither is part of the set.
 
 The hub's and devices' certificates expire on 2029-01-10, the CA on
 2036-10-05. To make a fresh set, run the command above with `--force`.

@@ -17,16 +17,29 @@ product. Keep it that way:
 
 - **At most 4 BACnet/SC devices** (`SC_MAX_HUB_CONNECTIONS` in `main.cpp`),
   fixed - no option or config to raise it.
-- **The product messages appear only in two places**: the start-up banner
-  (`STARTUP_BANNER`) and the connection-limit warning
-  (`CONNECTION_LIMIT_MESSAGE`). Both name the sales contact. Don't add more.
+- **Stops after 24 hours** (`DEMO_RUN_LIMIT_SECONDS`), fixed. Only a test may
+  shorten it, with the environment variable `BSCHUB_TEST_RUN_LIMIT_SECONDS`
+  (never a command-line option; it can't raise the limit).
+- **BACnet/SC only** - no BACnet/IP port, no UDP socket, no `--port`. The
+  device is reached through its hub function. The BACnet/SC Network Port stays
+  instance 2 (the CARI tree's `port-2`).
+- **The product messages appear only at start-up and on limit errors**: the
+  start-up banner (`STARTUP_BANNER_FORMAT`), the connection-limit warning
+  (`CONNECTION_LIMIT_MESSAGE`) and the run-limit stop (`RUN_LIMIT_MESSAGE_FORMAT`).
+  All three end with `PRODUCT_CONTACT` ("... the Chipkin BACnet SC Hub: Contact
+  Chipkin sales@chipkin.com"). Don't add more - not in `--help` either.
+- **The log file is `logs/B-SCHUB.log`** in the working folder (`log_file.cpp`):
+  every console line, emptied at each start-up. No rotation, no option, no
+  other log file.
 - **No production conveniences**: no HTTP server, service mode, installers,
-  config file, log file, hub connector, extra command-line options. They belong
-  to the product.
-- **The hub never signs certificates.** It makes only its own key and request
-  (`--generate-csr`, GENERATE_CSR_FILE) and installs a CA's CARI response
-  (`--import-cari`, clause 19.8.3 writes). `tools/make_test_certs.py` is the
-  test CA, for testing only.
+  config file, hub connector, extra command-line options. They belong to the
+  product. Keep the command line small.
+- **The hub never signs certificates.** It makes only its own request at
+  start-up (`hub-cari-request.zip`, never overwritten; a new key only when it
+  has none - an existing key is never replaced), a new key and CSR on
+  GENERATE_CSR_FILE, and installs a CA's CARI response (`--import-cari`,
+  clause 19.8.3 writes). `tools/make_test_certs.py` is the test CA, for
+  testing only.
 
 ## Layout
 
@@ -46,7 +59,10 @@ This repository is self-contained:
 - `cari.{h,cpp}` - CARI zip files on zlib. The reader takes input from anyone:
   it checks sizes, entry counts, methods and every path BEFORE extracting.
   Don't loosen those checks.
-- `cert_tool.{h,cpp}` - `--generate-csr` and `--import-cari`.
+- `cert_tool.{h,cpp}` - the start-up certificate request (`EnsureHubRequest`)
+  and `--import-cari`.
+- `log_file.{h,cpp}` - `logs/B-SCHUB.log`: stdout and stderr through a pipe,
+  copied to the console and the file.
 - `cert_store.{h,cpp}` - the 4 certificate File objects and the device-B side
   of the clause 19.8.3 procedures: writes are STAGED, and ReinitializeDevice
   ACTIVATE_CHANGES validates and commits them. Never write through to disk,
@@ -55,7 +71,8 @@ This repository is self-contained:
   including the CA's - see `certs/README.md`). Made with
   `tools/make_test_certs.py --hub-uri wss://127.0.0.1:4443/ --portable`.
 - `tools/make_test_certs.py` - test certificates (testing only).
-- `tests/sc/` - the verification scripts and their README.
+- `tests/sc/` - the verification scripts and their README. `sc_client.py` is
+  the BACnet client every BACnet test uses: bacpypes3 on a hub connection.
 - `README.md` - what this example is and how to run it.
 - `TUTORIAL.md` - how the code works and how to extend and review it.
 - `docs/PICS.md` - the Protocol Implementation Conformance Statement. Its
@@ -95,11 +112,13 @@ bundled submodule.
 ## Run
 
 ```bash
-./build/BACnetExampleBSCHUB [--port 47808] [--sc-port 4443] [--sc-cert-dir certs]   # Linux/macOS
-.\build\Release\BACnetExampleBSCHUB.exe [--port 47808] [--sc-port 4443]            # Windows
+./build/BACnetExampleBSCHUB [--sc-port 4443] [--sc-cert-dir certs]   # Linux/macOS
+.\build\Release\BACnetExampleBSCHUB.exe [--sc-port 4443]            # Windows
 ```
 
-It runs from the repository folder with the demo certificates in `./certs`.
+It runs from the repository folder with the demo certificates in `./certs`,
+and writes `logs/B-SCHUB.log` there (and `certs/hub-cari-request.zip` - both
+git-ignored).
 Device instance 389022 (fixed - the series' table entry for B-SCHUB).
 Interactive keys while running: `h` help, `q` quit, up/down nudge Analog
 Input 1, `m` BACnet/SC counters.
@@ -134,21 +153,26 @@ There are no unit tests; verification is behavioural (`tests/sc/README.md` has
 every command):
 
 1. Build, then run the example with the demo certificates on clear ports.
-2. Over BACnet/IP: Who-Is/I-Am from 389022, ReadProperty of every required
-   property, `Protocol_Revision` 30, both Network Ports in `Object_List`.
+2. Over BACnet/SC (there is no BACnet/IP): `rpm_test.py` (Who-Is/I-Am from
+   389022 through the hub, ReadPropertyMultiple, `Protocol_Revision` 30, one
+   Network Port - 2 - in `Object_List`), `segmentation_test.py`.
 3. BACnet/SC: `hub_listener_test.py`, `file_object_test.py`,
    `cert_procedure_test.py`, `connection_limit_test.py`. Don't claim BACnet/SC
    works from the configuration calls succeeding alone.
 4. Certificates: `hub_cert_test.py`, `cert_files_test.py`.
-5. If you changed the objects or their properties, regenerate `docs/PICS.md`
+5. Start-up and limits: `startup_test.py` (`--help`, the log file, no
+   BACnet/IP), `run_limit_test.py`.
+6. If you changed the objects or their properties, regenerate `docs/PICS.md`
    (`python tools/gen-objects-properties.py BACnetProfileExample-B-SCHUB-CPP`
    from the series root), copy the block into README.md, and confirm no row is
    flagged with ⚠.
 
 ## Releasing
 
-Bump `APP_VERSION` in `main.cpp`, the README "Versions" note and the PICS, add
-an entry to [CHANGELOG.md](CHANGELOG.md), then tag `vX.Y.Z`. The GitHub Actions
+Bump `APP_VERSION` in `main.cpp`, `version-string` in `vcpkg.json`, the README
+"Versions" note and sample output, and the PICS (title and Application
+Software Version), add an entry to [CHANGELOG.md](CHANGELOG.md), then tag
+`vX.Y.Z`. The GitHub Actions
 workflow builds, tests, signs (Windows) and publishes the release with
 `SHA256SUMS.txt`; see [docs/code-signing.md](docs/code-signing.md).
 

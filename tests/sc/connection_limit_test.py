@@ -7,7 +7,8 @@ Starts the hub itself (with test certificates from tools/make_test_certs.py)
 and checks:
 
   1. The start-up banner says this is an example, accepts at most 4 BACnet/SC
-     devices, and names sales@chipkin.com - before the "ready" line.
+     devices, stops after 24 hours, and names the Chipkin BACnet SC Hub and
+     sales@chipkin.com - before the "ready" line.
   2. Four devices are accepted; a fifth gets a BVLC-Result NAK, and the hub
      logs the connection-limit warning naming sales@chipkin.com.
   3. The limit is fixed: --sc-max-hub-connections is refused as an unknown
@@ -33,11 +34,11 @@ import hub_listener_test as listener  # noqa: E402 - Connect-Request builder and
 
 RESULTS = []
 SALES = "sales@chipkin.com"
+PRODUCT = "For a production-ready BACnet/SC hub, the Chipkin BACnet SC Hub: Contact Chipkin sales@chipkin.com"
 BANNER = ("This is an example of using the CAS BACnet Stack to build a BACnet/SC hub (B-SCHUB profile). "
-          "It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices. "
-          "For a production-ready BACnet/SC hub, contact Chipkin: sales@chipkin.com")
-LIMIT_MESSAGE = ("This example accepts at most 4 BACnet/SC devices; a device was refused. "
-                 "For a production-ready BACnet/SC hub, contact Chipkin: sales@chipkin.com")
+          "It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices "
+          "and stops after 24 hours. " + PRODUCT)
+LIMIT_MESSAGE = "This example accepts at most 4 BACnet/SC devices; a device was refused. " + PRODUCT
 
 
 def record(name, ok, detail=""):
@@ -98,9 +99,8 @@ def main():
         sc_port = free_port()
         log_path = Path(tmp) / "hub.log"
         with open(log_path, "w") as log:
-            hub = subprocess.Popen([str(exe), "--sc-cert-dir", str(certs), "--sc-port", str(sc_port), "--port",
-                                    str(free_port())], stdout=log, stderr=subprocess.STDOUT,
-                                   stdin=subprocess.DEVNULL)
+            hub = subprocess.Popen([str(exe), "--sc-cert-dir", str(certs), "--sc-port", str(sc_port)], stdout=log,
+                                   stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=tmp)
             try:
                 record("the hub starts listening", wait_port(sc_port))
                 replies = asyncio.run(connect_five(f"wss://127.0.0.1:{sc_port}/", certs))
@@ -116,7 +116,7 @@ def main():
         output = log_path.read_text(errors="replace")
         banner_at = output.find(BANNER)
         ready_at = output.find(") ready. Vendor ID")
-        record("the start-up banner says it is an example, at most 4 devices, and names sales",
+        record("the start-up banner says it is an example, at most 4 devices, 24 hours, and names the product",
                banner_at >= 0 and SALES in BANNER)
         record("the banner comes before the 'ready' line", 0 <= banner_at < ready_at,
                f"banner at {banner_at}, ready at {ready_at}")
@@ -134,7 +134,7 @@ def main():
 
         # 3. The limit is fixed.
         proc = subprocess.run([str(exe), "--sc-max-hub-connections", "5"], capture_output=True, text=True,
-                              timeout=60, stdin=subprocess.DEVNULL)
+                              timeout=60, stdin=subprocess.DEVNULL, cwd=tmp)
         out = proc.stdout + proc.stderr
         record("--sc-max-hub-connections 5 is refused as an unknown option",
                proc.returncode != 0 and "unknown option" in out, out.strip().splitlines()[-1] if out.strip() else "")

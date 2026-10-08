@@ -59,7 +59,7 @@ the example at least once.
 - **Used for:** TLS 1.3 and X.509 certificate handling throughout
   `sc_transport/ScTransport`, certificate validation for
   certificates written over BACnet (`cert_store.cpp`), and the hub's own key
-  and certificate request (`cert_tool.cpp`, `--generate-csr`).
+  and certificate request (`cert_tool.cpp`, made at start-up).
 - **Licence text:** obtained via vcpkg
   (`build/vcpkg_installed/<triplet>/share/openssl/copyright` after a build),
   or read directly from <https://www.openssl.org/source/license.html> /

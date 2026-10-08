@@ -261,6 +261,9 @@ private:
 
     void LogListenFailureOnce(const std::string& reason);
     void DestroyListenerContext();
+    // Gives every peer's queued frames up to kFlushBeforeClose to go out -
+    // called by DestroyListenerContext() before it closes the connections.
+    void FlushQueuedFrames();
     PeerConnection* FindPeerByWsi(lws* wsi);
 
     // Takes one token from `address`'s bucket and from the listener-wide

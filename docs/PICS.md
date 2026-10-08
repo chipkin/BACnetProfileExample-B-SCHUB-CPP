@@ -1,11 +1,12 @@
 # BACnet Protocol Implementation Conformance Statement (PICS)
 
-**BACnet B-SCHUB (BACnet/SC Hub) Example - C++, version 1.6.0**
+**BACnet B-SCHUB (BACnet/SC Hub) Example - C++, version 1.7.0**
 
 Date: 2026-10-07. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 
 > This is the conformance statement of an **example**, for evaluation and
-> testing only. It accepts at most 4 BACnet/SC devices.
+> testing only. It accepts at most 4 BACnet/SC devices and stops after 24
+> hours.
 
 > This device has **not** been submitted for BTL certification.
 
@@ -17,7 +18,7 @@ Date: 2026-10-07. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 | **Vendor Identifier** | 389 |
 | **Product Name** | BACnet B-SCHUB (BACnet/SC Hub) Example - C++ |
 | **Product Model Number** | CAS BACnet Stack Example - B-SCHUB |
-| **Application Software Version** | 1.6.0 |
+| **Application Software Version** | 1.7.0 |
 | **Firmware Revision** | 6.0.23.0 (the CAS BACnet Stack version) |
 | **BACnet Protocol Version** | 1 |
 | **BACnet Protocol Revision** | 30 |
@@ -25,9 +26,9 @@ Date: 2026-10-07. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 **Product Description:** an example BACnet Secure Connect hub built on the
 CAS BACnet Stack. Up to 4 BACnet/SC devices connect to it over TLS 1.3
 WebSockets with mutual certificate authentication, and it relays their
-traffic. A BACnet/IP port stays active for discovery and management. Its
-certificates can be replaced over BACnet with the BACnet/SC certificate
-procedures.
+traffic. It has no BACnet/IP port: the device itself is reachable only over
+BACnet/SC, through its hub function. Its certificates can be replaced over
+BACnet with the BACnet/SC certificate procedures.
 
 ## 2. BACnet standardized device profile (Annex L)
 
@@ -76,8 +77,8 @@ Network Port 2).
 | WriteProperty | no | **yes** (`File_Size` of File objects 1, 3, 4, and Network Port `Command`, only) |
 | ReinitializeDevice | no | **yes** (`ACTIVATE_CHANGES`, `WARMSTART` only) |
 
-An unsolicited I-Am is broadcast at start-up, as well as in response to
-Who-Is.
+I-Am is sent in response to Who-Is. No unsolicited I-Am is sent at start-up:
+the only data link is BACnet/SC, and no device is connected to the hub yet.
 
 Any other confirmed service is rejected, and WriteProperty to any other
 property is refused with write-access-denied.
@@ -86,31 +87,30 @@ property is refused with write-access-denied.
 
 Segmentation is **supported in both directions**
 (`Segmentation_Supported` = `segmented-both`). Segmentation is part of the
-application layer, so it applies to both Network Ports.
+application layer; it applies to the device's one Network Port (BACnet/SC).
 
 | | |
 |---|---|
 | **Able to transmit segmented messages** | Yes. Window size 1. No limit on the number of segments sent. |
 | **Able to receive segmented messages** | Yes. Window size 1. `Max_Segments_Accepted` = 16. |
-| `Max_APDU_Length_Accepted` | 1476 octets (the BACnet/IP maximum; BACnet/SC carries the same 1476). |
+| `Max_APDU_Length_Accepted` | 1476 octets (the stack's default; BACnet/SC carries it). |
 | `APDU_Segment_Timeout` | 5000 ms |
 
 `tests/sc/segmentation_test.py` checks both directions: a ReadPropertyMultiple
 answer segmented for a client that accepts only 128-octet APDUs, and a
 segmented ReadPropertyMultiple request longer than 1476 octets. It runs over
-BACnet/IP; no BACnet/SC client used in testing can force segmentation.
+BACnet/SC, connected to the hub as a device (`tests/sc/sc_client.py`).
 
 ## 6. Standard object types supported
 
 No object is dynamically creatable or deletable. The only writable properties
-are `File_Size` of File objects 1, 3 and 4 and `Command` of both Network Port
-objects (certificate procedures).
+are `File_Size` of File objects 1, 3 and 4 and `Command` of the Network Port
+object (certificate procedures).
 
 | Object type | Instance | Object_Name | Optional properties supported |
 |---|:---:|---|---|
 | Device | 389022 | Chipkin Example B-SCHUB | Description |
 | Analog Input | 1 | Bronze | Description |
-| Network Port | 1 | BACnet IP | Description |
 | Network Port | 2 | BACnet SC | Description |
 | File | 1 | Operational Certificate | Description |
 | File | 2 | Certificate Signing Request | Description |
@@ -122,16 +122,14 @@ device-instance table, and `--deviceID` changes it.
 
 ## 7. Data link layer options
 
-**BACnet/IP (Annex J)**, UDP port 47808 (0xBAC0) by default, configurable with
-`--port`.
-
-**BACnet/SC (Annex AB)** on Network Port 2: hub function on
+**BACnet/SC (Annex AB)** only, on Network Port 2 (the device's only Network
+Port; it keeps instance 2, the port the CARI certificate tree names): hub function on
 `wss://0.0.0.0:4443/` by default (configurable with `--sc-port`). TLS 1.3 with
 mutual authentication, WebSocket subprotocol `hub.bsc.bacnet.org`. No hub
 connector and no direct connections.
 
-BBMD is not supported, Foreign Device registration is not supported, and
-MS/TP, Ethernet (Annex H) and PTP are not supported.
+BACnet/IP (Annex J) is not supported - so neither are BBMD and Foreign Device
+registration - and MS/TP, Ethernet (Annex H) and PTP are not supported.
 
 ## 8. Device address binding
 
@@ -140,7 +138,7 @@ and does not initiate any confirmed request, so it never needs to bind a peer.
 
 ## 9. Networking options
 
-Not a router, not a BBMD, and does not register as a foreign device. Each
+Not a router, not a BBMD, and does not register as a foreign device. The
 Network Port reports `Network_Number` 0 with `Network_Number_Quality`
 `unknown`.
 
@@ -204,24 +202,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Units | BACnetEngineeringUnits | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 1 "BACnet IP" - BACnet/IP; kept active throughout so the hub stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack
-
-| Property | Datatype | Served by | Writable |
-|---|---|---|:---:|
-| Object_Identifier | BACnetObjectIdentifier | stack | no |
-| Object_Name | CharacterString | app | no |
-| Object_Type | BACnetObjectType | stack | no |
-| Description *(optional, enabled)* | CharacterString | app | no |
-| Status_Flags | BACnetStatusFlags | stack | no |
-| Reliability | BACnetReliability | stack default, accepted (Generic Enumerated default: `0`) | no |
-| Out_Of_Service | Boolean | app | no |
-| Network_Type | BACnetNetworkType | app | no |
-| Protocol_Level | BACnetProtocolLevel | app | no |
-| Changes_Pending | Boolean | app | no |
-| Command *(optional, enabled)* | BACnetNetworkPortCommand | stack default (Generic Enumerated default: `0`) | yes |
-| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
-
-### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
+### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); the device's only Network Port - there is no BACnet/IP port, so the device is reachable only over BACnet/SC. Hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|

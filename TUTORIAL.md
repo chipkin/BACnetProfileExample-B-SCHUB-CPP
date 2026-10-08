@@ -48,6 +48,26 @@ the BACnet/SC protocol layer: the WebSocket/TLS connection in
 Connect-Request immediately afterwards that the stack refuses with a NAK. The
 main loop notices the refusal in `ScTransport::GetMetrics()` and logs why.
 
+**The run limit** - the main loop stops the example after
+`DEMO_RUN_LIMIT_SECONDS` (24 hours), logging why (`RUN_LIMIT_MESSAGE_FORMAT`).
+The product is named in only three messages: the start-up banner and the two
+limit messages (connection limit, run limit) - `PRODUCT_CONTACT` in
+`main.cpp`. A test shortens the limit with the environment variable
+`BSCHUB_TEST_RUN_LIMIT_SECONDS` (it can't raise it), not a command-line option.
+
+**The log file** - `log_file.cpp` copies everything written to the console to
+`logs/B-SCHUB.log` (emptied at each start-up). It points the process's stdout
+and stderr at a pipe and copies the pipe to the console and the file from a
+background thread, so it catches every line - `printf`,
+`CASExampleHelper::Log`, libwebsockets and the CAS BACnet Stack itself -
+without touching any of them, or `common/`.
+
+**The certificate request at start-up** - `CertTool::EnsureHubRequest()`
+(`cert_tool.cpp`) makes `<sc-cert-dir>/hub-cari-request.zip` if it doesn't
+exist and never overwrites it. It never replaces a private key: with a key it
+uses the CSR already on disk, and only a hub with no key at all (no
+`key-hub.pem`, no pending key) gets a new key and CSR.
+
 **Read multiple properties in one request** - this example enables
 ReadPropertyMultiple (DS-RPM-B) alongside ReadProperty. No extra callback is
 needed on the application side: the stack resolves each requested property
@@ -68,17 +88,26 @@ does not dial out, so the example registers no `CallbackInitiateWebsocket`.
 `sc_transport/ScTransportRouter` is the stack&lt;-&gt;transport glue: it
 registers the stack's `ReceiveMessageForPort`/`SendMessageForPort` callbacks
 (the stack holds only ONE pointer per callback slot, so this must happen
-*after* `CASExampleHelper::RegisterCommonCallbacks()`) and dispatches between
-BACnet/IP (its own UDP socket) and BACnet/SC (`ScTransport`) by
-`networkPortInstance`, alternating which one it polls first so neither starves
-the other.
+*after* `CASExampleHelper::RegisterCommonCallbacks()`) and moves the BACnet/SC
+Network Port's messages to and from `ScTransport`.
+
+**There is no BACnet/IP port.** BACnet/SC is the device's only data link, so
+the hub's own device - its objects, the certificate procedures, Who-Is - is
+reached through the hub function: a device connects to the hub, finds the
+hub's device with Who-Is, and sends its requests to the VMAC the I-Am came
+from. `tests/sc/sc_client.py` does exactly that (a bacpypes3 application on a
+hub connection). The BACnet/SC Network Port keeps instance 2, because the CARI
+certificate tree names the port (`cert1/device-<n>/port-2/`). One consequence:
+a ReinitializeDevice `ACTIVATE_CHANGES` arrives over the very connection the
+listener restart drops, so `ScTransport` sends what is queued (the
+acknowledgement) before it closes connections (`kFlushBeforeClose`).
 
 #### Certificates: what this example does, and what a real deployment needs
 
 The example reads a **CARI** tree (ANSI/ASHRAE 135-2024 Annex AA.2) from
 `--sc-cert-dir` (`cert_layout.cpp`). It never signs a certificate: it makes its
-own key and request (`--generate-csr`, `cert_tool.cpp`), and installs a CA's
-CARI response (`--import-cari`). The demo set in `certs/` came from
+own request at start-up (and its key, if it has none - `cert_tool.cpp`), and
+installs a CA's CARI response (`--import-cari`). The demo set in `certs/` came from
 `tools/make_test_certs.py`, a throwaway test CA whose keys are public. A real
 deployment needs, at minimum:
 
@@ -303,13 +332,14 @@ not in `accepted`, comes out as a ⚠ row - that is a defect, not a feature.
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| On start-up the app prints a wall of red `Error:` lines but the device works | **Expected — this is not your bug.** Two benign sources, both from the stack's own debug logging: (1) the device receives its **own** broadcast I-Am and logs a decode cascade (*"Services is not supported service=[0]"* … *"Failed to process the incoming NPDU"*) — any BACnet/IP device that listens for broadcasts hears itself; (2) a one-time *"UUID has not been set..."* notice can appear from the stack's own BACnet/SC datalink bring-up before `BACnetStack_SetBACnetSCUuid` runs. On a healthy start-up roughly half the output is these lines. |
+| On start-up the app prints red `Error:` lines but the device works | **Expected — this is not your bug.** A one-time *"UUID has not been set..."* notice can appear from the stack's own BACnet/SC datalink bring-up before `BACnetStack_SetBACnetSCUuid` runs. |
 | No BACnet/SC device ever connects | Check: is the hub listening (the "listening for WebSocket/TLS connections" line; the start-up "cert diagnostics" lines say what is wrong with the certificates if not)? Was the device's certificate signed by a CA in `cert1/issuer/` (a refused certificate is logged with OpenSSL's reason)? Does the device trust the issuer of the hub's certificate? Is it using the `hub.bsc.bacnet.org` subprotocol and TLS 1.3 (YABE on Windows 10 can't)? Does it send the Hello option (YABE doesn't: use `--sc-accept-device-without-hello`)? Are 4 devices already connected? `tests/sc/hub_listener_test.py` isolates most of these; see `sc_transport/README.md`. |
 | CMake error: *"CAS BACnet Stack adapter not found under: ..."* | Submodules not initialized. Run `git submodule update --init --recursive` (or pass `-D CAS_STACK_DIR=...`). |
 | `CASBACnetStackDLL.h: No such file or directory` | Same - submodules not checked out. |
 | Windows: *"No CMAKE_CXX_COMPILER could be found"* | Install Visual Studio with the "Desktop development with C++" workload, then re-run from a fresh terminal. |
 | First build seems stuck for minutes | Normal - it's compiling ~600 stack files. Only the first build is slow. |
-| App prints *"Failed to bind UDP port 47808"* | Another BACnet program is already using 47808. Stop it, or run with `--port <n>`. |
+| A BACnet/IP tool can't find the hub | Expected: the example has no BACnet/IP port. Connect to the hub over BACnet/SC (`wss://<this computer>:4443/`) with a device certificate, and send Who-Is there. |
+| *"could not create the log file"* | Another copy of the example is already running in the same folder (on Windows it holds `logs/B-SCHUB.log`), or the folder isn't writable. The example still runs, logging to the console only; run each copy from its own folder. |
+| The example stopped after 24 hours | Expected: the run limit. Start it again; for a hub that keeps running, see the Chipkin BACnet SC Hub. |
 | DeviceCommunicationControl `disable` returns an error | Expected. The plain `disable` value is deprecated at Protocol_Revision >= 20; use `disable-initiation` instead. |
-| Client sends Who-Is but sees no I-Am | Firewall is blocking UDP 47808, or the client and device are on different subnets (Who-Is is a broadcast). Allow the port; test on the same subnet first. |
-| Replies show an unexpected device instance or vendor | Another BACnet device is already answering on this host/port. On Linux/macOS two processes can share the port and both reply; on Windows the example asks for `SO_EXCLUSIVEADDRUSE` (`common/SimpleUDP.cpp`) so this shows up as a bind failure instead. Stop the other device, or use `--port`. |
+| Client sends Who-Is but sees no I-Am | The client must be connected to the hub over BACnet/SC and send Who-Is through it (there is no BACnet/IP). Check the device's Connect-Request was accepted (the "SC audit" lines). |
