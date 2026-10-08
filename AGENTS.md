@@ -182,3 +182,19 @@ See [LICENSE](LICENSE) (CC0-1.0). The CAS BACnet Stack is a separate,
 commercially licensed product and is not covered by it. libwebsockets, OpenSSL
 and zlib keep their own licences - see
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## Working with GitHub
+
+- **CI minutes are costly: commit locally, don't push** unless the
+  maintainers ask for that push. Run the tests locally instead (every script
+  in `tests/sc/`).
+- **Keep the GitHub issues current**: one issue per real problem, `Fixes #n`
+  in the commit, and a comment on the issue when work lands locally.
+- Agent commits use
+  `git -c user.name="SWS-Chipkin" -c user.email="sws-dev@chipkin.com" commit ...`
+  and keep the `Co-Authored-By: Claude ...` trailer.
+- This repository is **public**: never commit stack source, keys other than
+  the public demo set in `certs/`, or anything from the private product.
+- The series check (`tools/check-series.sh` in the examples workspace)
+  compares `release.yml` with the B-SS template outside the
+  `SC-TRANSPORT:BEGIN/END` blocks; keep B-SCHUB-only CI steps inside them.
