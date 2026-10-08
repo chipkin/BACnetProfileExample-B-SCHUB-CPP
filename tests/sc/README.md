@@ -2,8 +2,22 @@
 
 Verification scripts for the B-SCHUB example: the BACnet/SC transport
 (`sc_transport/`), the hub's certificates, the certificate File objects and
-procedures, and the connection limit. CI runs all of them on Windows and Linux
-(see [CI](#ci) below).
+procedures, the connection and run limits, the log file and `--help`. CI runs
+all of them on Windows and Linux (see [CI](#ci) below).
+
+The example has **no BACnet/IP port**, so every BACnet test (ReadProperty,
+AtomicReadFile, the certificate procedures, ...) talks to it as a BACnet/SC
+device: `sc_client.py` connects to the hub with a device certificate, sends a
+Connect-Request, and runs a bacpypes3 application on that connection
+(Encapsulated-NPDU messages through the hub). It finds the hub's own device
+with Who-Is and sends its requests to the VMAC the I-Am came from:
+
+```python
+from sc_client import ScClient
+async with ScClient(port=4443, cert_dir="certs") as client:
+    hub = await client.find_device(389022)
+    name = await client.app.read_property(hub, ObjectIdentifier("device,389022"), "object-name")
+```
 
 ```
 pip install -r tests/sc/requirements.txt
@@ -62,7 +76,8 @@ Checks:
 Starts the executable itself with test certificates and checks:
 
 - the start-up banner says this is an example that accepts at most 4
-  BACnet/SC devices and names sales@chipkin.com, before the `ready` line;
+  BACnet/SC devices and stops after 24 hours, and names the Chipkin BACnet SC
+  Hub and sales@chipkin.com, before the `ready` line;
 - four devices are accepted; a fifth gets a BVLC-Result NAK, and the hub logs
   the connection-limit warning (naming sales@chipkin.com) once;
 - the limit is fixed: `--sc-max-hub-connections 5` is refused as an unknown
@@ -72,17 +87,54 @@ Starts the executable itself with test certificates and checks:
 python tests/sc/connection_limit_test.py --exe build/BACnetExampleBSCHUB
 ```
 
+## `run_limit_test.py` (stops after 24 hours)
+
+Starts the executable itself, in a temporary folder. Nobody waits 24 hours,
+so it sets the **test-only** environment variable
+`BSCHUB_TEST_RUN_LIMIT_SECONDS` (1 to 86400; it can only shorten the limit):
+
+- with `5`, the hub stops by itself after about 5 seconds, exit code 0; the
+  banner and the stop message give that limit, and the stop message names the
+  Chipkin BACnet SC Hub and "Contact Chipkin sales@chipkin.com"; sales@ appears
+  in nothing else;
+- `0`, `86401` and `abc` are refused at start-up;
+- without the variable the banner says it stops after 24 hours.
+
+```
+python tests/sc/run_limit_test.py --exe build/BACnetExampleBSCHUB
+```
+
+## `startup_test.py` (`--help`, the log file, no BACnet/IP)
+
+Starts the executable itself, in a temporary folder:
+
+- `--help` links to <https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP>,
+  says `hub-cari-request.zip` is created at start-up if it doesn't already
+  exist, names `logs/B-SCHUB.log`, lists neither `--port` nor
+  `--generate-csr`, and doesn't advertise the product;
+- a run writes `logs/B-SCHUB.log` (the folder is made), byte for byte what
+  the console showed - including libwebsockets' lines - and prints its full
+  path at start-up; a restart empties it first;
+- UDP port 47808 stays free while the hub runs, and nothing mentions BACnet/IP.
+
+```
+python tests/sc/startup_test.py --exe build/BACnetExampleBSCHUB
+```
+
 ## `hub_cert_test.py` (the hub's own certificate)
 
 Runs the executable itself in a temporary folder, so no hub needs to be
 running. It plays the CA with the `cryptography` package.
 
-- **`--generate-csr`** writes `key-hub.pem`, `csr-hub.pem` and the `hub/`
-  marker, and no certificate. `hub-cari-request.zip` holds the CSR (the same
-  one as on disk) and the marker, and no private key. The CSR asks for
-  `localhost`, `127.0.0.1` and this computer's IPv4 address in subjectAltName
-  and for serverAuth and clientAuth, and its subject is the device name.
-  Running it again keeps the key.
+- **The start-up request:** the first start-up with an empty folder writes
+  `key-hub.pem`, `csr-hub.pem` and the `hub/` marker, and no certificate, and
+  logs one line naming `hub-cari-request.zip`'s full path. The zip holds the
+  CSR (the same one as on disk) and the marker, and no private key. The CSR
+  asks for `localhost`, `127.0.0.1` and this computer's IPv4 address in
+  subjectAltName and for serverAuth and clientAuth, and its subject is the
+  device name. A second start-up logs that the zip already exists and leaves
+  it (and the key) untouched; with the zip deleted, a start-up makes it again
+  from the same CSR; a key with no CSR is never replaced (no zip, a warning).
 - **`--import-cari` refuses**, writing nothing: a response for another key,
   one with no issuer, one whose issuer didn't sign it, an expired
   certificate, a zip with a `../` path, and the request zip itself.
@@ -90,10 +142,11 @@ running. It plays the CA with the `cryptography` package.
   certificate, `iss-1.pem` is the issuer that signed it (even when it is
   listed second in the zip), `iss-2.pem` the other issuer, and the key is
   unchanged. The hub then serves BACnet/SC with the imported certificate.
-- **Options this example doesn't have** - certificate signing, and the
-  production conveniences of a production hub (HTTP, service, config
-  and log files, the hub connector, more connections, ...) - are refused as
-  unknown.
+- **Options this example doesn't have** - `--port` (no BACnet/IP),
+  `--generate-csr` (the request is made at start-up), certificate signing, and
+  the production conveniences of a production hub (HTTP, service, config
+  and log files, the hub connector, more connections, `--demo-stop-after`, ...)
+  - are refused as unknown.
 
 ```
 python tests/sc/hub_cert_test.py --exe build/BACnetExampleBSCHUB
@@ -101,13 +154,13 @@ python tests/sc/hub_cert_test.py --exe build/BACnetExampleBSCHUB
 
 ## `file_object_test.py` (the certificate File objects)
 
-A BACnet/IP client (`bacpypes3`); the 4 File objects are read with
-ReadProperty/AtomicReadFile on Network Port 1.
+A BACnet/SC client (`sc_client.py`); the 4 File objects are read with
+ReadProperty/AtomicReadFile through the hub.
 
 ```
-./build/BACnetExampleBSCHUB
+./build/BACnetExampleBSCHUB --sc-port 4443
 # in a separate terminal:
-python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47808 --cert-dir certs
+python tests/sc/file_object_test.py --sc-port 4443 --cert-dir certs
 ```
 
 - `AtomicReadFile(File 1, "Operational Certificate")` returns `opr-hub.pem`
@@ -120,14 +173,17 @@ python tests/sc/file_object_test.py --target 127.0.0.1 --target-port 47808 --cer
 ## `rpm_test.py` (ReadPropertyMultiple, DS-RPM-B)
 
 ```
-./build/BACnetExampleBSCHUB --port 47870
+./build/BACnetExampleBSCHUB --sc-port 4443
 # in a separate terminal:
-python tests/sc/rpm_test.py --target 127.0.0.1 --target-port 47870
+python tests/sc/rpm_test.py --sc-port 4443 --cert-dir certs
 ```
 
-One `ReadPropertyMultiple` for the Device's `Object_Name` and
-`Vendor_Identifier` gets one `ReadPropertyMultipleACK` with both properties
-correct (`Object_Name == "Chipkin Example B-SCHUB"`, `Vendor_Identifier == 389`).
+Who-Is through the hub gets an I-Am from 389022. One `ReadPropertyMultiple`
+for the Device's `Object_Name` and `Vendor_Identifier` gets one
+`ReadPropertyMultipleACK` with both properties correct
+(`Object_Name == "Chipkin Example B-SCHUB"`, `Vendor_Identifier == 389`).
+`Object_List` has exactly one Network Port, 2 (BACnet/SC), and
+`Protocol_Revision` is 30.
 
 ## `segmentation_test.py` (segmentation, both directions)
 
@@ -142,15 +198,17 @@ The hub claims `Segmentation_Supported` = `segmented-both`. This checks it:
   reassemble it and answer every reference.
 
 ```
-./build/BACnetExampleBSCHUB --port 47870
+./build/BACnetExampleBSCHUB --sc-port 4443
 # in a separate terminal:
-python tests/sc/segmentation_test.py --target 127.0.0.1 --target-port 47870
+python tests/sc/segmentation_test.py --sc-port 4443 --cert-dir certs
 ```
 
 ## `cert_procedure_test.py` (the clause 19.8.3 certificate procedures)
 
 Drives the hub the way a certificate tool (e.g. the CAS BACnet Explorer's
-BACnet/SC certificate page) does, over BACnet/IP:
+BACnet/SC certificate page) does, over BACnet/SC (`sc_client.py`). An
+acknowledged `ACTIVATE_CHANGES` restarts the hub's listener, which drops this
+connection too (after the acknowledgement is sent), so the test reconnects:
 
 - **Add issuer:** File_Size = 0 + AtomicWriteFile a second CA into File 4,
   Changes_Pending, ReinitializeDevice ACTIVATE_CHANGES. Then a device signed
@@ -170,9 +228,9 @@ BACnet/SC certificate page) does, over BACnet/IP:
 ```
 python tools/make_test_certs.py --cert-dir hub-certs --devices 1
 python tools/make_test_certs.py --cert-dir other-certs --devices 1
-./build/BACnetExampleBSCHUB --port 47870 --sc-port 4443 --sc-cert-dir hub-certs
+./build/BACnetExampleBSCHUB --sc-port 4443 --sc-cert-dir hub-certs
 # in a separate terminal:
-python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 4443 \
+python tests/sc/cert_procedure_test.py --sc-port 4443 \
     --cert-dir hub-certs --second-issuer-dir other-certs
 ```
 
@@ -201,7 +259,8 @@ python tests/sc/cert_files_test.py --cert-dir certs        # the committed demo 
 `.github/workflows/release.yml` runs every script here on Windows and Linux
 for each pull request and tag: `cert_files_test.py` (on a fresh
 `tools/make_test_certs.py` set and on the committed demo set),
-`hub_cert_test.py`, `connection_limit_test.py`, `hub_listener_test.py`
+`hub_cert_test.py`, `connection_limit_test.py`, `run_limit_test.py`,
+`startup_test.py`, `hub_listener_test.py`
 (against the demo set, and again with `--sc-accept-device-without-hello`),
 `file_object_test.py`, `rpm_test.py`, `segmentation_test.py`, and
 `cert_procedure_test.py` (on throwaway sets).

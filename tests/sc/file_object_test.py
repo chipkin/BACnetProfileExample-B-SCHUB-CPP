@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # SPDX-License-Identifier: CC0-1.0
 # Public-domain example code (CC0) - see ../../LICENSE.
-"""The File objects Network Port 2's BACnet/SC certificate properties point at, over plain
-BACnet/IP.
+"""The File objects Network Port 2's BACnet/SC certificate properties point at, over BACnet/SC.
 
-Checks, against a running instance of this example (default 127.0.0.1:47808):
+Connects to the hub as a BACnet/SC device (sc_client.py), finds the hub's own device with
+Who-Is, and checks, against a running instance of this example (default wss://127.0.0.1:4443/):
   1. AtomicReadFile of File 1 (the operational certificate, "Operational Certificate") returns the bytes of
      opr-hub.pem on disk, byte-for-byte.
   2. Network Port 2's Issuer_Certificate_Files property (511) has exactly 2 entries.
@@ -13,7 +13,7 @@ Checks, against a running instance of this example (default 127.0.0.1:47808):
      object at all, so this should trivially hold; this test proves it rather than assuming it).
 
 Usage:
-    python tests/sc/file_object_test.py [--address 127.0.0.1] [--port 47808] [--cert-dir certs]
+    python tests/sc/file_object_test.py [--host 127.0.0.1] [--sc-port 4443] [--cert-dir certs]
 """
 import argparse
 import asyncio
@@ -34,12 +34,11 @@ from bacpypes3.apdu import (
 # The nested "streamAccess" choice classes aren't exported at module level -
 # recover the real type from the Choice class's own default field instance.
 AtomicReadFileRequestStreamAccess = type(AtomicReadFileRequestAccessMethodChoice.streamAccess)
-from bacpypes3.app import Application
-from bacpypes3.argparse import SimpleArgumentParser
 from bacpypes3.basetypes import PropertyIdentifier
 from bacpypes3.constructeddata import ArrayOf
-from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import ObjectIdentifier
+
+from sc_client import ScClient
 
 ISSUER_CERTIFICATE_FILES_PROPERTY = 511  # BACnetPropertyIdentifier.h: issuerCertificateFiles = 511
 
@@ -73,22 +72,21 @@ async def atomic_read_whole_file(app, address, file_instance, max_chunk=1400):
 
 
 async def main():
-    parser = SimpleArgumentParser()
-    # This script's OWN local BACnet/IP endpoint - a different port than the
-    # device under test (47808 by default), so the two can coexist on one host.
-    # "127.0.0.1/32:port", not "host:port" - bacpypes3's form for a loopback client.
-    parser.set_defaults(address="127.0.0.1/32:47809")
-    parser.add_argument("--target", default="127.0.0.1", help="the example's BACnet/IP address (default 127.0.0.1)")
-    parser.add_argument("--target-port", type=int, default=47808, help="the example's BACnet/IP port (default 47808)")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", default="127.0.0.1", help="the example's address (default 127.0.0.1)")
+    parser.add_argument("--sc-port", type=int, default=4443, help="the example's BACnet/SC port (default 4443)")
     parser.add_argument("--cert-dir", default=None, help="path to certs/ (default: this script's ../../certs)")
+    parser.add_argument("--device-instance", type=int, default=389022)
     args = parser.parse_args()
 
     cert_dir = pathlib.Path(args.cert_dir) if args.cert_dir else (pathlib.Path(__file__).resolve().parents[2] / "certs")
     hub_crt_path = cert_paths.hub_certificate(cert_dir)
     hub_key_path = cert_paths.hub_private_key(cert_dir)
 
-    device_address = Address(f"{args.target}:{args.target_port}")
-    app = Application.from_args(args)
+    client = ScClient(args.sc_port, cert_dir, host=args.host)
+    await client.__aenter__()
+    app = client.app
+    device_address = await client.find_device(args.device_instance)
 
     failures = []
     try:
@@ -139,7 +137,7 @@ async def main():
         if checked:
             print(f"PASS: File objects {checked} enumerated and read; none served {hub_key_path.name} ({len(hub_key_bytes)} bytes)")
     finally:
-        app.close()
+        await client.__aexit__(None, None, None)
 
     if failures:
         print("\nFAILURES:")

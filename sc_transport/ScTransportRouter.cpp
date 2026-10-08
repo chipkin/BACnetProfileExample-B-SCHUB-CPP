@@ -3,7 +3,6 @@
 // Implementation of ScTransportRouter. See ScTransportRouter.h for the contract.
 #include "ScTransportRouter.h"
 
-#include "CASExampleHelper.h"
 #include "CASBACnetStackAdapter.h"
 
 #include <cstdio>
@@ -45,42 +44,19 @@ uint16_t TrampolineSendMessage(const uint8_t* message, const uint16_t messageLen
 
 }  // namespace
 
-ScTransportRouter::ScTransportRouter(const uint32_t ipNetworkPortInstance, const uint32_t scNetworkPortInstance,
-                                     ScTransport& transport)
-    : m_ipNetworkPortInstance(ipNetworkPortInstance), m_scNetworkPortInstance(scNetworkPortInstance),
-      m_transport(transport) {}
+ScTransportRouter::ScTransportRouter(const uint32_t scNetworkPortInstance, ScTransport& transport)
+    : m_scNetworkPortInstance(scNetworkPortInstance), m_transport(transport) {}
 
 ScTransportRouter::~ScTransportRouter() {
     if (g_activeRouter == this) {
         g_activeRouter = nullptr;
     }
-    Shutdown();
-}
-
-bool ScTransportRouter::Start(const uint16_t udpPort) {
-    if (!m_udp.Connect(udpPort)) {
-        printf("Error: ScTransportRouter: failed to bind UDP port %u (Network Port %u).\n",
-               (unsigned)udpPort, (unsigned)m_ipNetworkPortInstance);
-        return false;
-    }
-    m_udpPort = udpPort;
-    m_udpBound = true;
-    printf("FYI: Listening for BACnet/IP on UDP port %u (Network Port %u).\n",
-           (unsigned)udpPort, (unsigned)m_ipNetworkPortInstance);
-    return true;
 }
 
 void ScTransportRouter::RegisterCallbacks() {
     g_activeRouter = this;
     BACnetStack_RegisterCallbackReceiveMessageForPort(&TrampolineReceiveMessage);
     BACnetStack_RegisterCallbackSendMessageForPort(&TrampolineSendMessage);
-}
-
-void ScTransportRouter::Shutdown() {
-    if (m_udpBound) {
-        m_udp.Disconnect();
-        m_udpBound = false;
-    }
 }
 
 void ScTransportRouter::DrainStatusEvents() {
@@ -100,100 +76,10 @@ void ScTransportRouter::DrainStatusEvents() {
     }
 }
 
-void ScTransportRouter::SendIAm(const uint32_t deviceInstance) {
-    // Same local-subnet-broadcast computation as CASExampleHelper::SendIAm
-    // (CASExampleHelper.cpp) - reimplemented here because that function only
-    // knows about CASExampleHelper's OWN UDP bindings (this router keeps its
-    // IP socket separately - see the class header comment).
-    uint8_t bcast[4] = { 255, 255, 255, 255 };
-    uint8_t ip[4];
-    uint8_t mask[4];
-    if (CASExampleHelper::GetLocalIPv4(ip, mask)) {
-        bcast[0] = (uint8_t)(ip[0] | ~mask[0]);
-        bcast[1] = (uint8_t)(ip[1] | ~mask[1]);
-        bcast[2] = (uint8_t)(ip[2] | ~mask[2]);
-        bcast[3] = (uint8_t)(ip[3] | ~mask[3]);
-    }
-
-    const uint8_t connectionString[6] = {
-        bcast[0], bcast[1], bcast[2], bcast[3],
-        (uint8_t)((m_udpPort >> 8) & 0xFF), (uint8_t)(m_udpPort & 0xFF)
-    };
-    BACnetStack_SendIAm(deviceInstance, connectionString, 6, m_ipNetworkPortInstance,
-                        true /*broadcast*/, 0 /*local network*/, NULL, 0);
-}
-
 uint16_t ScTransportRouter::HandleReceiveMessage(uint8_t* message, const uint16_t maxMessageLength,
                                                  uint8_t* sourceConnectionString, uint8_t* sourceConnectionStringLength,
                                                  uint8_t* destinationConnectionString, uint8_t* destinationConnectionStringLength,
                                                  const uint8_t maxConnectionStringLength, uint32_t* networkPortInstance) {
-    // Alternate which side is polled first so a busy IP link cannot starve SC
-    // (or vice versa) - see the header comment. Flip on every call, not just every Tick: the
-    // stack calls this repeatedly per Tick until it returns 0, so flipping per
-    // call is the finer-grained version of the same fairness goal.
-    m_pollIpFirst = !m_pollIpFirst;
-
-    if (m_pollIpFirst) {
-        const uint16_t fromIp = ReceiveFromIp(message, maxMessageLength, sourceConnectionString,
-                                              sourceConnectionStringLength, maxConnectionStringLength,
-                                              networkPortInstance);
-        if (fromIp > 0) {
-            return fromIp;
-        }
-        // destinationConnectionString/Length are left untouched for IP - see
-        // common/CASExampleHelper.cpp's identical (void)-cast of them: the
-        // stack does not need them for a unicast/broadcast IP receive.
-        return ReceiveFromSc(message, maxMessageLength, sourceConnectionString, sourceConnectionStringLength,
-                             destinationConnectionString, destinationConnectionStringLength,
-                             maxConnectionStringLength, networkPortInstance);
-    }
-
-    const uint16_t fromSc = ReceiveFromSc(message, maxMessageLength, sourceConnectionString,
-                                          sourceConnectionStringLength, destinationConnectionString,
-                                          destinationConnectionStringLength, maxConnectionStringLength,
-                                          networkPortInstance);
-    if (fromSc > 0) {
-        return fromSc;
-    }
-    return ReceiveFromIp(message, maxMessageLength, sourceConnectionString, sourceConnectionStringLength,
-                         maxConnectionStringLength, networkPortInstance);
-}
-
-uint16_t ScTransportRouter::ReceiveFromIp(uint8_t* message, const uint16_t maxMessageLength,
-                                          uint8_t* sourceConnectionString, uint8_t* sourceConnectionStringLength,
-                                          const uint8_t maxConnectionStringLength, uint32_t* networkPortInstance) {
-    if (!m_udpBound || maxConnectionStringLength < 6) {
-        return 0;
-    }
-    uint8_t fromIp[4] = { 0, 0, 0, 0 };
-    uint16_t fromPort = 0;
-    const uint16_t bytesRead = m_udp.Receive(message, maxMessageLength, fromIp, &fromPort);
-    if (bytesRead == 0) {
-        return 0;
-    }
-
-    // Same RX log line format as common/CASExampleHelper.cpp's
-    // HelperReceiveMessage, for a consistent log across every example in the
-    // series (this router's own IP path, not common's - see the class header).
-    printf("RX %u bytes from %u.%u.%u.%u:%u (Network Port %u)\n", (unsigned)bytesRead,
-           fromIp[0], fromIp[1], fromIp[2], fromIp[3], (unsigned)fromPort,
-           (unsigned)m_ipNetworkPortInstance);
-
-    sourceConnectionString[0] = fromIp[0];
-    sourceConnectionString[1] = fromIp[1];
-    sourceConnectionString[2] = fromIp[2];
-    sourceConnectionString[3] = fromIp[3];
-    sourceConnectionString[4] = (uint8_t)((fromPort >> 8) & 0xFF);
-    sourceConnectionString[5] = (uint8_t)(fromPort & 0xFF);
-    *sourceConnectionStringLength = 6;
-    *networkPortInstance = m_ipNetworkPortInstance;
-    return bytesRead;
-}
-
-uint16_t ScTransportRouter::ReceiveFromSc(uint8_t* message, const uint16_t maxMessageLength,
-                                          uint8_t* sourceConnectionString, uint8_t* sourceConnectionStringLength,
-                                          uint8_t* destinationConnectionString, uint8_t* destinationConnectionStringLength,
-                                          const uint8_t maxConnectionStringLength, uint32_t* networkPortInstance) {
     ScReceivedFrame frame;
     if (!m_transport.PopReceived(&frame)) {
         return 0;
@@ -236,20 +122,7 @@ uint16_t ScTransportRouter::ReceiveFromSc(uint8_t* message, const uint16_t maxMe
 uint16_t ScTransportRouter::HandleSendMessage(const uint8_t* message, const uint16_t messageLength,
                                               const uint8_t* connectionString, const uint8_t connectionStringLength,
                                               const uint32_t networkPortInstance, const bool broadcast) {
-    if (networkPortInstance == m_ipNetworkPortInstance) {
-        if (!m_udpBound || connectionStringLength < 6) {
-            return 0;
-        }
-        const uint8_t ip[4] = { connectionString[0], connectionString[1], connectionString[2], connectionString[3] };
-        const uint16_t port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
-        const uint16_t sent = m_udp.Send(ip, port, message, messageLength);
-        // Same TX log line format as common/CASExampleHelper.cpp's HelperSendMessage.
-        printf("TX %u bytes to %u.%u.%u.%u:%u%s (Network Port %u)\n", (unsigned)sent,
-               ip[0], ip[1], ip[2], ip[3], (unsigned)port, broadcast ? " (broadcast)" : "",
-               (unsigned)networkPortInstance);
-        return sent;
-    }
-
+    (void)broadcast;  // BACnet/SC: the stack has already chosen the connection(s) to send to
     if (networkPortInstance == m_scNetworkPortInstance) {
         const std::string connStr(reinterpret_cast<const char*>(connectionString), connectionStringLength);
         const bool ok = m_transport.Send(connStr, message, messageLength);
@@ -261,7 +134,7 @@ uint16_t ScTransportRouter::HandleSendMessage(const uint8_t* message, const uint
         return ok ? messageLength : 0;
     }
 
-    return 0;  // an instance neither port owns - not this router's to answer
+    return 0;  // not the BACnet/SC port - not this router's to answer
 }
 
 }  // namespace CASSc

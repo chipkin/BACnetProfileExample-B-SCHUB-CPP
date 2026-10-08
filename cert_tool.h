@@ -10,10 +10,13 @@
 // a Certificate Authority does (the Chipkin BACnet SC Certificate Authority,
 // BACnet International's BACCARI, or your own CARI-compatible CA).
 //
-//   --generate-csr          A new private key for this hub and a CARI request
-//                           for it: cert1/device-<n>/port-2/{key,csr}-hub.pem
-//                           in --sc-cert-dir, and <cert-dir>/hub-cari-request.zip
-//                           (the CSR only, never the key) to send to the CA.
+//   at start-up             EnsureHubRequest(): if <cert-dir>/hub-cari-request.zip
+//                           (the hub's CARI request - its CSR only, never the
+//                           key - to send to the CA) doesn't exist, make it.
+//                           An existing one is never overwritten. A hub with no
+//                           key at all also gets a new private key and CSR
+//                           (cert1/device-<n>/port-2/{key,csr}-hub.pem); an
+//                           existing key is never replaced.
 //   --import-cari <zip>     Install the CA's CARI response: the hub's
 //                           certificate (opr-hub.pem) and the issuer
 //                           certificate(s), after checking the certificate is
@@ -37,13 +40,23 @@
 
 namespace CertTool {
 
-// <cert-dir>/hub-cari-request.zip, written by --generate-csr.
+// <cert-dir>/hub-cari-request.zip, written at start-up by EnsureHubRequest().
 static const char* const HUB_REQUEST_ZIP = "hub-cari-request.zip";
 
-// --- command-line modes (print what they do; return true on success) -----------
+// --- the certificate request, at start-up ------------------------------------------
 
-bool GenerateHubRequest(const std::string& certDir, uint32_t hubDeviceInstance, const std::string& subjectCn,
-                        const std::string& hubUri);
+enum class RequestResult { Created, AlreadyExists, Failed };
+
+// Makes <cert-dir>/hub-cari-request.zip if it doesn't exist; never overwrites
+// it. From the CSR on disk when the hub has a key; with no key at all (no
+// key-hub.pem and no pending key), first a new key and CSR. Never replaces a
+// private key: a key without a CSR is a Failed result, not a new key.
+// *message is one line for the log, naming the zip's full path.
+RequestResult EnsureHubRequest(const std::string& certDir, uint32_t hubDeviceInstance, const std::string& subjectCn,
+                               const std::string& hubUri, std::string* message);
+
+// --- command-line mode (prints what it does; returns true on success) -------------
+
 bool ImportCariResponse(const std::string& certDir, uint32_t hubDeviceInstance, const std::string& zipPath);
 
 // --- building blocks -------------------------------------------------------------

@@ -1,6 +1,6 @@
 > [!WARNING]
 > **This is an example** of using the CAS BACnet Stack to build a B-SCHUB (BACnet/SC hub) profile. It is for evaluation and testing only.
-> **Looking for a production-ready BACnet/SC hub?** Contact Chipkin: sales@chipkin.com
+> **Looking for a production-ready BACnet/SC hub?** See the Chipkin BACnet SC Hub: Contact Chipkin sales@chipkin.com
 
 # BACnet B-SCHUB (BACnet/SC Hub) - C++ example
 
@@ -9,12 +9,13 @@ Secure Connect Hub)** device profile in C++ with the
 [CAS BACnet Stack](https://store.chipkin.com/services/stacks/bacnet-stack).
 BACnet/SC devices connect to it over TLS 1.3 WebSockets with mutual
 certificate authentication, and it relays their BACnet traffic - the way a
-BACnet/IP broadcast domain does for UDP devices. A BACnet/IP port keeps it
-discoverable and manageable from ordinary BACnet/IP tools.
+BACnet/IP broadcast domain does for UDP devices. It has **no BACnet/IP port**:
+the hub's own device is reachable only over BACnet/SC, through the hub.
 
 It is reduced to what the B-SCHUB profile requires: the hub function, the
 objects and services the profile needs, and the BACnet/SC certificate
-procedures. It accepts **at most 4 BACnet/SC devices**.
+procedures. It accepts **at most 4 BACnet/SC devices** and **stops after 24
+hours** (restart it to continue).
 
 **[Download a prebuilt binary](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases)**
 (Windows and Linux x64) - or build it yourself if you have a CAS BACnet Stack
@@ -25,7 +26,7 @@ licence, see [Build](#build).
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.6.0**, built and verified
+> **Versions:** this document describes **example v1.7.0**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`6.x` @ `e6de4ffd`), at
 > **Protocol_Revision 30**, with the vendored `common/` helper at **v3.0.0**.
 > Running the example prints all three - if what it prints disagrees with this
@@ -40,9 +41,10 @@ relays unicast and broadcast messages between them. Every device on a
 BACnet/SC network authenticates with a certificate from the site's
 Certificate Authority.
 
-A B-SCHUB device is still a full BACnet device: it has a Device object,
-Network Port objects, and answers ReadProperty, ReadPropertyMultiple,
-Who-Is/Who-Has and DeviceCommunicationControl.
+A B-SCHUB device is still a full BACnet device: it has a Device object, a
+Network Port object, and answers ReadProperty, ReadPropertyMultiple,
+Who-Is/Who-Has and DeviceCommunicationControl - here over BACnet/SC: a device
+connected to the hub sends its requests through the hub function.
 
 ## The device this example creates
 
@@ -50,7 +52,6 @@ Who-Is/Who-Has and DeviceCommunicationControl.
 Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Systems)
     │
     ├── Analog Input 1   "Bronze"                       Present_Value 21.5 (REAL, degrees Celsius)
-    ├── Network Port 1   "BACnet IP"                    the BACnet/IP port (UDP 47808)
     ├── Network Port 2   "BACnet SC"                    the BACnet/SC port: the hub function (wss://...:4443/)
     ├── File 1           "Operational Certificate"      the hub's certificate (writable, clause 19.8.3)
     ├── File 2           "Certificate Signing Request"  the hub's CSR (read-only)
@@ -58,9 +59,10 @@ Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Syst
     └── File 4           "Issuer Certificate Slot 2"    a second CA (writable)
 ```
 
-The Network Ports and File objects are named for what they are rather than
+The Network Port and File objects are named for what they are rather than
 with a colour, so it is obvious which port is the SC one and which File is
-the CSR.
+the CSR. There is no Network Port 1: the BACnet/SC port keeps instance 2, the
+port the CARI certificate tree names (`cert1/device-<n>/port-2/`).
 
 ## What this example supports
 
@@ -80,7 +82,7 @@ the CSR.
 | Service | Notes |
 |---------|-------|
 | ReadProperty, ReadPropertyMultiple | Every property of every object (DS-RP-B, DS-RPM-B). Segmented in both directions. |
-| Who-Is / I-Am, Who-Has / I-Have | Discovery, and an I-Am broadcast at start-up (DM-DDB-B, DM-DOB-B). |
+| Who-Is / I-Am, Who-Has / I-Have | Discovery, through the hub (DM-DDB-B, DM-DOB-B). No I-Am at start-up: no device is connected yet. |
 | DeviceCommunicationControl | DM-DCC-B. |
 | AtomicReadFile | The four certificate File objects (never the private key). |
 | WriteProperty, AtomicWriteFile, ReinitializeDevice | Only for the BACnet/SC certificate procedures (clause 19.8.3): `File_Size` and AtomicWriteFile into Files 1, 3 and 4, applied by ReinitializeDevice `ACTIVATE_CHANGES`. |
@@ -133,24 +135,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Units | BACnetEngineeringUnits | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 1 "BACnet IP" - BACnet/IP; kept active throughout so the hub stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack
-
-| Property | Datatype | Served by | Writable |
-|---|---|---|:---:|
-| Object_Identifier | BACnetObjectIdentifier | stack | no |
-| Object_Name | CharacterString | app | no |
-| Object_Type | BACnetObjectType | stack | no |
-| Description *(optional, enabled)* | CharacterString | app | no |
-| Status_Flags | BACnetStatusFlags | stack | no |
-| Reliability | BACnetReliability | stack default, accepted (Generic Enumerated default: `0`) | no |
-| Out_Of_Service | Boolean | app | no |
-| Network_Type | BACnetNetworkType | app | no |
-| Protocol_Level | BACnetProtocolLevel | app | no |
-| Changes_Pending | Boolean | app | no |
-| Command *(optional, enabled)* | BACnetNetworkPortCommand | stack default (Generic Enumerated default: `0`) | yes |
-| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
-
-### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
+### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); the device's only Network Port - there is no BACnet/IP port, so the device is reachable only over BACnet/SC. Hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -259,8 +244,9 @@ notices and the PICS, plus `SHA256SUMS.txt` to check the downloads
 executable is code-signed by Chipkin.
 
 When it starts, the program says what it is: an example, for evaluation and
-testing only, that accepts at most 4 BACnet/SC devices. For production use,
-use a production hub - contact sales@chipkin.com.
+testing only, that accepts at most 4 BACnet/SC devices and stops after 24
+hours. For production use, use the Chipkin BACnet SC Hub - Contact Chipkin
+sales@chipkin.com.
 
 ## Quick start (the demo certificates)
 
@@ -282,16 +268,17 @@ it finds `./certs`.)
 Expected output:
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.6.0
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.7.0
 CAS BACnet Stack version: 6.0.23.0
 Common helper (common/) version: 3.0.0
 
 ================================================================================
-This is an example of using the CAS BACnet Stack to build a BACnet/SC hub (B-SCHUB profile). It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices. For a production-ready BACnet/SC hub, contact Chipkin: sales@chipkin.com
+This is an example of using the CAS BACnet Stack to build a BACnet/SC hub (B-SCHUB profile). It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices and stops after 24 hours. For a production-ready BACnet/SC hub, the Chipkin BACnet SC Hub: Contact Chipkin sales@chipkin.com
 ================================================================================
 
-FYI: Listening for BACnet/IP on UDP port 47808 (Network Port 1).
-2026-10-08 00:25:03 [INFO] certificates: CARI tree in "./certs", hub port folder cert1/device-389022/port-2
+2026-10-08 05:28:16 [INFO] log file: "/home/me/BACnetExampleBSCHUB/logs/B-SCHUB.log" (a copy of this console output, emptied at each start-up)
+2026-10-08 05:28:16 [INFO] certificates: CARI tree in "./certs", hub port folder cert1/device-389022/port-2
+2026-10-08 05:28:16 [INFO] certificate request: created "/home/me/BACnetExampleBSCHUB/certs/hub-cari-request.zip" - send it to your Certificate Authority, then install its response with --import-cari
 FYI: BACnet/SC hub function is CONFIGURED on Network Port 2 (BACnet SC), accept URI wss://0.0.0.0:4443/, at most 4 devices. Certificates: ./certs.
 FYI: Device 389022 ("Chipkin Example B-SCHUB") ready. Vendor ID 389. Press 'h' for help.
 ...
@@ -301,8 +288,9 @@ BACnet/SC: listening for WebSocket/TLS connections on wss://0.0.0.0:4443/ (subpr
 Then connect a BACnet/SC device to `wss://<this computer>:4443/` with one of
 the demo device certificates, `certs/clients/client-01-cari.zip` ...
 `client-03-cari.zip` (each zip holds the device's certificate, its private key
-and the issuer, with a note on how to install them). Allow UDP 47808 and TCP
-4443 through your firewall.
+and the issuer, with a note on how to install them), and talk to the hub's own
+device (389022) through the hub. Allow TCP 4443 through your firewall - it is
+the only port the example opens.
 
 > **The demo certificates are public, not secret.** Every private key in
 > `certs/`, including the CA's, is published with this example, so anyone can
@@ -310,7 +298,15 @@ and the issuer, with a note on how to install them). Allow UDP 47808 and TCP
 > network - see [certs/README.md](certs/README.md).
 
 A fifth BACnet/SC device is refused (the hub logs why); the first four keep
-working.
+working. After 24 hours the example stops by itself (exit code 0, saying why);
+start it again to continue.
+
+### Files it writes
+
+| File | What it is |
+|------|------------|
+| `logs/B-SCHUB.log` | A copy of everything shown on the console - the example's own lines, the CAS BACnet Stack's and libwebsockets' - in the folder the example runs in (`logs/` is made if missing). **Emptied at each start-up**, never rotated. Its full path is printed at start-up; send it to support with a question. |
+| `<sc-cert-dir>/hub-cari-request.zip` | The hub's certificate request, for a Certificate Authority (see [Certificates](#certificates)). Made at start-up if it doesn't exist; never overwritten. |
 
 ### Interactive commands
 
@@ -327,16 +323,20 @@ working.
 |--------|---------|---------|
 | `--sc-cert-dir <dir>` | `./certs` | The certificate folder (a CARI tree - see [Certificates](#certificates)). |
 | `--deviceID <n>` | `389022` | Device instance; give each device on a BACnet network a unique one. |
-| `--port <n>` | `47808` | BACnet/IP UDP port. |
 | `--sc-port <n>` | `4443` | BACnet/SC (WebSocket/TLS) port devices connect to. |
 | `--sc-accept-device-without-hello [on\|off]` | off | Accept a device whose Connect-Request leaves out the Hello option ANSI/ASHRAE 135 AB.2.2 requires. YABE needs it - see [Testing with YABE](#testing-with-yabe). |
-| `--generate-csr` | - | Make the hub's private key and certificate request, and `hub-cari-request.zip` for a CA, in the certificate folder; then exit. |
 | `--import-cari <zip>` | - | Install a CA's CARI response (the hub's certificate and issuers) in the certificate folder; then exit. |
 | `--help`, `-h` | - | Show usage and exit. |
 | `--version` | - | Print the example, stack and `common/` versions, then exit. |
 
-Any other option is refused. The connection limit (4 BACnet/SC devices) is
-fixed.
+Any other option is refused. The connection limit (4 BACnet/SC devices) and
+the run limit (24 hours) are fixed. `--help` also names the files the example
+writes and links to this repository.
+
+**For automated tests only**, the environment variable
+`BSCHUB_TEST_RUN_LIMIT_SECONDS=<n>` shortens the run limit to `n` seconds (1
+to 86400; it can't raise it), so a test can watch the example stop. The
+start-up says when it is set. It is deliberately not a command-line option.
 
 ## Certificates
 
@@ -357,9 +357,13 @@ issuer-crl.pem                           optional revocation list(s) from the CA
 Chipkin BACnet SC Certificate Authority, BACnet International's BACCARI, or
 your own. To use your own CA:
 
-1. `BACnetExampleBSCHUB --sc-cert-dir site-certs --generate-csr` - makes the
-   hub's private key and certificate request, and `site-certs/hub-cari-request.zip`
-   (the request only, never the key).
+1. `BACnetExampleBSCHUB --sc-cert-dir site-certs` - at start-up the hub makes
+   `site-certs/hub-cari-request.zip` (the request only, never the key) if it
+   doesn't exist, and logs its path. With no key yet, it first makes the hub's
+   private key and certificate request; **an existing key is never replaced**,
+   and an existing zip is never overwritten (delete it to have it made again).
+   The hub can't serve BACnet/SC until step 3, so stop it (`q`) once the zip is
+   there.
 2. Send `hub-cari-request.zip` to the CA. It returns a CARI response zip: the
    hub's certificate and the issuer certificate(s).
 3. `BACnetExampleBSCHUB --sc-cert-dir site-certs --import-cari response.zip` -
@@ -427,10 +431,15 @@ incremental. To use a stack outside the submodule:
 |---|---|
 | `hub_listener_test.py` | TLS 1.3 and subprotocol negotiation, refusal of bad clients, Connect-Request/Accept, the Hello option (and `--sc-accept-device-without-hello`). |
 | `connection_limit_test.py` | The start-up banner; 4 devices accepted, the 5th refused and logged. |
-| `hub_cert_test.py` | `--generate-csr`, `--import-cari` and its refusals; removed options refused. |
-| `file_object_test.py` | The certificate File objects over BACnet/IP; the private key is never served. |
-| `cert_procedure_test.py` | The clause 19.8.3 certificate procedures over BACnet. |
-| `rpm_test.py`, `segmentation_test.py` | ReadPropertyMultiple, and segmentation in both directions. |
+| `startup_test.py` | `--help` (repository link, the request-file note), `logs/B-SCHUB.log` (everything, emptied at start-up), no BACnet/IP. |
+| `run_limit_test.py` | The 24-hour run limit, with the test-only shorter limit. |
+| `hub_cert_test.py` | The start-up certificate request (made once, never overwritten, the key never replaced), `--import-cari` and its refusals; removed options refused. |
+| `file_object_test.py` | The certificate File objects over BACnet/SC; the private key is never served. |
+| `cert_procedure_test.py` | The clause 19.8.3 certificate procedures over BACnet/SC. |
+| `rpm_test.py`, `segmentation_test.py` | ReadPropertyMultiple, `Object_List` (one Network Port), and segmentation in both directions - over BACnet/SC. |
+
+The BACnet tests connect to the hub as a BACnet/SC device (`tests/sc/sc_client.py`,
+a bacpypes3 application on a hub connection) - there is no BACnet/IP to use.
 | `cert_files_test.py` | The device CARI zips `tools/make_test_certs.py` writes. |
 
 ## Licensing

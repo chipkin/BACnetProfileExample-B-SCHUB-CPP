@@ -5,9 +5,10 @@
 // BACnet Profile Example - B-SCHUB (BACnet/SC Hub) - C++
 //
 // THIS IS AN EXAMPLE, for evaluation and testing only: it shows how to build a
-// BACnet/SC hub with the CAS BACnet Stack, and accepts at most 4 BACnet/SC
-// devices (SC_MAX_HUB_CONNECTIONS below). For a production-ready BACnet/SC hub,
-// contact Chipkin (see STARTUP_BANNER below).
+// BACnet/SC hub with the CAS BACnet Stack, accepts at most 4 BACnet/SC devices
+// (SC_MAX_HUB_CONNECTIONS below) and stops after 24 hours
+// (DEMO_RUN_LIMIT_SECONDS). For a production-ready BACnet/SC hub, see the
+// Chipkin BACnet SC Hub product (PRODUCT_CONTACT below).
 //
 // This example implements the BACnet "B-SCHUB" (BACnet Secure Connect Hub)
 // device profile with the CAS BACnet Stack:
@@ -21,8 +22,8 @@
 //                 and relay traffic between them.
 //
 // It keeps the series' base sensor object, Analog Input 1, with its colour
-// name (the convention shared across this example series). The two Network
-// Ports and four File objects below deliberately break from that convention:
+// name (the convention shared across this example series). The Network Port
+// and four File objects below deliberately break from that convention:
 // they are purpose-named instead, because a BACnet/SC hub's operator-facing
 // tooling (and this file's own comments) benefit far more from "which port is
 // the SC one" and "which File is the CSR" being self-evident than from another
@@ -30,10 +31,8 @@
 //
 //     Device 389022                 "Chipkin Example B-SCHUB"
 //     Analog Input  1               "Bronze"                    (REAL, degrees Celsius; read-only)
-//     Network Port 1                "BACnet IP"                 (the BACnet/IP port - required, kept
-//                                                                 active so the device stays
-//                                                                 discoverable over plain BACnet/IP)
-//     Network Port 2                "BACnet SC"                 (the BACnet/SC port - hub function)
+//     Network Port 2                "BACnet SC"                 (the BACnet/SC port - hub function;
+//                                                                 the device's ONLY data link)
 //     File 1                        "Operational Certificate"   (the hub's operational certificate,
 //                                                                 cert1/device-<n>/port-2/opr-hub.pem; writable)
 //     File 2                        "Certificate Signing Request" (the hub's CSR,
@@ -80,11 +79,12 @@
 // itself, so this example registers no RegisterCallbackInitiateWebsocket and
 // configures no hub connector.
 //
-// The BACnet/IP Network Port (1, "BACnet IP") stays active and fully functional
-// throughout, so the example remains discoverable and testable over plain
-// BACnet/IP regardless of BACnet/SC - including while SC peers are connected
-// (ScTransportRouter alternates IP-first/SC-first so neither starves the
-// other).
+// There is NO BACnet/IP port: BACnet/SC is this device's only data link, so it
+// is reachable only over BACnet/SC. Every service - Who-Is/I-Am included -
+// reaches it through the hub function: a device connects to the hub and
+// sends its requests there. The BACnet/SC Network Port keeps instance 2 (and
+// the CARI port folder cert1/device-<n>/port-2/), so existing certificate
+// sets keep working.
 //
 // Network Port 2's SC certificate properties (Operational_Certificate_File,
 // Certificate_Signing_Request_File, Issuer_Certificate_Files) point at 4 File
@@ -108,8 +108,9 @@
 #include "sc_transport/ScTransportRouter.h"
 #include "sc_transport/KeyPassword.h" // the private key's password, asked for once
 #include "cert_layout.h" // where each certificate file is in --sc-cert-dir (CARI tree)
-#include "cert_tool.h"   // --generate-csr / --import-cari - see cert_tool.h
+#include "cert_tool.h"   // the start-up certificate request / --import-cari - see cert_tool.h
 #include "cert_store.h"  // certificate File object contents + clause 19.8.3 staging - see cert_store.h
+#include "log_file.h"    // logs/B-SCHUB.log: a copy of everything written to the console
 
 // main.cpp needs the real libwebsockets.h for LwsLogCallback/lws_set_log_level
 // below (sc_transport/ScTransport.h forward-declares the lws types instead).
@@ -135,7 +136,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.6.0";
+static const char* APP_VERSION = "1.7.0";
 
 // The device instance - this example's entry in the series' device-instance
 // table, so several examples can run on one subnet at once.
@@ -182,13 +183,11 @@ static std::string g_firmwareRevision;
 // The series' base sensor object (instance 1) and its colour name.
 static const uint32_t ANALOG_INPUT_INSTANCE = 1;       // "Bronze"
 
-// Network Port 1 - the BACnet/IP port every BACnet device must have. Kept
-// active so this example stays discoverable over plain BACnet/IP regardless of
-// the BACnet/SC transport outcome (see the file header note above).
-static const uint32_t NETWORK_PORT_INSTANCE = 1;       // "BACnet IP"
-static const uint32_t MAX_APDU_LENGTH = 1476;          // BACnet/IP APDU length
-
 // Network Port 2 - the BACnet/SC port, hosting the hub function (NM-SCH-B).
+// The device's only Network Port: there is no BACnet/IP port (see the file
+// header). It keeps instance 2 - the CARI certificate tree names the port
+// (cert1/device-<n>/port-2/), so certificate sets made for this example keep
+// working.
 // BACnetNetworkType::secureConnect = 11 (source/BACnetNetworkType.h). This is a
 // LOCAL constant, not added to common/CASBACnetStackExampleConstants.h - that
 // file is the series-wide vendored common/ helper (owned by B-SS-CPP; changing
@@ -207,16 +206,33 @@ static const uint32_t SC_NETWORK_PORT_INSTANCE = 2;     // "BACnet SC"
 // CONNECTION_LIMIT_MESSAGE (at most once a minute).
 static const uint16_t SC_MAX_HUB_CONNECTIONS = 4;
 
-// What this example says about itself, and where to get a production hub.
-// Printed at start-up and when the connection limit refuses a device - and
-// nowhere else.
-static const char* const STARTUP_BANNER =
+// THE RUN LIMIT. This example stops by itself after 24 hours (exit code 0,
+// with RUN_LIMIT_MESSAGE_FORMAT); restarting it starts a new 24 hours.
+// Checked in main()'s loop against g_startTime.
+//
+// FOR AUTOMATED TESTS ONLY, the environment variable
+// BSCHUB_TEST_RUN_LIMIT_SECONDS=<n> shortens it to n seconds (1 to
+// DEMO_RUN_LIMIT_SECONDS) - it can never raise it. An environment variable,
+// not a command-line option, so the example's command line stays small.
+static const uint64_t DEMO_RUN_LIMIT_SECONDS = 24ULL * 60 * 60;
+static const char* const TEST_RUN_LIMIT_VARIABLE = "BSCHUB_TEST_RUN_LIMIT_SECONDS";
+static uint64_t g_runLimitSeconds = DEMO_RUN_LIMIT_SECONDS;
+
+// What this example says about itself, and where to get a production hub (the
+// Chipkin BACnet SC Hub product). The product is named ONLY in these three
+// messages: the start-up banner, and the two limit messages - the connection
+// limit refusing a device, and the run limit stopping the example. Each "%s"
+// is the run limit ("24 hours").
+#define PRODUCT_CONTACT \
+    "For a production-ready BACnet/SC hub, the Chipkin BACnet SC Hub: Contact Chipkin sales@chipkin.com"
+static const char* const STARTUP_BANNER_FORMAT =
     "This is an example of using the CAS BACnet Stack to build a BACnet/SC hub (B-SCHUB profile). "
-    "It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices. "
-    "For a production-ready BACnet/SC hub, contact Chipkin: sales@chipkin.com";
+    "It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices "
+    "and stops after %s. " PRODUCT_CONTACT;
 static const char* const CONNECTION_LIMIT_MESSAGE =
-    "This example accepts at most 4 BACnet/SC devices; a device was refused. "
-    "For a production-ready BACnet/SC hub, contact Chipkin: sales@chipkin.com";
+    "This example accepts at most 4 BACnet/SC devices; a device was refused. " PRODUCT_CONTACT;
+static const char* const RUN_LIMIT_MESSAGE_FORMAT =
+    "This example stops after %s; the time is up - stopping. Restart it to continue evaluating. " PRODUCT_CONTACT;
 
 // How fast the hub-function listener accepts NEW inbound connection ATTEMPTS,
 // enforced by sc_transport/ScTransport before the TLS handshake starts (see
@@ -291,6 +307,9 @@ static const uint32_t NETWORK_PORT_COMMAND_GENERATE_CSR_FILE = 9;
 
 // Set by the ReinitializeDevice callback once new certificates are committed;
 // the main loop then reloads the TLS contexts (see ScTransport::ReloadCredentials).
+// That drops every connection - including the one the ReinitializeDevice came
+// in on, as there is no BACnet/IP - but only after the frames already queued
+// (the acknowledgement) have gone out (ScTransport's kFlushBeforeClose).
 static bool g_scReloadCredentialsRequested = false;
 
 // The certificate revocation list file (issuer-crl.pem) - optional, see
@@ -332,16 +351,16 @@ static std::string g_scHubAcceptUri;
 static std::chrono::steady_clock::time_point g_startTime;
 
 // The real WebSocket/TLS transport (sc_transport/ScTransport.h) and the glue
-// that dispatches the stack's ReceiveMessageForPort/SendMessageForPort
-// callbacks between it and Network Port 1's UDP socket (sc_transport/
-// ScTransportRouter.h). Both are globals (not locals in main()) because the
-// BACnet/SC transport callbacks below - plain C function pointers the stack
-// calls with no user-data argument - need to reach g_scTransport.
+// that moves the stack's ReceiveMessageForPort/SendMessageForPort messages to
+// and from it (sc_transport/ScTransportRouter.h). Both are globals (not
+// locals in main()) because the BACnet/SC transport callbacks below - plain C
+// function pointers the stack calls with no user-data argument - need to reach
+// g_scTransport.
 static CASSc::ScTransport g_scTransport;
 // Declared after g_scTransport (intra-TU global init order follows
 // declaration order, and this takes a reference to it - see
 // ScTransportRouter.h's constructor).
-static CASSc::ScTransportRouter g_scRouter(NETWORK_PORT_INSTANCE, SC_NETWORK_PORT_INSTANCE, g_scTransport);
+static CASSc::ScTransportRouter g_scRouter(SC_NETWORK_PORT_INSTANCE, g_scTransport);
 
 // BACnet/SC device UUID (135-2024 AB.1.5.3) - REQUIRED, set exactly once. A
 // real device should generate/persist a stable random UUID (RFC 4122 v4) per
@@ -352,15 +371,6 @@ static const uint8_t SC_DEVICE_UUID[16] = {
     0x53, 0x43, 0x48, 0x55, 0x42, 0x2d, 0x44, 0x45,   // "SCHUB-DE"
     0x4d, 0x4f, 0x2d, 0x33, 0x38, 0x39, 0x30, 0x32    // "MO-38902" (-> ...389022)
 };
-
-// BACnet/IP addressing the Network Port reports. The IP address and subnet mask
-// are filled in at start-up from the host's primary interface; the gateway is
-// left unset (0.0.0.0) for this example. The stack also uses IP_Address +
-// BACnet_IP_UDP_Port to build the port's MAC_Address automatically.
-static uint8_t g_ipAddress[4] = { 0, 0, 0, 0 };
-static uint8_t g_ipSubnetMask[4] = { 0, 0, 0, 0 };
-static uint8_t g_ipDefaultGateway[4] = { 0, 0, 0, 0 };
-static uint16_t g_bacnetIpUdpPort = 47808;
 
 // Analog Input 1's live present value (degrees Celsius). Starts at 21.5 and is
 // nudged by the up/down arrow keys. A real sensor would update this from
@@ -492,12 +502,6 @@ bool GetPropertyEnumerated(const uint32_t deviceInstance, const uint16_t objectT
         *value = ENGINEERING_UNITS_DEGREES_CELSIUS;
         return true;
     }
-    if (objectType == OBJECT_TYPE_NETWORK_PORT &&
-        propertyIdentifier == PROPERTY_IDENTIFIER_BACNET_IP_MODE &&
-        objectInstance == NETWORK_PORT_INSTANCE) {
-        *value = BACNET_IP_MODE_NORMAL; // not foreign-device, not BBMD
-        return true;
-    }
     return false;
 }
 
@@ -518,20 +522,6 @@ bool GetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t ob
         *value = VENDOR_IDENTIFIER;
         return true;
     }
-    if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_APDU_LENGTH) {
-            *value = MAX_APDU_LENGTH;
-            return true;
-        }
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_REFERENCE_PORT) {
-            *value = NETWORK_PORT_REFERENCE_PORT_NONE;
-            return true;
-        }
-        if (propertyIdentifier == PROPERTY_IDENTIFIER_BACNET_IP_UDP_PORT) {
-            *value = g_bacnetIpUdpPort;
-            return true;
-        }
-    }
     // File_Size (required; no stack default) - the real on-disk byte count of the
     // file this File object serves, so it always agrees with what
     // RegisterCallbackReadFile (section 2d) actually returns. If the cert file is
@@ -551,7 +541,7 @@ bool GetPropertyUnsignedInteger(const uint32_t deviceInstance, const uint16_t ob
 }
 
 // BOOLEAN - Out_Of_Service is a required property of every input object and of
-// each Network Port. This is a read-only sensor, so nothing is ever out of
+// the Network Port. This is a read-only sensor, so nothing is ever out of
 // service: always false.
 bool GetPropertyBool(const uint32_t deviceInstance, const uint16_t objectType,
                      const uint32_t objectInstance, const uint32_t propertyIdentifier,
@@ -651,52 +641,18 @@ bool GetPropertyTime(const uint32_t deviceInstance, const uint16_t objectType,
     return true;
 }
 
-// OCTET STRING - the BACnet/IP Network Port's addressing. The stack cannot know
-// the host's IP, so the application must supply IP_Address and IP_Subnet_Mask
-// (and IP_Default_Gateway). Each is four octets. The stack also reads IP_Address
-// (with BACnet_IP_UDP_Port) to build the port's six-octet MAC_Address.
-bool GetPropertyOctetString(const uint32_t deviceInstance, const uint16_t objectType,
-                            const uint32_t objectInstance, const uint32_t propertyIdentifier,
-                            uint8_t* value, uint32_t* valueElementCount,
-                            const uint32_t maxElementCount, const bool useArrayIndex,
-                            const uint32_t propertyArrayIndex, uint32_t* errorCode) {
-    (void)useArrayIndex;
-    (void)propertyArrayIndex;
-    (void)errorCode;
-    if (deviceInstance != g_deviceInstance ||
-        objectType != OBJECT_TYPE_NETWORK_PORT ||
-        objectInstance != NETWORK_PORT_INSTANCE ||
-        maxElementCount < 4) {
-        return false;
-    }
-    const uint8_t* source = NULL;
-    switch (propertyIdentifier) {
-        case PROPERTY_IDENTIFIER_IP_ADDRESS:         source = g_ipAddress; break;
-        case PROPERTY_IDENTIFIER_IP_SUBNET_MASK:     source = g_ipSubnetMask; break;
-        case PROPERTY_IDENTIFIER_IP_DEFAULT_GATEWAY: source = g_ipDefaultGateway; break;
-        default: return false;
-    }
-    memcpy(value, source, 4);
-    *valueElementCount = 4;
-    return true;
-}
-
-
 // Description (optional property) of each object: what it is for in this
 // example. Kept under ~250 characters - a longer string than the stack's
 // character-string buffer aborts the read instead of truncating (found on
 // B-BC). Returns "" for an object this device doesn't have.
 static std::string ObjectDescription(const uint16_t objectType, const uint32_t objectInstance) {
     if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
-        return "CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile) with a BACnet/IP port. "
+        return "CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile), reachable over BACnet/SC only. "
                "For evaluation and testing only.";
     }
     if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
         return "Example sensor value in degrees C, showing a hub serving its own data. "
                "Change it with the up/down arrow keys in the console.";
-    }
-    if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
-        return "BACnet/IP port (UDP), so this hub can be found and managed over plain BACnet/IP.";
     }
     if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
         return "BACnet/SC port: the hub function (the wss:// listener that devices connect to). "
@@ -771,7 +727,7 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
     }
 
     // Object_Name - a colour name for the Device/sensor objects (this series'
-    // convention); a purpose name for the Network Ports and File objects
+    // convention); a purpose name for the Network Port and File objects
     // (deliberately not a colour - see the file header note).
     if (propertyIdentifier == PROPERTY_IDENTIFIER_OBJECT_NAME) {
         if (objectType == OBJECT_TYPE_DEVICE && objectInstance == g_deviceInstance) {
@@ -779,9 +735,6 @@ bool GetPropertyCharString(const uint32_t deviceInstance, const uint16_t objectT
         }
         if (objectType == OBJECT_TYPE_ANALOG_INPUT && objectInstance == ANALOG_INPUT_INSTANCE) {
             return ReturnCharacterString("Bronze", value, valueElementCount, maxElementCount, encodingType);
-        }
-        if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == NETWORK_PORT_INSTANCE) {
-            return ReturnCharacterString("BACnet IP", value, valueElementCount, maxElementCount, encodingType);
         }
         if (objectType == OBJECT_TYPE_NETWORK_PORT && objectInstance == SC_NETWORK_PORT_INSTANCE) {
             return ReturnCharacterString("BACnet SC", value, valueElementCount, maxElementCount, encodingType);
@@ -1097,10 +1050,9 @@ bool ReinitializeDevice(const uint32_t deviceInstance, const uint32_t reinitiali
 // Network Port Command (cl. 12.56.16). The stack executes the
 // Command property itself and asks the application about the two commands
 // that touch data only the application holds:
-//   DISCARD_CHANGES (1) - any port, before the stack reverts its own pending
-//     changes. On the BACnet/SC port the staged certificate writes are thrown
-//     away (cl. 12.56.100/.101 "revert the file data"); the BACnet/IP port has
-//     nothing of ours staged. Answering true lets the stack finish the revert.
+//   DISCARD_CHANGES (1) - before the stack reverts its own pending changes.
+//     The staged certificate writes are thrown away (cl. 12.56.100/.101
+//     "revert the file data"). Answering true lets the stack finish the revert.
 //   GENERATE_CSR_FILE (9) - the BACnet/SC port, only when Changes_Pending is
 //     FALSE. A new key pair and Certificate Signing Request (File 2); the new
 //     key stays pending until a certificate for it is activated - see
@@ -1278,10 +1230,10 @@ static void WarnIfWindows10() {
 
 // The command line. Every option the example knows is listed here, so a typo
 // or a value left off is an error instead of being silently ignored.
-static const char* const kValueOptions[] = {"--port", "--sc-port", "--sc-cert-dir", "--import-cari", "--deviceID"};
+static const char* const kValueOptions[] = {"--sc-port", "--sc-cert-dir", "--import-cari", "--deviceID"};
 // Switches that also take an optional on/off (see ParseSwitchArg).
 static const char* const kOnOffSwitches[] = {"--sc-accept-device-without-hello"};
-static const char* const kSwitches[] = {"--generate-csr", "--help", "-h", "/?", "--version"};
+static const char* const kSwitches[] = {"--help", "-h", "/?", "--version"};
 
 static bool IsOneOf(const char* arg, const char* const* list, const size_t count) {
     for (size_t i = 0; i < count; ++i) {
@@ -1383,7 +1335,7 @@ static bool ParseSwitchArg(const int argc, char** argv, const char* flagName) {
 }
 
 // The hub URI a device on the LAN dials: this machine's IPv4 address and
-// --sc-port. --generate-csr asks for its host in the hub's certificate request.
+// --sc-port. The start-up certificate request asks for its host.
 static std::string LanHubUri() {
     uint8_t ip[4] = {127, 0, 0, 1};
     uint8_t mask[4] = {0, 0, 0, 0};
@@ -1395,10 +1347,42 @@ static std::string LanHubUri() {
     return uri;
 }
 
+// The run limit for messages: "24 hours", or "5s"-style for a shortened test
+// limit (BSCHUB_TEST_RUN_LIMIT_SECONDS) that isn't whole hours.
+static std::string FormatRunLimit(const uint64_t seconds) {
+    if (seconds % 3600 == 0) {
+        const uint64_t hours = seconds / 3600;
+        return std::to_string(hours) + (hours == 1 ? " hour" : " hours");
+    }
+    return FormatUptime(seconds);
+}
+
+// An environment variable's value, or "" if it isn't set.
+static std::string EnvironmentVariable(const char* name) {
+#if defined(_WIN32)
+    char* value = NULL;
+    size_t length = 0;
+    std::string result;
+    if (_dupenv_s(&value, &length, name) == 0 && value != NULL) {
+        result = value;
+    }
+    free(value);
+    return result;
+#else
+    const char* value = getenv(name);
+    return value != NULL ? std::string(value) : std::string();
+#endif
+}
+
+// Where this example lives - in --help.
+static const char* const REPOSITORY_URL = "https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP";
+
 static void PrintUsage() {
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
     printf("\n");
-    printf("%s\n", STARTUP_BANNER);
+    printf("An example of a BACnet/SC hub (B-SCHUB profile) on the CAS BACnet Stack, for evaluation\n");
+    printf("and testing only. Reachable over BACnet/SC only (there is no BACnet/IP port).\n");
+    printf("Source, documentation and updates: %s\n", REPOSITORY_URL);
     printf("\n");
     printf("Usage: BACnetExampleBSCHUB [options]\n");
     printf("\n");
@@ -1409,24 +1393,28 @@ static void PrintUsage() {
     printf("                      csr-hub.pem and cert1/issuer/iss-1.pem. Default \"./certs\"\n");
     printf("                      (the demo certificates that come with this example).\n");
     printf("  --deviceID <n>      Device instance, unique on the BACnet network. Default 389022.\n");
-    printf("  --port <n>          BACnet/IP UDP port. Default 47808.\n");
     printf("  --sc-port <n>       BACnet/SC (WebSocket/TLS) port devices connect to. Default 4443.\n");
     printf("  --sc-accept-device-without-hello [on|off]\n");
     printf("                      Compatibility, off by default: accept a device whose\n");
     printf("                      Connect-Request omits the Hello option the standard requires\n");
     printf("                      (YABE does). Deviates from ANSI/ASHRAE 135 AB.2.2.\n");
-    printf("  --generate-csr      Make this hub's private key and certificate request in the\n");
-    printf("                      certificate folder (cert1/device-%u/port-2/{key,csr}-hub.pem)\n",
-           g_deviceInstance);
-    printf("                      and hub-cari-request.zip (the request only) to send to a\n");
-    printf("                      Certificate Authority, then exit. With a key already there,\n");
-    printf("                      writes the zip from its request.\n");
     printf("  --import-cari <zip> Install a CA's CARI response (the hub's certificate and the\n");
     printf("                      issuer certificates) in the certificate folder, then exit.\n");
     printf("                      The certificate must be for this hub's request and signed by\n");
     printf("                      an issuer in the zip.\n");
     printf("  --help, -h          Show this help and exit.\n");
     printf("  --version           Show version information and exit.\n");
+    printf("\n");
+    printf("Files:\n");
+    printf("  <sc-cert-dir>/%s (default ./certs/%s)\n", CertTool::HUB_REQUEST_ZIP, CertTool::HUB_REQUEST_ZIP);
+    printf("                      This hub's certificate request, to send to a Certificate\n");
+    printf("                      Authority. Created at start-up if it doesn't already exist\n");
+    printf("                      (never overwritten; delete it to make a new one). A hub with no\n");
+    printf("                      private key also gets a new key and request (key-hub.pem,\n");
+    printf("                      csr-hub.pem); an existing key is never replaced.\n");
+    printf("  %s/%s    A copy of everything shown on the console, in the folder the\n",
+           LogFile::LOG_FOLDER, LogFile::LOG_FILE_NAME);
+    printf("                      example runs in. Emptied at each start-up; send it to support.\n");
     printf("\n");
     printf("Commands (while it runs):\n");
     printf("  h     - show this help (version + commands)\n");
@@ -1471,8 +1459,17 @@ int main(int argc, char** argv) {
         CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
         return 0;
     }
-    uint16_t port = 47808;
-    if (!ParsePortOption(argc, argv, "--port", &port) || !ParsePortOption(argc, argv, "--sc-port", &g_scPort)) {
+
+    // --- The log file -----------------------------------------------------------
+    // From here on, everything written to the console - this example's lines,
+    // the CAS BACnet Stack's and libwebsockets' - is copied to
+    // logs/B-SCHUB.log in the folder the example runs in, emptied at each
+    // start-up, so it can be sent to support. See log_file.h. If the file
+    // can't be made, the example still runs and logs to the console only.
+    std::string logFilePath;
+    const bool logging = LogFile::Start(LogFile::LOG_FOLDER, LogFile::LOG_FILE_NAME, &logFilePath);
+
+    if (!ParsePortOption(argc, argv, "--sc-port", &g_scPort)) {
         return 1;
     }
     g_deviceInstance = CASExampleHelper::ParseDeviceIdArg(argc, argv, g_deviceInstance);
@@ -1481,39 +1478,56 @@ int main(int argc, char** argv) {
     }
     if (g_scCertDir.empty()) {
         // Every path is built as g_scCertDir + "/<file>", so "" would mean the
-        // filesystem root (and --generate-csr would write there).
+        // filesystem root (and the start-up certificate request would go there).
         fprintf(stderr, "Error: the certificate folder (--sc-cert-dir) is empty. Use \".\" for the current "
                         "folder.\n");
         return 1;
     }
     g_scAcceptDeviceWithoutHello = ParseSwitchArg(argc, argv, "--sc-accept-device-without-hello");
 
-    // --- The hub's own certificate (--generate-csr / --import-cari) ----------
+    // The run limit, shortened for an automated test (see DEMO_RUN_LIMIT_SECONDS).
+    {
+        const std::string testLimit = EnvironmentVariable(TEST_RUN_LIMIT_VARIABLE);
+        if (!testLimit.empty()) {
+            char* end = NULL;
+            const unsigned long long seconds = strtoull(testLimit.c_str(), &end, 10);
+            if (end == testLimit.c_str() || *end != '\0' || seconds == 0 || seconds > DEMO_RUN_LIMIT_SECONDS) {
+                fprintf(stderr, "Error: %s (for testing only) expects 1 to %llu seconds, got \"%s\".\n",
+                        TEST_RUN_LIMIT_VARIABLE, (unsigned long long)DEMO_RUN_LIMIT_SECONDS, testLimit.c_str());
+                return 1;
+            }
+            g_runLimitSeconds = seconds;
+        }
+    }
+
+    // --- The hub's own certificate (--import-cari) ------------------------------
     // A one-shot tool mode: do it, then exit without starting the device. The
     // hub never signs certificates; a Certificate Authority does. See cert_tool.h.
     {
-        const bool generateCsr = HasFlag(argc, argv, "--generate-csr");
         const std::string importFile = ParseStringArg(argc, argv, "--import-cari");
-        if (generateCsr && !importFile.empty()) {
-            fprintf(stderr, "Error: use only one of --generate-csr and --import-cari.\n");
-            return 1;
-        }
         if (!importFile.empty()) {
             return CertTool::ImportCariResponse(g_scCertDir, g_deviceInstance, importFile) ? 0 : 1;
-        }
-        if (generateCsr) {
-            return CertTool::GenerateHubRequest(g_scCertDir, g_deviceInstance, DEVICE_NAME, LanHubUri()) ? 0 : 1;
         }
     }
 
     CASExampleHelper::PrintVersion(APP_NAME, APP_VERSION);
     // What this example is, and where to get a production hub - before "ready".
     printf("\n"
+           "================================================================================\n");
+    printf(STARTUP_BANNER_FORMAT, FormatRunLimit(g_runLimitSeconds).c_str());
+    printf("\n"
            "================================================================================\n"
-           "%s\n"
-           "================================================================================\n"
-           "\n",
-           STARTUP_BANNER);
+           "\n");
+    if (logging) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                              "log file: \"%s\" (a copy of this console output, emptied at each start-up)",
+                              logFilePath.c_str());
+    }
+    if (g_runLimitSeconds != DEMO_RUN_LIMIT_SECONDS) {
+        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
+                              "%s is set (for testing only): the run limit is %s.",
+                              TEST_RUN_LIMIT_VARIABLE, FormatRunLimit(g_runLimitSeconds).c_str());
+    }
     WarnIfWindows10();
     g_startTime = std::chrono::steady_clock::now();
 
@@ -1522,20 +1536,8 @@ int main(int argc, char** argv) {
     // g_scTransport's, further down) - see LwsLogCallback's own comment above.
     lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE, &LwsLogCallback);
 
-    // --- Bind the BACnet/IP socket --------------------------------------------
-    // Owned by g_scRouter (sc_transport/ScTransportRouter.h), NOT
-    // CASExampleHelper::SetupUDP() - the router's own ReceiveMessageForPort/
-    // SendMessageForPort callbacks (registered below) must be able to reach
-    // this socket directly to dispatch between it and BACnet/SC.
-    if (!g_scRouter.Start(port)) {
-        return 1;
-    }
-    g_bacnetIpUdpPort = port;
-    if (!CASExampleHelper::GetLocalIPv4(g_ipAddress, g_ipSubnetMask)) {
-        CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning,
-                              "could not read a local IPv4 address; Network Port IP_Address "
-                              "will report 0.0.0.0.");
-    }
+    // No BACnet/IP: no UDP socket is opened. BACnet/SC (below) is this
+    // device's only data link - see the file header.
 
     // --- Configure the BACnet/SC transport -------------------------------------
     // Build the accept URI from --sc-port now that the command line has been
@@ -1580,6 +1582,17 @@ int main(int argc, char** argv) {
             CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, "certificates: %s", reconcileMessage.c_str());
         }
 
+        // The hub's CARI certificate request (hub-cari-request.zip), for a
+        // Certificate Authority: made now if it doesn't exist, never
+        // overwritten. A hub with no key at all also gets a new key and CSR;
+        // an existing private key is never replaced. See cert_tool.h.
+        std::string requestMessage;
+        const CertTool::RequestResult request =
+            CertTool::EnsureHubRequest(g_scCertDir, g_deviceInstance, DEVICE_NAME, LanHubUri(), &requestMessage);
+        CASExampleHelper::Log(request == CertTool::RequestResult::Failed ? CASExampleHelper::LogLevel::Warning
+                                                                         : CASExampleHelper::LogLevel::Info,
+                              "certificate request: %s", requestMessage.c_str());
+
         // TLS trusts every issuer in both slots. With no certificates yet, fall
         // back to slot 1's path so the "certificates missing" message names it.
         CASSc::ScTlsFiles tls;
@@ -1610,7 +1623,6 @@ int main(int argc, char** argv) {
     BACnetStack_RegisterCallbackGetPropertyUnsignedInteger(GetPropertyUnsignedInteger);
     BACnetStack_RegisterCallbackGetPropertyCharacterString(GetPropertyCharString);
     BACnetStack_RegisterCallbackGetPropertyBool(GetPropertyBool);
-    BACnetStack_RegisterCallbackGetPropertyOctetString(GetPropertyOctetString);
     BACnetStack_RegisterCallbackGetPropertyDate(GetPropertyDate);
     BACnetStack_RegisterCallbackGetPropertyTime(GetPropertyTime);
     // DeviceCommunicationControl (DM-DCC-B).
@@ -1691,22 +1703,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --- Add Network Port 1 (BACnet/IP, "BACnet IP") -------------------------
-    // Network_Number 0 with quality "unknown": this device isn't a router, so
-    // it has no network number to report.
-    if (!BACnetStack_AddNetworkPortObject(
-            g_deviceInstance, NETWORK_PORT_INSTANCE,
-            NETWORK_PORT_NETWORK_TYPE_IPV4,
-            NETWORK_PORT_PROTOCOL_LEVEL_BACNET_APPLICATION,
-            0, NETWORK_NUMBER_QUALITY_UNKNOWN,
-            NETWORK_PORT_REFERENCE_PORT_NONE)) {
-        printf("Error: Failed to add Network Port 1 (BACnet IP).\n");
-        return 1;
-    }
-
     // --- Add Network Port 2 (BACnet/SC, "BACnet SC") + configure the hub ---
-    // function (NM-SCH-B). A real SC node can connect to g_scHubAcceptUri once
-    // certificates exist under --sc-cert-dir.
+    // function (NM-SCH-B). The device's only Network Port - there is no
+    // BACnet/IP port. A real SC node can connect to g_scHubAcceptUri once
+    // certificates exist under --sc-cert-dir. Network_Number 0 with quality
+    // "unknown": this device isn't a router, so it has no network number to
+    // report.
     if (!BACnetStack_AddNetworkPortObject(
             g_deviceInstance, SC_NETWORK_PORT_INSTANCE,
             NETWORK_PORT_NETWORK_TYPE_SECURE_CONNECT,
@@ -1811,7 +1813,6 @@ int main(int argc, char** argv) {
         struct { uint16_t type; uint32_t instance; } objects[] = {
             {OBJECT_TYPE_DEVICE, g_deviceInstance},
             {OBJECT_TYPE_ANALOG_INPUT, ANALOG_INPUT_INSTANCE},
-            {OBJECT_TYPE_NETWORK_PORT, NETWORK_PORT_INSTANCE},
             {OBJECT_TYPE_NETWORK_PORT, SC_NETWORK_PORT_INSTANCE},
             {OBJECT_TYPE_FILE, FILE_OPERATIONAL_CERT_INSTANCE},
             {OBJECT_TYPE_FILE, FILE_CSR_INSTANCE},
@@ -1828,13 +1829,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Who-Is is answered automatically. The spec also requires a device to
-    // announce itself on start-up, so broadcast an unsolicited I-Am now (to the
-    // local subnet broadcast - the BACnet/IP Network Port's own network).
-    // g_scRouter.SendIAm(), not CASExampleHelper::SendIAm() - the router owns
-    // Network Port 1's UDP socket directly (see the "Bind the BACnet/IP
-    // socket" comment above).
-    g_scRouter.SendIAm(g_deviceInstance);
+    // Who-Is is answered automatically, over BACnet/SC. No I-Am is sent at
+    // start-up: there is no BACnet/IP network to broadcast it on, and no
+    // BACnet/SC device is connected yet - devices find the hub with Who-Is
+    // once they connect.
 
     printf("FYI: BACnet/SC hub function is CONFIGURED on Network Port %u (BACnet SC), accept URI %s, "
            "at most %u devices. Certificates: %s.\n",
@@ -1850,6 +1848,13 @@ int main(int argc, char** argv) {
     std::chrono::steady_clock::time_point lastLimitMessage;
     bool limitMessageShown = false;
     while (running) {
+        // THE RUN LIMIT (see DEMO_RUN_LIMIT_SECONDS): stop after 24 hours.
+        if (std::chrono::steady_clock::now() - g_startTime >= std::chrono::seconds(g_runLimitSeconds)) {
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Warning, RUN_LIMIT_MESSAGE_FORMAT,
+                                  FormatRunLimit(g_runLimitSeconds).c_str());
+            break;
+        }
+
         BACnetStack_Tick();
 
         // Pump the WebSocket/TLS transport non-blockingly, then report any
@@ -1938,7 +1943,7 @@ int main(int argc, char** argv) {
     }
 
     CASExampleHelper::RestoreInput();
-    g_scRouter.Shutdown();
     printf("FYI: stopped.\n");
+    LogFile::Stop();
     return 0;
 }

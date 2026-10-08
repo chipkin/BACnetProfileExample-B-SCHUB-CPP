@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <thread>
 
 #if defined(_WIN32)
 // lws_sockfd_type is SOCKET on Windows (libwebsockets.h) - sockaddr_storage/
@@ -55,6 +56,14 @@ const std::size_t kMaxIngressBytes = 1600;
 // kListenRetryInterval between failed attempts so a port that stays busy is
 // not re-bound 30 times a second.
 const std::chrono::seconds kListenRetryInterval(5);
+
+// Before the listener goes away (the stack stops listening, or certificates are
+// reloaded), frames already queued for a peer get up to this long to go out.
+// The stack stops the hub function's listener on ReinitializeDevice
+// ACTIVATE_CHANGES in the same Tick in which it sends the acknowledgement -
+// and the device that asked is connected over BACnet/SC itself - so without
+// this, that acknowledgement would never arrive.
+const std::chrono::milliseconds kFlushBeforeClose(500);
 
 // At most one "SC rate limit: refusing ..." line per this interval.
 const std::chrono::seconds kRateLimitLogInterval(10);
@@ -778,8 +787,8 @@ bool ScTransport::StartListening(const std::string& uri) {
         if (!missing.empty()) {
             LogListenFailureOnce(
                 "cannot start listening on " + uri + ": certificate file(s) missing/unreadable: " +
-                missing + ". Get the hub certificate: --generate-csr, have your Certificate Authority sign "
-                "hub-cari-request.zip, then --import-cari <response.zip>");
+                missing + ". Get the hub certificate: have your Certificate Authority sign "
+                "hub-cari-request.zip (made at start-up), then --import-cari <response.zip>");
             return false;
         }
     }
@@ -902,6 +911,7 @@ void ScTransport::DestroyListenerContext() {
     // DrainStatusEvents() call reporting Disconnected for an already-forgotten
     // peer is the documented "not logged as an error" no-op case (see
     // ScTransportRouter.h).
+    FlushQueuedFrames();
     lws_context_destroy(m_listenerContext);
     m_listenerContext = nullptr;
     m_listenUri.clear();
@@ -909,6 +919,25 @@ void ScTransport::DestroyListenerContext() {
     m_connStringToWsi.clear();
     delete[] m_protocols;
     m_protocols = nullptr;
+}
+
+void ScTransport::FlushQueuedFrames() {
+    const auto deadline = std::chrono::steady_clock::now() + kFlushBeforeClose;
+    for (;;) {
+        bool pending = false;
+        for (auto& kv : m_peers) {
+            if (!kv.second.txQueue.empty()) {
+                pending = true;
+                lws_callback_on_writable(kv.second.wsi);
+            }
+        }
+        if (!pending || std::chrono::steady_clock::now() >= deadline) {
+            return;
+        }
+        lws_cancel_service(m_listenerContext);
+        lws_service(m_listenerContext, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void ScTransport::StopListening(const std::string& uri) {

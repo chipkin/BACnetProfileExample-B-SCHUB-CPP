@@ -4,7 +4,9 @@
 """BACnet/SC certificate procedures over BACnet (ANSI/ASHRAE 135-2024 clause 19.8.3) - device-B side.
 
 Drives the hub the way a certificate tool (e.g. the CAS BACnet Explorer's certificate page) does,
-over plain BACnet/IP:
+over BACnet/SC - connected to the hub as a device (sc_client.py), since the hub has no BACnet/IP
+port. Each acknowledged ACTIVATE_CHANGES reloads the hub's TLS, which drops every connection,
+this one included: the test then reconnects (the hub sends the acknowledgement first).
 
   Negative checks:
     - WriteProperty File_Size on the Certificate Signing Request (File 2) -> write-access-denied
@@ -40,13 +42,14 @@ over plain BACnet/IP:
 Setup (two certificate sets from the example itself):
     python tools/make_test_certs.py --cert-dir hub-certs --devices 1
     python tools/make_test_certs.py --cert-dir other-certs --devices 1
-    BACnetExampleBSCHUB --port 47870 --sc-port 4443 --sc-cert-dir hub-certs
-    python tests/sc/cert_procedure_test.py --target-port 47870 --sc-port 4443 \\
+    BACnetExampleBSCHUB --sc-port 4443 --sc-cert-dir hub-certs
+    python tests/sc/cert_procedure_test.py --sc-port 4443 \\
         --cert-dir hub-certs --second-issuer-dir other-certs
 
 WARNING: this rewrites the hub's certificate files in --cert-dir. Use a throwaway set.
 Exit code 0 = every check passed.
 """
+import argparse
 import asyncio
 import datetime
 import socket
@@ -67,14 +70,13 @@ from bacpypes3.apdu import (
     ReinitializeDeviceRequest,
     SimpleAckPDU,
 )
-from bacpypes3.app import Application
-from bacpypes3.argparse import SimpleArgumentParser
-from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import Enumerated, ObjectIdentifier, Unsigned
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+from sc_client import ScClient
 
 # The nested choice classes aren't exported at module level - recover them from the Choice
 # classes' own default field instances (same trick as file_object_test.py).
@@ -106,7 +108,46 @@ def error_text(response):
     return str(response)
 
 
-async def read_file(app, address, instance):
+class HubConnection:
+    """This test's BACnet/SC connection to the hub: app (bacpypes3) and address
+    (the hub device's VMAC). reconnect() after the hub reloads its TLS."""
+
+    def __init__(self, host, sc_port, cert_dir, device_instance):
+        self.host, self.sc_port, self.cert_dir = host, sc_port, cert_dir
+        self.device_instance = device_instance
+        self.client = None
+        self.app = None
+        self.address = None
+
+    async def connect(self):
+        self.client = ScClient(self.sc_port, self.cert_dir, host=self.host)
+        await self.client.__aenter__()
+        self.app = self.client.app
+        self.address = await self.client.find_device(self.device_instance)
+
+    async def close(self):
+        if self.client is not None:
+            await self.client.__aexit__(None, None, None)
+            self.client = None
+
+    async def reconnect(self, seconds=20):
+        """The hub restarts its listener after acknowledging (and sending the ack); connect again."""
+        await asyncio.sleep(2)
+        await self.close()
+        deadline = asyncio.get_running_loop().time() + seconds
+        while True:
+            try:
+                await self.connect()
+                return
+            except Exception:
+                await self.close()
+                if asyncio.get_running_loop().time() > deadline:
+                    raise
+                await asyncio.sleep(0.5)
+
+
+async def read_file(hub, instance):
+    app, address = hub.app, hub.address
     data, position = bytearray(), 0
     while True:
         request = AtomicReadFileRequest(
@@ -124,8 +165,9 @@ async def read_file(app, address, instance):
             return bytes(data)
 
 
-async def write_file(app, address, instance, data, chunk=400):
+async def write_file(hub, instance, data, chunk=400):
     """File_Size = 0, then AtomicWriteFile the data in chunks - the clause 19.8.3 sequence."""
+    app, address = hub.app, hub.address
     await app.write_property(address, ObjectIdentifier(("file", instance)), PROPERTY_FILE_SIZE, Unsigned(0))
     for start in range(0, len(data), chunk):
         request = AtomicWriteFileRequest(
@@ -138,19 +180,24 @@ async def write_file(app, address, instance, data, chunk=400):
             raise RuntimeError(f"AtomicWriteFile File {instance} @ {start}: {response}")
 
 
-async def reinitialize(app, address, state):
-    """The response PDU, or the error bacpypes3 raised for an Error/Reject/Abort."""
-    request = ReinitializeDeviceRequest(reinitializedStateOfDevice=state, destination=address)
+async def reinitialize(hub, state, reconnect=True):
+    """The response PDU, or the error bacpypes3 raised for an Error/Reject/Abort. An
+    acknowledged ACTIVATE_CHANGES reloads the hub's TLS and drops this connection, so
+    reconnect (unless the new certificates no longer trust this test's device)."""
+    request = ReinitializeDeviceRequest(reinitializedStateOfDevice=state, destination=hub.address)
     try:
-        return await app.request(request)
+        response = await hub.app.request(request)
     except BaseException as e:  # bacpypes3's Error is not an Exception subclass
         return e
+    if isinstance(response, SimpleAckPDU) and reconnect:
+        await hub.reconnect()
+    return response
 
 
-async def write_command(app, address, command):
+async def write_command(hub, command):
     """WriteProperty Network Port 2 Command. None on success, else the error text."""
     try:
-        await app.write_property(address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)),
+        await hub.app.write_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)),
                                  PROPERTY_COMMAND, Enumerated(command))
         return None
     except BaseException as e:  # bacpypes3's Error is not an Exception subclass
@@ -226,25 +273,24 @@ def make_intermediate(ca_dir):
 
 
 async def main():
-    parser = SimpleArgumentParser()
-    parser.set_defaults(address="127.0.0.1/32:47811")
-    parser.add_argument("--target", default="127.0.0.1")
-    parser.add_argument("--target-port", type=int, default=47808)
-    parser.add_argument("--sc-port", type=int, default=4443)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--target", default="127.0.0.1", help="the example's address")
+    parser.add_argument("--sc-port", type=int, default=4443, help="the example's BACnet/SC port")
+    parser.add_argument("--device-instance", type=int, default=389022)
     parser.add_argument("--cert-dir", required=True, help="the hub's --sc-cert-dir (REWRITTEN by this test)")
     parser.add_argument("--second-issuer-dir", required=True, help="another tools/make_test_certs.py set: the new CA")
     args = parser.parse_args()
     hub_dir, other_dir = Path(args.cert_dir), Path(args.second_issuer_dir)
-    device = Address(f"{args.target}:{args.target_port}")
-    app = Application.from_args(args)
+    hub = HubConnection(args.target, args.sc_port, hub_dir, args.device_instance)
+    await hub.connect()
     try:
         # --- negative checks ------------------------------------------------------------------
         try:
-            await app.write_property(device, ObjectIdentifier(("file", FILE_CSR)), PROPERTY_FILE_SIZE, Unsigned(0))
+            await hub.app.write_property(hub.address, ObjectIdentifier(("file", FILE_CSR)), PROPERTY_FILE_SIZE, Unsigned(0))
             record("CSR File_Size write refused", False, "write was accepted")
         except BaseException as e:  # bacpypes3's Error is not an Exception subclass
             record("CSR File_Size write refused", "write-access-denied" in str(e), str(e))
-        response = await reinitialize(app, device, "coldstart")
+        response = await reinitialize(hub, "coldstart")
         record("ReinitializeDevice COLDSTART refused",
                "optional-functionality-not-supported" in error_text(response), error_text(response))
 
@@ -253,7 +299,7 @@ async def main():
         # (cas-bacnet-stack#2866: SetBACnetSCCertificateFileObjects leaves its own start-up
         # binding pending), so this is reported as a known issue rather than failed. When it
         # reads FALSE, #2866 is fixed: make this a normal record().
-        pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
+        pending = await hub.app.read_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
         if pending:
             print("KNOWN ISSUE: Network Port 2 Changes_Pending is TRUE before any write "
                   "(#41, cas-bacnet-stack#2866) - not counted as a failure")
@@ -263,28 +309,28 @@ async def main():
         # --- removing the only issuer ----------------------------------------------------------
         # Slot 2 has no file of its own yet, so it serves slot 1. Emptying slot 1 must not pass
         # validation on the strength of slot 1's OLD contents seen through slot 2.
-        await app.write_property(device, ObjectIdentifier(("file", FILE_ISSUER_1)), PROPERTY_FILE_SIZE, Unsigned(0))
-        record("File 4 follows the staged (empty) slot 1", await read_file(app, device, FILE_ISSUER_2) == b"")
-        response = await reinitialize(app, device, "activateChanges")
+        await hub.app.write_property(hub.address, ObjectIdentifier(("file", FILE_ISSUER_1)), PROPERTY_FILE_SIZE, Unsigned(0))
+        record("File 4 follows the staged (empty) slot 1", await read_file(hub, FILE_ISSUER_2) == b"")
+        response = await reinitialize(hub, "activateChanges")
         record("ACTIVATE_CHANGES with no issuer left refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
         record("issuer slot 1 file unchanged", cert_paths.issuer_certificate(hub_dir).stat().st_size > 0)
         # Put the original back (staged; activated with the next step). Not DISCARD_CHANGES here:
         # on a fresh hub it also reverts the stack's own start-up pending state (#41,
         # cas-bacnet-stack#2866), after which Changes_Pending no longer follows certificate writes.
-        await write_file(app, device, FILE_ISSUER_1, cert_paths.issuer_certificate(hub_dir).read_bytes())
+        await write_file(hub, FILE_ISSUER_1, cert_paths.issuer_certificate(hub_dir).read_bytes())
 
         # --- add issuer -----------------------------------------------------------------------
         new_ca = cert_paths.issuer_certificate(other_dir).read_bytes()
-        await write_file(app, device, FILE_ISSUER_2, new_ca)
-        record("File 4 reads back the staged issuer", await read_file(app, device, FILE_ISSUER_2) == new_ca)
-        pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
+        await write_file(hub, FILE_ISSUER_2, new_ca)
+        record("File 4 reads back the staged issuer", await read_file(hub, FILE_ISSUER_2) == new_ca)
+        pending = await hub.app.read_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
         record("Network Port 2 Changes_Pending after the write", bool(pending), str(pending))
         record("issuer slot 2 file not written before activation",
                not cert_paths.issuer_certificate_2(hub_dir).exists())
-        response = await reinitialize(app, device, "activateChanges")
+        response = await reinitialize(hub, "activateChanges")
         record("ACTIVATE_CHANGES (add issuer) acknowledged", isinstance(response, SimpleAckPDU), str(response))
-        pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
+        pending = await hub.app.read_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
         record("Network Port 2 Changes_Pending FALSE after ACTIVATE_CHANGES", not pending, str(pending))
         record("issuer slot 2 file written on activation",
                cert_paths.issuer_certificate_2(hub_dir).read_bytes() == new_ca)
@@ -302,12 +348,12 @@ async def main():
 
         # --- rejected activation --------------------------------------------------------------
         before = cert_paths.hub_certificate(hub_dir).read_bytes()
-        await write_file(app, device, FILE_OPERATIONAL, before + cert_paths.hub_private_key(hub_dir).read_bytes())
-        response = await reinitialize(app, device, "activateChanges")
+        await write_file(hub, FILE_OPERATIONAL, before + cert_paths.hub_private_key(hub_dir).read_bytes())
+        response = await reinitialize(hub, "activateChanges")
         record("ACTIVATE_CHANGES with a private key in the certificate file refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
-        await write_file(app, device, FILE_OPERATIONAL, b"this is not a certificate\n")
-        response = await reinitialize(app, device, "activateChanges")
+        await write_file(hub, FILE_OPERATIONAL, b"this is not a certificate\n")
+        response = await reinitialize(hub, "activateChanges")
         record("ACTIVATE_CHANGES with a garbage operational certificate refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
         record("operational certificate on disk unchanged after the refusal",
@@ -315,21 +361,21 @@ async def main():
 
         # --- DISCARD_CHANGES (Network Port 2 Command) -----------------------------------------
         # The garbage from the refused activation is still staged.
-        error = await write_command(app, device, COMMAND_GENERATE_CSR_FILE)
+        error = await write_command(hub, COMMAND_GENERATE_CSR_FILE)
         record("GENERATE_CSR_FILE with changes pending refused (invalid-value-in-this-state)",
                error is not None and "invalid-value-in-this-state" in error, str(error))
-        error = await write_command(app, device, COMMAND_DISCARD_CHANGES)
+        error = await write_command(hub, COMMAND_DISCARD_CHANGES)
         record("Command DISCARD_CHANGES acknowledged", error is None, str(error))
-        pending = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
+        pending = await hub.app.read_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
         record("Network Port 2 Changes_Pending FALSE after DISCARD_CHANGES", not pending, str(pending))
         record("File 1 reads the certificate on disk again after DISCARD_CHANGES",
-               await read_file(app, device, FILE_OPERATIONAL) == before)
+               await read_file(hub, FILE_OPERATIONAL) == before)
 
         # --- replace operational certificate (existing CSR) -----------------------------------
-        csr = await read_file(app, device, FILE_CSR)
+        csr = await read_file(hub, FILE_CSR)
         new_cert_pem, new_cert_der = sign_csr(csr, other_dir)
-        await write_file(app, device, FILE_OPERATIONAL, new_cert_pem)
-        response = await reinitialize(app, device, "activateChanges")
+        await write_file(hub, FILE_OPERATIONAL, new_cert_pem)
+        response = await reinitialize(hub, "activateChanges")
         record("ACTIVATE_CHANGES (replace operational) acknowledged", isinstance(response, SimpleAckPDU), str(response))
         await asyncio.sleep(2)
         try:
@@ -341,11 +387,11 @@ async def main():
 
         # --- replace operational certificate with a new key pair (GENERATE_CSR_FILE) ----------
         key_before = cert_paths.hub_private_key(hub_dir).read_bytes()
-        error = await write_command(app, device, COMMAND_GENERATE_CSR_FILE)
+        error = await write_command(hub, COMMAND_GENERATE_CSR_FILE)
         record("Command GENERATE_CSR_FILE acknowledged", error is None, str(error))
-        command = await app.read_property(device, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_COMMAND)
+        command = await hub.app.read_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_COMMAND)
         record("Network Port 2 Command reads IDLE after GENERATE_CSR_FILE", int(command) == COMMAND_IDLE, str(command))
-        new_csr = await read_file(app, device, FILE_CSR)
+        new_csr = await read_file(hub, FILE_CSR)
         new_csr_obj = x509.load_pem_x509_csr(new_csr)
         record("File 2 holds a NEW, valid certificate signing request",
                new_csr != csr and new_csr_obj.is_signature_valid)
@@ -360,8 +406,8 @@ async def main():
         except Exception as e:
             record("hub still presents its current certificate before activation", False, str(e))
         newest_pem, newest_der = sign_csr(new_csr, other_dir)
-        await write_file(app, device, FILE_OPERATIONAL, newest_pem)
-        response = await reinitialize(app, device, "activateChanges")
+        await write_file(hub, FILE_OPERATIONAL, newest_pem)
+        response = await reinitialize(hub, "activateChanges")
         record("ACTIVATE_CHANGES (certificate for the new key) acknowledged",
                isinstance(response, SimpleAckPDU), str(response))
         record("the pending key replaced the hub key",
@@ -379,20 +425,22 @@ async def main():
         for label, kwargs in (("a CA certificate", {"is_ca": True}),
                               ("EKU clientAuth only", {"eku": [ExtendedKeyUsageOID.CLIENT_AUTH]})):
             bad_pem, _ = sign_csr(new_csr, other_dir, **kwargs)
-            await write_file(app, device, FILE_OPERATIONAL, bad_pem)
-            response = await reinitialize(app, device, "activateChanges")
+            await write_file(hub, FILE_OPERATIONAL, bad_pem)
+            response = await reinitialize(hub, "activateChanges")
             record(f"ACTIVATE_CHANGES with {label} as the operational certificate refused",
                    "invalid-configuration-data" in error_text(response), error_text(response))
         inter_cert, inter_key, inter_pem = make_intermediate(other_dir)
         leaf_pem, _ = sign_csr(new_csr, None, ca=(inter_cert, inter_key))
-        await write_file(app, device, FILE_ISSUER_1, cert_paths.issuer_certificate(other_dir).read_bytes())
-        await write_file(app, device, FILE_ISSUER_2, inter_pem)
-        await write_file(app, device, FILE_OPERATIONAL, leaf_pem)
-        response = await reinitialize(app, device, "activateChanges")
+        await write_file(hub, FILE_ISSUER_1, cert_paths.issuer_certificate(other_dir).read_bytes())
+        await write_file(hub, FILE_ISSUER_2, inter_pem)
+        await write_file(hub, FILE_OPERATIONAL, leaf_pem)
+        # No reconnect: this test's device certificate is from the original issuer, which
+        # the new set no longer trusts.
+        response = await reinitialize(hub, "activateChanges", reconnect=False)
         record("ACTIVATE_CHANGES with root (slot 1) + intermediate (slot 2) + leaf acknowledged",
                isinstance(response, SimpleAckPDU), error_text(response))
     finally:
-        app.close()
+        await hub.close()
 
     failed = [name for name, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed.")

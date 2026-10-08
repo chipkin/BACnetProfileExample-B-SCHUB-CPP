@@ -24,7 +24,7 @@
 //     key-hub-pending.pem                  GENERATE_CSR_FILE's new key, until activated
 //     trusted-issuers.pem                  written by the hub at start-up (every issuer it trusts)
 //     issuer-crl.pem                       optional certificate revocation list(s) from the CA
-//     hub-cari-request.zip                 written by --generate-csr, for the CA
+//     hub-cari-request.zip                 written at start-up if missing, for the CA
 //     ca/, clients/                        the demo set only (tools/make_test_certs.py): its
 //                                          CA and one CARI response zip per device - the hub
 //                                          never reads them

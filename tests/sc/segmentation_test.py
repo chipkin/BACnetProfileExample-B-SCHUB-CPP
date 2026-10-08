@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: CC0-1.0
 # Public-domain example code (CC0) - see ../../LICENSE.
-"""Segmentation (ANSI/ASHRAE 135 clause 5.2) against the example over BACnet/IP.
+"""Segmentation (ANSI/ASHRAE 135 clause 5.2) against the example over BACnet/SC.
 
 The hub claims Segmentation_Supported = segmented-both (the CAS BACnet Stack's
-default since 6.x, cas-bacnet-stack#2992). This checks the claim is real:
+default since 6.x, cas-bacnet-stack#2992). This checks the claim is real,
+connected to the hub as a BACnet/SC device (sc_client.py):
 
   1. Device Segmentation_Supported is segmented-both, Max_Segments_Accepted > 1
      and APDU_Segment_Timeout > 0 (cl. 12.11.19-21: both are required when
@@ -16,9 +17,9 @@ default since 6.x, cas-bacnet-stack#2992). This checks the claim is real:
      1476-octet Max_APDU_Length_Accepted, which this client must segment and
      the hub must reassemble and answer.
 
-Usage (the example running on BACnet/IP port 47870):
+Usage (the example running with --sc-port 4443 on the demo certificates):
 
-    python tests/sc/segmentation_test.py --target 127.0.0.1 --target-port 47870
+    python tests/sc/segmentation_test.py --sc-port 4443 --cert-dir certs
 
 Exit code 0 = every check passed.
 """
@@ -33,10 +34,9 @@ from bacpypes3.apdu import (
     ReadAccessSpecification,
     ReadPropertyMultipleRequest,
 )
-from bacpypes3.app import Application
-from bacpypes3.argparse import SimpleArgumentParser
-from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import ObjectIdentifier
+
+from sc_client import ScClient
 
 # Count the segments this client receives (one append_segment call each) and
 # the distinct request segments it sends (get_segment, by sequence number).
@@ -63,19 +63,12 @@ appservice.ClientSSM.get_segment = _counting_get_segment
 
 
 async def main():
-    parser = SimpleArgumentParser()
-    parser.set_defaults(address="127.0.0.1/32:47818")
-    parser.add_argument("--target", default="127.0.0.1", help="the example's BACnet/IP address")
-    parser.add_argument("--target-port", type=int, default=47808, help="the example's BACnet/IP port")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--sc-port", type=int, default=4443, help="the example's BACnet/SC port")
+    parser.add_argument("--cert-dir", default="certs", help="certificate set with a device (client) certificate")
     parser.add_argument("--device-instance", type=int, default=389022, help="the example's device instance")
     args = parser.parse_args()
-
-    device = Address(f"{args.target}:{args.target_port}")
-    device_id = ObjectIdentifier(f"device,{args.device_instance}")
-    app = Application.from_args(args)
-    # This client: segmented-both, up to 64 segments.
-    app.device_object.segmentationSupported = "segmented-both"
-    app.device_object.maxSegmentsAccepted = 64
 
     results = []
 
@@ -84,7 +77,13 @@ async def main():
         print(f"{'PASS' if ok else 'FAIL'}: {what}" + (f" - {detail}" if detail else ""))
 
     global SEGMENTS_RECEIVED
-    try:
+    # This client: segmented-both, up to 64 segments.
+    async with ScClient(args.sc_port, args.cert_dir, host=args.host, segmentation="segmented-both",
+                        max_segments=64) as client:
+        app = client.app
+        device = await client.find_device(args.device_instance)
+        device_id = ObjectIdentifier(f"device,{args.device_instance}")
+
         # 1. The claim.
         seg = await app.read_property(device, device_id, "segmentation-supported")
         check(str(seg) == "segmented-both", "Segmentation_Supported is segmented-both", str(seg))
@@ -123,14 +122,14 @@ async def main():
         try:
             ack = await app.request(request)
             count = len(ack.listOfReadAccessResults[0].listOfResults)
-            check(len(REQUEST_SEGMENTS_SENT) >= 2, "the RPM request is sent segmented (longer than the hub's 1476-octet max APDU)",
+            check(len(REQUEST_SEGMENTS_SENT) >= 2,
+                  "the RPM request is sent segmented (longer than the hub's 1476-octet max APDU)",
                   f"{len(refs)} references in {len(REQUEST_SEGMENTS_SENT)} request segments")
             check(count == len(refs), "hub reassembles the segmented request and answers every reference",
                   f"{count} results, answer in {SEGMENTS_RECEIVED} segments")
         except ErrorRejectAbortNack as err:
-            check(False, "hub reassembles a segmented RPM request (> 1476 octets) and answers every reference", repr(err))
-    finally:
-        app.close()
+            check(False, "hub reassembles a segmented RPM request (> 1476 octets) and answers every reference",
+                  repr(err))
 
     passed = sum(1 for r in results if r)
     print(f"\n{passed}/{len(results)} checks passed.")

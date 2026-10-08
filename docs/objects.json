@@ -57,29 +57,6 @@
     },
     {
       "type": "Network Port",
-      "instance": 1,
-      "name": "BACnet IP",
-      "app": [
-        "Object_Name",
-        "Description",
-        "Out_Of_Service",
-        "Network_Type",
-        "Protocol_Level",
-        "Changes_Pending"
-      ],
-      "enabled": [
-        "Description"
-      ],
-      "writable": [
-        "Command"
-      ],
-      "accepted": [
-        "Reliability"
-      ],
-      "note": "BACnet/IP; kept active throughout so the hub stays discoverable over plain BACnet/IP regardless of the BACnet/SC transport outcome below. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack"
-    },
-    {
-      "type": "Network Port",
       "instance": 2,
       "name": "BACnet SC",
       "app": [
@@ -99,7 +76,7 @@
       "accepted": [
         "Reliability"
       ],
-      "note": "BACnet/SC (Network_Type = secureConnect(11)); hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type/Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, same as Network Port 1. Reliability, Network_Number and Network_Number_Quality as for Network Port 1. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp"
+      "note": "BACnet/SC (Network_Type = secureConnect(11)); the device's only Network Port - there is no BACnet/IP port, so the device is reachable only over BACnet/SC. Hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp"
     },
     {
       "type": "File",

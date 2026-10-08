@@ -285,7 +285,7 @@ issuer certificate(s) in cert1/issuer/. Then install it on the hub with
 
 bool HubRequestZip(const CertLayout::HubCertPaths& paths, std::string* zipBytes, std::string* error) {
     if (!fs::exists(paths.certificateSigningRequest)) {
-        *error = "the hub has no certificate signing request yet - run the hub once with --generate-csr";
+        *error = "the hub has no certificate signing request yet - start the hub once to make one";
         return false;
     }
     const std::string csr = ReadFile(paths.certificateSigningRequest);
@@ -311,8 +311,8 @@ bool ReadCariResponse(const CertLayout::HubCertPaths& paths, const std::string& 
         return false;
     }
     if (!fs::exists(paths.certificateSigningRequest)) {
-        *error = "the hub has no certificate signing request to match the response against - run --generate-csr "
-                 "first";
+        *error = "the hub has no certificate signing request to match the response against - start the "
+                 "hub once first (it makes its key and request)";
         return false;
     }
     ReqPtr csr = ReqFromBytes(ReadFile(paths.certificateSigningRequest));
@@ -407,55 +407,66 @@ bool ReadCariResponse(const CertLayout::HubCertPaths& paths, const std::string& 
 // Command-line modes
 // =============================================================================
 
-bool GenerateHubRequest(const std::string& certDir, uint32_t hubDeviceInstance, const std::string& subjectCn,
-                        const std::string& hubUri) {
+RequestResult EnsureHubRequest(const std::string& certDir, uint32_t hubDeviceInstance, const std::string& subjectCn,
+                               const std::string& hubUri, std::string* message) {
     const CertLayout::HubCertPaths paths = CertLayout::ResolveHubCertPaths(certDir, hubDeviceInstance);
-    const bool haveKey = fs::exists(paths.privateKey);
-    if (haveKey && !fs::exists(paths.certificateSigningRequest)) {
-        fprintf(stderr, "Error: \"%s\" exists but there is no certificate signing request next to it. Not "
-                        "overwriting the key. To start again, move the key away and run --generate-csr again.\n",
-                paths.privateKey.c_str());
-        return false;
+    const fs::path zipPath = fs::absolute(fs::path(certDir) / HUB_REQUEST_ZIP);
+
+    // Already there: never overwrite it - it may be the very file that was
+    // sent to the CA. Delete it to have it made again.
+    if (fs::exists(zipPath)) {
+        *message = "\"" + zipPath.string() + "\" already exists (delete it to make a new one)";
+        return RequestResult::AlreadyExists;
     }
-    if (!haveKey) {
+
+    // THE PRIVATE KEY IS NEVER REPLACED. A new key is made only when the hub
+    // has none at all - no key-hub.pem and no pending key from
+    // GENERATE_CSR_FILE - so a key the running certificates use is never
+    // touched. With a key, the request is made from the CSR already on disk.
+    const bool haveKey = fs::exists(paths.privateKey);
+    const bool havePendingKey = !paths.pendingPrivateKey.empty() && fs::exists(paths.pendingPrivateKey);
+    std::string newKeyNote;
+    if (!fs::exists(paths.certificateSigningRequest)) {
+        if (haveKey || havePendingKey) {
+            *message = "not made: \"" + (haveKey ? paths.privateKey : paths.pendingPrivateKey) +
+                       "\" has no certificate signing request (csr-hub.pem) next to it, and the key is never "
+                       "replaced. Move the key away (or put its CSR back) and restart to make one.";
+            return RequestResult::Failed;
+        }
         PkeyPtr key = NewP256Key();
         if (!key) {
-            return false;
+            *message = "not made: could not generate a private key";
+            return RequestResult::Failed;
         }
         ReqPtr csr = MakeHubCsr(key.get(), subjectCn, HubSubjectAltName(hubUri));
         if (!csr) {
-            return false;
+            *message = "not made: could not make the certificate signing request";
+            return RequestResult::Failed;
         }
         std::error_code ec;
         fs::create_directories(fs::path(paths.certDir) / paths.portFolder / "hub", ec);
         if (!WriteFile(paths.privateKey, KeyPem(key.get()), true) ||
             !WriteFile(paths.certificateSigningRequest, ReqPem(csr.get()))) {
-            return false;
+            *message = "not made: could not write the new key and request in \"" + certDir + "\"";
+            return RequestResult::Failed;
         }
-        printf("Made a new private key and certificate signing request for this hub (CN=%s):\n", subjectCn.c_str());
-        printf("  %s   the private key - KEEP PRIVATE\n", CertLayout::RelativeTo(certDir, paths.privateKey).c_str());
-        printf("  %s   the request\n", CertLayout::RelativeTo(certDir, paths.certificateSigningRequest).c_str());
-    } else {
-        printf("This hub already has a key and a certificate signing request; using them:\n  %s\n",
-               CertLayout::RelativeTo(certDir, paths.certificateSigningRequest).c_str());
+        newKeyNote = " with a new private key (" + CertLayout::RelativeTo(certDir, paths.privateKey) +
+                     ", keep it private)";
     }
+
     std::string zip;
     std::string error;
     if (!HubRequestZip(paths, &zip, &error)) {
-        fprintf(stderr, "Error: %s\n", error.c_str());
-        return false;
+        *message = "not made: " + error;
+        return RequestResult::Failed;
     }
-    const fs::path zipPath = fs::path(certDir) / HUB_REQUEST_ZIP;
     if (!WriteFile(zipPath, zip)) {
-        return false;
+        *message = "not made: could not write \"" + zipPath.string() + "\"";
+        return RequestResult::Failed;
     }
-    printf("\nWrote the CARI request: %s\n"
-           "Next:\n"
-           "  1. Send it to your Certificate Authority (the Chipkin BACnet SC Certificate Authority,\n"
-           "     BACnet International's BACCARI, or your own CARI-compatible CA).\n"
-           "  2. Install the CA's response:  --import-cari <response.zip>\n",
-           zipPath.string().c_str());
-    return true;
+    *message = "created \"" + zipPath.string() + "\"" + newKeyNote +
+               " - send it to your Certificate Authority, then install its response with --import-cari";
+    return RequestResult::Created;
 }
 
 bool ImportCariResponse(const std::string& certDir, uint32_t hubDeviceInstance, const std::string& zipPath) {
