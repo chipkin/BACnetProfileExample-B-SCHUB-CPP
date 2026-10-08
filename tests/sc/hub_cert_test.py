@@ -74,6 +74,13 @@ def start_once(exe, cert_dir):
     return run(exe, cert_dir, "--sc-port", str(free_port()), env=env)
 
 
+def names_file(line, path):
+    """True if the log line quotes a path to `path` (compared as files, so a Windows
+    8.3 short name such as RUNNER~1 matches the long one)."""
+    quoted = line.split('"')[1::2]
+    return any(os.path.exists(q) and os.path.samefile(q, path) for q in quoted)
+
+
 def request_line(out):
     """The start-up log line about the certificate request."""
     return next((line for line in out.splitlines() if "certificate request:" in line), "")
@@ -145,7 +152,7 @@ def main():
         line = request_line(out)
         record("the first start-up runs and stops by itself (exit 0)", rc == 0, last_line(out))
         record("it logs one line: the request was created, with its full path",
-               "created" in line and str(request_path.resolve()) in line and
+               "created" in line and names_file(line, request_path) and
                sum("certificate request:" in x for x in out.splitlines()) == 1, line)
         record("it writes key-hub.pem, csr-hub.pem and the hub/ marker",
                (hub_dir / "key-hub.pem").is_file() and (hub_dir / "csr-hub.pem").is_file() and
@@ -179,7 +186,7 @@ def main():
         rc, out = start_once(exe, certs)
         line = request_line(out)
         record("a second start-up logs that the request already exists, with its full path",
-               "already exists" in line and str(request_path.resolve()) in line, line)
+               "already exists" in line and names_file(line, request_path), line)
         record("... and does not overwrite it",
                request_path.read_bytes() == zip_before and request_path.stat().st_mtime_ns == stat_before)
         record("... and keeps the key", (hub_dir / "key-hub.pem").read_bytes() == key_before)

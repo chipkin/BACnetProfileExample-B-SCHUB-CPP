@@ -56,6 +56,13 @@ def udp_port_free(port):
             return False
 
 
+def names_file(line, path):
+    """True if the log line quotes a path to `path` (compared as files, so a Windows
+    8.3 short name such as RUNNER~1 matches the long one)."""
+    quoted = line.split('"')[1::2]
+    return any(os.path.exists(q) and os.path.samefile(q, path) for q in quoted)
+
+
 def normalize(text):
     return text.replace("\r\n", "\n")
 
@@ -102,7 +109,8 @@ def main():
         record("logs/B-SCHUB.log is made in the folder the hub runs in", log_file.is_file())
         logged = normalize(log_file.read_text(errors="replace")) if log_file.is_file() else ""
         line = next((x for x in console.splitlines() if "log file:" in x), "")
-        record("the start-up prints the log file's full path", f'"{log_file.resolve()}"' in line, line)
+        record("the start-up prints the log file's full path",
+               names_file(line, log_file) and Path(line.split('"')[1]).is_absolute(), line)
         record("the log file has everything the console showed", logged == normalize(console),
                f"{len(logged)} vs {len(console)} characters")
         record("... including libwebsockets' lines", "lws:" in logged)
