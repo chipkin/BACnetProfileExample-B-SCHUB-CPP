@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - unreleased
+
+Verified against CAS BACnet Stack 6.0.23 (`6.x` @ `64b2cfac5`), Protocol_Revision
+30, vendored `common/` 3.3.0.
+
+### Changed
+
+- **Stack Pin moved to `6.x` @ `64b2cfac5`** from `e6de4ffd`, per the series
+  rule that a pin moves to the latest `6.x` on any update. No source change was
+  needed. Every CI test step passes at the new pin on Windows and Linux, as it
+  did at the old one (no regression).
+- **`common/` 3.0.0 -> 3.3.0**, copied verbatim from B-SS-CPP `b640a81`
+  (additive keys; a broadcast with no connection string is sent - this example
+  has no BACnet/IP socket, so neither change is reachable here).
+- README and PICS now say what the tests prove about the hub function: the CI
+  tests use one connected BACnet/SC device at a time, so the relay between two
+  connected devices is not a CI test. It was checked by hand at this version
+  with two Python BACnet/SC devices (Who-Is from one reached the other and its
+  I-Am came back; a ReadProperty between them was answered).
+
+### Added
+
+- **`tests/sc/discovery_test.py`**: the series' discovery Wire Test, over
+  BACnet/SC (this example has no BACnet/IP port). Who-Is through the hub, the
+  Device's `Object_List` (control: exactly Device 389022, Analog Input 1, File
+  1-4, Network Port 2), then every object's `Property_List` and a raw
+  ReadProperty of every listed property; any Error, Reject, Abort or silence
+  fails it. 116 reads, all values, on Windows and Linux. CI runs it after the
+  segmentation test.
+
 ## [1.7.0] - 2026-10-07
 
 Verified against CAS BACnet Stack 6.0.23 (`6.x` @ `e6de4ffd`), Protocol_Revision

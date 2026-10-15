@@ -1,6 +1,6 @@
 # BACnet Protocol Implementation Conformance Statement (PICS)
 
-**BACnet B-SCHUB (BACnet/SC Hub) Example - C++, version 1.7.0**
+**BACnet B-SCHUB (BACnet/SC Hub) Example - C++, version 1.7.1**
 
 Date: 2026-10-07. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 
@@ -18,7 +18,7 @@ Date: 2026-10-07. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 | **Vendor Identifier** | 389 |
 | **Product Name** | BACnet B-SCHUB (BACnet/SC Hub) Example - C++ |
 | **Product Model Number** | CAS BACnet Stack Example - B-SCHUB |
-| **Application Software Version** | 1.7.0 |
+| **Application Software Version** | 1.7.1 |
 | **Firmware Revision** | 6.0.23.0 (the CAS BACnet Stack version) |
 | **BACnet Protocol Version** | 1 |
 | **BACnet Protocol Revision** | 30 |
@@ -144,7 +144,10 @@ Network Port reports `Network_Number` 0 with `Network_Number_Quality`
 
 **BACnet/SC hub function (NM-SCH-B):** accepts at most 4 connections at once
 (fixed in this example) and relays unicast and broadcast BVLC-SC messages
-between them and the local device. Connecting devices must present a
+between them and the local device (the relay between two connected devices
+was checked by hand at v1.7.1 - Who-Is and ReadProperty from one Python
+BACnet/SC device to another - and is not yet a CI test). Connecting devices
+must present a
 certificate that chains to an issuer in File 3 or File 4. Certificate
 revocation lists (`issuer-crl.pem`) are checked when present.
 `--sc-accept-device-without-hello` accepts a Connect-Request without the Hello

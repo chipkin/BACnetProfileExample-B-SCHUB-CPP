@@ -155,7 +155,9 @@ every command):
 1. Build, then run the example with the demo certificates on clear ports.
 2. Over BACnet/SC (there is no BACnet/IP): `rpm_test.py` (Who-Is/I-Am from
    389022 through the hub, ReadPropertyMultiple, `Protocol_Revision` 30, one
-   Network Port - 2 - in `Object_List`), `segmentation_test.py`.
+   Network Port - 2 - in `Object_List`), `segmentation_test.py`,
+   `discovery_test.py` (every property in every object's `Property_List`
+   reads as a value).
 3. BACnet/SC: `hub_listener_test.py`, `file_object_test.py`,
    `cert_procedure_test.py`, `connection_limit_test.py`. Don't claim BACnet/SC
    works from the configuration calls succeeding alone.

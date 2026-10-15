@@ -41,7 +41,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "3.0.0";
+static const char* COMMON_VERSION = "3.3.0";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.
@@ -287,13 +287,27 @@ enum class KeyCommand {
     RouterAnnounce, // 'r' - manually (re-)send I-Am-Router-To-Network now, instead
                      //       of waiting for the one sent at start-up, so routing
                      //       can be demonstrated on demand
-    Metrics         // 'm' - print a health/metrics snapshot (uptime, connection
+    Metrics,        // 'm' - print a health/metrics snapshot (uptime, connection
                      //       counts, rate-limit rejections, RX/TX counters, etc.)
                      //       to stdout. Added in common/ 2.7.0 for
                      //       BACnetProfileExample-B-SCHUB-CPP's health/metrics
                      //       keypress (Task 2); generic (not BACnet/SC-specific)
                      //       so any example that later tracks its own
                      //       connections/throughput can reuse it the same way.
+    SimulatedPeerToggle, // 'k' - kill / revive a SIMULATED peer (a foreign-bus slave, a
+                        //       door contact - whatever the example's Simulation stands
+                        //       in for) so the example's Failure Mode can be shown on
+                        //       demand. Added in common/ 3.1.0 for
+                        //       BACnetProfileExample-B-GW-CPP (kill/revive a slave on
+                        //       the simulated foreign bus); docs/menu-keys.md.
+    ContactToggle,  // 'o' - open/close a simulated door contact (or other two-state
+                     //       physical input an example simulates). Added in
+                     //       common/ 3.3.0 for B-ACDC's door simulation.
+    ForceOpen,      // 'f' - force a simulated door open without a valid unlock (an
+                     //       access-control Failure Mode demo). common/ 3.3.0.
+    BadgePulse      // 'p' - a local credential/badge "pulse unlock" command, as a
+                     //       card reader wired to the controller would issue it.
+                     //       common/ 3.3.0.
 };
 
 // Non-blocking: returns a pending key command, or None if nothing was pressed.

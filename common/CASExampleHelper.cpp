@@ -182,12 +182,28 @@ uint16_t HelperReceiveMessage(uint8_t* message, const uint16_t maxMessageLength,
     return bytesRead;
 }
 
+// Defined below, after GetPrimaryIPv4 (which it uses).
+void GetLocalBroadcastIPv4(uint8_t broadcastIp[4]);
+
 // ---------------------------------------------------------------------------
 // Transport callback: the stack calls this to SEND a BACnet message.
 //
-// The stack hands us the destination as a connection string (IP[4] + port[2]).
-// For broadcasts the stack fills it with the broadcast address, so we can send
-// the same way in both cases (the socket has SO_BROADCAST enabled).
+// The stack hands us the destination as a connection string (IP[4] + port[2])
+// and we send to it - unicast or broadcast alike (the socket has SO_BROADCAST
+// enabled).
+//
+// A NULL / length-0 connection string is the stack saying "broadcast on this
+// data link" (BACnetStack_RegisterCallbackSendMessageForPort's contract in
+// CASBACnetStackDLL.h): a frame it originates itself with no destination
+// address - a router's start-up I-Am-Router-To-Network, its
+// Who-Is-Router-To-Network search for an unknown network, every remote or
+// global broadcast it forwards onto this port. We send that to the local
+// subnet broadcast (ip | ~mask, the same address SendIAm uses) on the UDP port
+// of the socket bound to networkPortInstance. Before common/ 3.2.0 this
+// returned 0 and every such broadcast was lost.
+//
+// A connection string of 1-5 octets is not a BACnet/IP address and is still
+// refused (return 0).
 // ---------------------------------------------------------------------------
 uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
                            const uint8_t* connectionString,
@@ -199,18 +215,29 @@ uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
     // resolves to it - same effect as the old "!= g_networkPortInstance" check,
     // just expressed as a table lookup instead of a single comparison.
     UdpBinding* binding = FindUdpBindingByInstance(networkPortInstance);
-    if (binding == NULL || !binding->bound || connectionStringLength < 6) {
+    if (binding == NULL || !binding->bound) {
         return 0;
     }
 
-    const uint8_t ip[4] = { connectionString[0], connectionString[1],
-                            connectionString[2], connectionString[3] };
-    const uint16_t port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
+    uint8_t ip[4];
+    uint16_t port;
+    bool isBroadcast = broadcast;
+    if (connectionString == NULL || connectionStringLength == 0) {
+        // No destination address: broadcast on this Network Port's link.
+        GetLocalBroadcastIPv4(ip);
+        port = binding->port;
+        isBroadcast = true;
+    } else if (connectionStringLength < 6) {
+        return 0;
+    } else {
+        memcpy(ip, connectionString, 4);
+        port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
+    }
 
     const uint16_t sent = binding->udp.Send(ip, port, message, messageLength);
     printf("TX %u bytes to %u.%u.%u.%u:%u%s (Network Port %u)", (unsigned)sent,
            ip[0], ip[1], ip[2], ip[3], (unsigned)port,
-           broadcast ? " (broadcast)" : "", (unsigned)networkPortInstance);
+           isBroadcast ? " (broadcast)" : "", (unsigned)networkPortInstance);
     CASExampleHelper::LogBacnetFrame(message, messageLength);
     return sent;
 }
@@ -367,6 +394,21 @@ bool GetPrimaryIPv4(uint8_t ip[4], uint8_t mask[4]) {
     freeifaddrs(ifap);
     return found;
 #endif
+}
+
+// The local subnet broadcast of the primary IPv4 interface, ip | ~mask - the
+// network every Network Port in this series' examples is on (a multi-port
+// example tells its networks apart by UDP port, not by interface). Falls back
+// to the limited broadcast 255.255.255.255 if the interface can't be found.
+void GetLocalBroadcastIPv4(uint8_t broadcastIp[4]) {
+    uint8_t ip[4], mask[4];
+    if (GetPrimaryIPv4(ip, mask)) {
+        for (int octetIndex = 0; octetIndex < 4; ++octetIndex) {
+            broadcastIp[octetIndex] = (uint8_t)(ip[octetIndex] | ~mask[octetIndex]);
+        }
+    } else {
+        memset(broadcastIp, 255, 4);
+    }
 }
 
 #if !defined(_WIN32)
@@ -1991,14 +2033,8 @@ void SendIAm(const uint32_t deviceInstance, const uint32_t networkPortInstance) 
     // BACnet/IP networks), so the primary-interface broadcast address is the
     // right target for every instance; only the port differs, taken from that
     // instance's own binding below.
-    uint8_t bcast[4] = { 255, 255, 255, 255 };
-    uint8_t ip[4], mask[4];
-    if (GetPrimaryIPv4(ip, mask)) {
-        bcast[0] = (uint8_t)(ip[0] | ~mask[0]);
-        bcast[1] = (uint8_t)(ip[1] | ~mask[1]);
-        bcast[2] = (uint8_t)(ip[2] | ~mask[2]);
-        bcast[3] = (uint8_t)(ip[3] | ~mask[3]);
-    }
+    uint8_t bcast[4];
+    GetLocalBroadcastIPv4(bcast);
 
     const UdpBinding* binding = FindUdpBindingByInstance(networkPortInstance);
     const uint16_t port = (binding != NULL && binding->bound) ? binding->port : g_port;
@@ -2036,6 +2072,10 @@ KeyCommand PollKey() {
     if (c == 'd' || c == 'D') return KeyCommand::DiscoverRemote;
     if (c == 'r' || c == 'R') return KeyCommand::RouterAnnounce;
     if (c == 'm' || c == 'M') return KeyCommand::Metrics;
+    if (c == 'k' || c == 'K') return KeyCommand::SimulatedPeerToggle;
+    if (c == 'o' || c == 'O') return KeyCommand::ContactToggle;
+    if (c == 'f' || c == 'F') return KeyCommand::ForceOpen;
+    if (c == 'p' || c == 'P') return KeyCommand::BadgePulse;
     return KeyCommand::None;
 #else
     EnableRawInput();
@@ -2056,6 +2096,10 @@ KeyCommand PollKey() {
     if (buf[0] == 'd' || buf[0] == 'D') return KeyCommand::DiscoverRemote;
     if (buf[0] == 'r' || buf[0] == 'R') return KeyCommand::RouterAnnounce;
     if (buf[0] == 'm' || buf[0] == 'M') return KeyCommand::Metrics;
+    if (buf[0] == 'k' || buf[0] == 'K') return KeyCommand::SimulatedPeerToggle;
+    if (buf[0] == 'o' || buf[0] == 'O') return KeyCommand::ContactToggle;
+    if (buf[0] == 'f' || buf[0] == 'F') return KeyCommand::ForceOpen;
+    if (buf[0] == 'p' || buf[0] == 'P') return KeyCommand::BadgePulse;
     return KeyCommand::None;
 #endif
 }

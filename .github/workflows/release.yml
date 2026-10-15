@@ -357,6 +357,12 @@ jobs:
       - name: Segmentation, both directions (Segmentation_Supported = segmented-both)
         run: python tests/sc/segmentation_test.py --sc-port 47823 --cert-dir certs
 
+      # The series' discovery Wire Test, over BACnet/SC: Who-Is, Object_List, every object's
+      # Property_List, and a ReadProperty of every listed property; any Error, Reject or Abort
+      # fails it. (The other examples run it over BACnet/IP; this one has no IP port.)
+      - name: Discovery (every listed property reads as a value)
+        run: python tests/sc/discovery_test.py --sc-port 47823 --cert-dir certs
+
       # --sc-accept-device-without-hello (stack flag 0x02): the same no-Hello
       # Connect-Request - what YABE sends - must be accepted.
       - name: Connect-Request without Hello accepted with --sc-accept-device-without-hello

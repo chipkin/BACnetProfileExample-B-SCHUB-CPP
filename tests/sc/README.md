@@ -203,6 +203,29 @@ The hub claims `Segmentation_Supported` = `segmented-both`. This checks it:
 python tests/sc/segmentation_test.py --sc-port 4443 --cert-dir certs
 ```
 
+## `discovery_test.py` (every listed property reads as a value)
+
+The series' discovery Wire Test (B-SS-CPP `tests/discovery_test.py`), done over
+BACnet/SC because this example has no BACnet/IP port: what a client such as
+Chipkin BACnet Explorer does when it discovers a device.
+
+- **Who-Is** for 389022 through the hub -> the I-Am.
+- **Device `Object_List`** names exactly Device 389022, Analog Input 1, File
+  1-4 and Network Port 2. This is the control: a walk over nothing would pass.
+- For each object, **`Property_List`** reads, and a ReadProperty of every
+  property it lists - plus `Object_Identifier`, `Object_Name`, `Object_Type`
+  and `Property_List`, which cl. 12.1.1.4.1 leaves out of the list - returns a
+  ReadProperty-ACK. An Error, Reject, Abort or no answer prints an
+  `[UNREADABLE]` line and fails the check. The reads are raw ReadProperty
+  requests, so a property bacpypes3 has no datatype for is still read and
+  checked.
+
+```
+./build/BACnetExampleBSCHUB --sc-port 4443
+# in a separate terminal:
+python tests/sc/discovery_test.py --sc-port 4443 --cert-dir certs
+```
+
 ## `cert_procedure_test.py` (the clause 19.8.3 certificate procedures)
 
 Drives the hub the way a certificate tool (e.g. the CAS BACnet Explorer's
@@ -262,5 +285,5 @@ for each pull request and tag: `cert_files_test.py` (on a fresh
 `hub_cert_test.py`, `connection_limit_test.py`, `run_limit_test.py`,
 `startup_test.py`, `hub_listener_test.py`
 (against the demo set, and again with `--sc-accept-device-without-hello`),
-`file_object_test.py`, `rpm_test.py`, `segmentation_test.py`, and
-`cert_procedure_test.py` (on throwaway sets).
+`file_object_test.py`, `rpm_test.py`, `segmentation_test.py`,
+`discovery_test.py`, and `cert_procedure_test.py` (on throwaway sets).

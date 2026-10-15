@@ -12,6 +12,55 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-10-14
+
+### Added
+
+- `KeyCommand::ContactToggle` (`o`), `KeyCommand::ForceOpen` (`f`) and
+  `KeyCommand::BadgePulse` (`p`), read by `PollKey()` on Windows and POSIX.
+  First used by `BACnetProfileExample-B-ACDC-CPP`'s door Simulation (open/shut
+  the simulated door contact, force the door open, a local badge
+  pulse-unlock); the names are generic so any example simulating a contact or
+  a badge reader reuses them. Registered in the series' `docs/menu-keys.md`.
+  Additive: no existing key or symbol changes. `PrintInteractiveCommands()` is
+  unchanged - an example that handles these keys lists them itself after
+  `PrintHelp()`.
+
+## [3.2.0] - 2026-10-14
+
+### Fixed
+
+- **`HelperSendMessage` now sends a broadcast the stack hands it with no
+  connection string.** `BACnetStack_RegisterCallbackSendMessageForPort`'s
+  contract (`CASBACnetStackDLL.h`): the connection string "is NULL with
+  length 0 when the frame has no destination address - that means broadcast
+  on this data link". Up to 3.1.0 the callback returned 0 for any connection
+  string shorter than 6 octets, so every broadcast the stack originates
+  without an address was dropped: a router's own start-up
+  I-Am-Router-To-Network (logged as `Failed to send the start-up
+  IAmRouterToNetwork`), its Who-Is-Router-To-Network search for an unknown
+  network before a Reject-Message-To-Network, and every remote (DNET = n,
+  no DADR) or global (DNET = 0xFFFF) broadcast it forwards - so Who-Is
+  discovery across `BACnetProfileExample-B-RTR-CPP` did not work. A length-0
+  connection string is now sent to the local subnet broadcast (ip | ~mask,
+  the address `SendIAm` already used) on the UDP port of the socket bound to
+  that `networkPortInstance`, and its TX line is marked `(broadcast)`. A
+  connection string of 1-5 octets is still refused. Proven by B-RTR's Wire
+  Tests (`tests/routing_test.py`, `tests/broadcast_forwarding_test.py`).
+- `SendIAm` and the new path share one `GetLocalBroadcastIPv4()` (file-local)
+  instead of each computing ip | ~mask.
+
+## [3.1.0] - 2026-10-14
+
+### Added
+
+- `KeyCommand::SimulatedPeerToggle` on the `k` key: kill / revive a simulated
+  Peer, so an example can show its Failure Mode on demand (the series'
+  Profile-functional bar). First used by `BACnetProfileExample-B-GW-CPP` to
+  take a slave on its simulated foreign bus offline and back. Registered in
+  the series' `docs/menu-keys.md`. Additive: no existing key or symbol
+  changes, so an example that does not handle it ignores the key.
+
 ## [3.0.0] - 2026-09-22
 
 ### Added
