@@ -7,7 +7,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [1.7.1] - unreleased
 
 Verified against CAS BACnet Stack 6.0.23 (`6.x` @ `64b2cfac5`), Protocol_Revision
-30, vendored `common/` 3.3.0.
+30, vendored `common/` 3.4.0.
 
 ### Changed
 
@@ -18,6 +18,11 @@ Verified against CAS BACnet Stack 6.0.23 (`6.x` @ `64b2cfac5`), Protocol_Revisio
 - **`common/` 3.0.0 -> 3.3.0**, copied verbatim from B-SS-CPP `b640a81`
   (additive keys; a broadcast with no connection string is sent - this example
   has no BACnet/IP socket, so neither change is reachable here).
+- **`common/` 3.3.0 -> 3.4.0**, copied verbatim from B-SS-CPP `5d78299`:
+  `HelperSendMessage` sends a broadcast addressed to the socket's own address to
+  the subnet broadcast instead. Not reachable here either (no BACnet/IP socket).
+  All 14 BACnet/SC CI test steps pass on Windows and Linux, as before. No
+  `wiretest/`: the tests here are `tests/sc/` with their own BACnet/SC client.
 - README and PICS now say what the tests prove about the hub function: the CI
   tests use one connected BACnet/SC device at a time, so the relay between two
   connected devices is not a CI test. It was checked by hand at this version

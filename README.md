@@ -28,7 +28,7 @@ licence, see [Build](#build).
 
 > **Versions:** this document describes **example v1.7.1**, built and verified
 > against **CAS BACnet Stack 6.0.23** (`6.x` @ `64b2cfac5`), at
-> **Protocol_Revision 30**, with the vendored `common/` helper at **v3.3.0**.
+> **Protocol_Revision 30**, with the vendored `common/` helper at **v3.4.0**.
 > Running the example prints all three - if what it prints disagrees with this
 > line, trust the program and check `CHANGELOG.md`.
 
@@ -277,7 +277,7 @@ Expected output:
 ```
 BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.7.1
 CAS BACnet Stack version: 6.0.23.0
-Common helper (common/) version: 3.3.0
+Common helper (common/) version: 3.4.0
 
 ================================================================================
 This is an example of using the CAS BACnet Stack to build a BACnet/SC hub (B-SCHUB profile). It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices and stops after 24 hours. For a production-ready BACnet/SC hub, the Chipkin BACnet SC Hub: Contact Chipkin sales@chipkin.com

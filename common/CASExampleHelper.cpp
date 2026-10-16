@@ -182,7 +182,8 @@ uint16_t HelperReceiveMessage(uint8_t* message, const uint16_t maxMessageLength,
     return bytesRead;
 }
 
-// Defined below, after GetPrimaryIPv4 (which it uses).
+// Defined below.
+bool GetPrimaryIPv4(uint8_t ip[4], uint8_t mask[4]);
 void GetLocalBroadcastIPv4(uint8_t broadcastIp[4]);
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,19 @@ void GetLocalBroadcastIPv4(uint8_t broadcastIp[4]);
 //
 // A connection string of 1-5 octets is not a BACnet/IP address and is still
 // refused (return 0).
+//
+// broadcast = true WITH a 6-octet address normally means "send to this
+// address" (the stack passes it, for example, with a registered foreign
+// device's address, and every example passes its own subnet broadcast address
+// that way). One case cannot mean that: the address is THIS socket's own
+// address (the primary IPv4 and the UDP port bound to networkPortInstance).
+// The stack passes its own address with broadcast = true when it means "this
+// subnet" - the Device_Address_Binding's Who-Is for a device it has not found
+// yet (the address is copied from the last I-Am it heard, which is this
+// device's own start-up I-Am, looped back) and a BBMD's two-hop local
+// re-broadcast (J.4.5). Unicast to ourselves, no other device ever received
+// either frame (stack issue #3933). Since common/ 3.4.0 that one case goes to
+// the local subnet broadcast instead; every other address is sent to as given.
 // ---------------------------------------------------------------------------
 uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
                            const uint8_t* connectionString,
@@ -232,6 +246,15 @@ uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
     } else {
         memcpy(ip, connectionString, 4);
         port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
+        if (broadcast && port == binding->port) {
+            uint8_t ownIp[4];
+            uint8_t ownMask[4];
+            if (GetPrimaryIPv4(ownIp, ownMask) && memcmp(ip, ownIp, 4) == 0) {
+                // A broadcast addressed to this socket itself: the stack means
+                // this subnet (see the comment above this function).
+                GetLocalBroadcastIPv4(ip);
+            }
+        }
     }
 
     const uint16_t sent = binding->udp.Send(ip, port, message, messageLength);

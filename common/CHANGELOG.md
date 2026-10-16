@@ -12,6 +12,32 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-10-15
+
+### Fixed
+
+- **`HelperSendMessage` sends a broadcast addressed to its own socket to the
+  local subnet broadcast.** When the stack calls the send callback with
+  `broadcast = true` and a 6-octet connection string that is this socket's
+  own address (the primary IPv4 and the UDP port bound to that
+  `networkPortInstance`), the frame now goes to the local subnet broadcast
+  (ip | ~mask, the address `SendIAm` and the length-0 case use) on that port.
+  Up to 3.3.0 it was sent unicast to this device itself, so no other device
+  received it. The stack does this in two places (stack issue #3933): the
+  Device_Address_Binding's Who-Is for a device it has not bound yet (its
+  address is a template copied from the last I-Am heard - this device's own
+  start-up I-Am, looped back), so a remote device named by a Channel or
+  Schedule reference was never found; and a BBMD's two-hop local
+  re-broadcast of a Forwarded-NPDU (J.4.5). Every other address is sent to
+  exactly as before, including `broadcast = true` with another device's
+  address (the stack passes a registered foreign device's address that way)
+  and every subnet broadcast address an example passes itself. The check
+  runs only when `broadcast` is true. First used by
+  `BACnetProfileExample-B-LS-CPP` (`tests/channel_fanout_test.py` proves the
+  Who-Is reaches the subnet). `BACnetProfileExample-B-BBMD-CPP`'s two-hop
+  known gap in `tests/forwarding_test.py` is expected to report
+  `[GAP CLOSED]` once it vendors 3.4.0 - re-check it then.
+
 ## [3.3.0] - 2026-10-14
 
 ### Added
