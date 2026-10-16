@@ -412,8 +412,13 @@ jobs:
         run: |
           mkdir -p dist
           cp "${{ matrix.exe }}" "${{ matrix.metrics }}" dist/
-          cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
-          cp docs/PICS.md dist/ 2>/dev/null || true
+          # The docs ship once, from the Linux build: the Windows checkout converts them
+          # to CRLF, so the two platforms' copies differ byte for byte and the release
+          # job's one-copy-per-name check refuses them.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            cp README.md TUTORIAL.md LICENSE dist/ 2>/dev/null || true
+            cp docs/PICS.md dist/ 2>/dev/null || true
+          fi
 
       # SC-TRANSPORT:BEGIN - the release archive: one .zip (Windows) or .tar.gz (Linux) with
       # the executable, the demo certificates (certs/, exactly as committed), README, licence,
