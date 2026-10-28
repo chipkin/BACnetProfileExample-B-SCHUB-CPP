@@ -11,6 +11,8 @@ Who-Is, and checks, against a running instance of this example (default wss://12
   3. Negative test: every File object in the device's Object_List is read via AtomicReadFile and
      compared against key-hub.pem - none of them may match it (the private key has no File
      object at all, so this should trivially hold; this test proves it rather than assuming it).
+  4. Archive (cl. 12.13, conformance code W) is writable on every File object: it reads FALSE, a
+     WriteProperty of TRUE is accepted and reads back TRUE, and it is put back to FALSE.
 
 Usage:
     python tests/sc/file_object_test.py [--host 127.0.0.1] [--sc-port 4443] [--cert-dir certs]
@@ -36,7 +38,7 @@ from bacpypes3.apdu import (
 AtomicReadFileRequestStreamAccess = type(AtomicReadFileRequestAccessMethodChoice.streamAccess)
 from bacpypes3.basetypes import PropertyIdentifier
 from bacpypes3.constructeddata import ArrayOf
-from bacpypes3.primitivedata import ObjectIdentifier
+from bacpypes3.primitivedata import Boolean, ObjectIdentifier
 
 from sc_client import ScClient
 
@@ -136,6 +138,27 @@ async def main():
                 failures.append(f"File {file_instance} returned bytes IDENTICAL to {hub_key_path.name} - KEY LEAK")
         if checked:
             print(f"PASS: File objects {checked} enumerated and read; none served {hub_key_path.name} ({len(hub_key_bytes)} bytes)")
+
+        # --- 4. Archive is writable on every File object -------------------------------
+        archive_ok = []
+        for file_instance in (1, 2, 3, 4):
+            file_id = ObjectIdentifier(("file", file_instance))
+            try:
+                before = await app.read_property(device_address, file_id, "archive")
+                await app.write_property(device_address, file_id, "archive", Boolean(True))
+                during = await app.read_property(device_address, file_id, "archive")
+                await app.write_property(device_address, file_id, "archive", Boolean(False))
+                after = await app.read_property(device_address, file_id, "archive")
+            except Exception as exc:  # noqa: BLE001 - report which file and why
+                failures.append(f"File {file_instance} Archive: {type(exc).__name__}: {exc}")
+                continue
+            if bool(before) or not bool(during) or bool(after):
+                failures.append(f"File {file_instance} Archive read {before} / {during} / {after}, "
+                                f"expected FALSE / TRUE / FALSE around a write of TRUE")
+            else:
+                archive_ok.append(file_instance)
+        if archive_ok:
+            print(f"PASS: Archive is writable on File objects {archive_ok} (FALSE -> TRUE -> FALSE)")
     finally:
         await client.__aexit__(None, None, None)
 

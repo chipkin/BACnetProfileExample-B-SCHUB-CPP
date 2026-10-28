@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: CC0-1.0
 # Public-domain example code (CC0) - see ../../LICENSE.
-"""Start-up: --help, the log file, and no BACnet/IP.
+"""Start-up: --help, the log file, and the BACnet/IP port that is off by default.
 
 Starts the executable itself, in a temporary folder, on the demo certificates,
 and checks:
 
   1. --help links to the repository on GitHub, says the certificate request
      (hub-cari-request.zip) is created at start-up if it doesn't already exist,
-     names logs/B-SCHUB.log, no longer lists --port or --generate-csr, and
-     doesn't advertise the product (only the start-up and the limit messages do).
+     names logs/B-SCHUB.log, lists --port as the opt-in BACnet/IP port (and not
+     --generate-csr), and doesn't advertise the product (only the start-up and
+     the limit messages do).
   2. The log file: logs/B-SCHUB.log in the folder the hub runs in (made if
      missing), with everything the console showed - the example's own lines,
      libwebsockets' and the stack's - and its full path printed at start-up.
      A restart empties it first.
-  3. No BACnet/IP: while the hub runs, UDP port 47808 is still free, and the
-     start-up says nothing about BACnet/IP.
+  3. BACnet/IP is off unless asked for: the start-up says nothing about
+     BACnet/IP; with --port <n> it says the hub listens on that UDP port
+     (and the log file has the line too). Never touches UDP port 47808.
 
     python tests/sc/startup_test.py --exe build/BACnetExampleBSCHUB
 
@@ -47,13 +49,10 @@ def free_port():
         return s.getsockname()[1]
 
 
-def udp_port_free(port):
+def udp_free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        try:
-            s.bind(("0.0.0.0", port))
-            return True
-        except OSError:
-            return False
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def names_file(line, path):
@@ -86,24 +85,18 @@ def main():
         record("--help says the certificate request is created at start-up if it doesn't exist",
                "hub-cari-request.zip" in text and "Created at start-up if it doesn't already exist" in text)
         record("--help names the log file", "logs/B-SCHUB.log" in text)
-        record("--help no longer lists --port or --generate-csr", "--port " not in text and "--generate-csr" not in text)
+        record("--help lists --port as an opt-in BACnet/IP port, and not --generate-csr",
+               "--port <n>" in text and "Off by default" in text and "--generate-csr" not in text)
         record("--help doesn't advertise the product", "sales@chipkin.com" not in text)
         record("--help doesn't make a log file", not (tmp / "logs").exists())
 
         # 2 and 3. A run: the log file, and no BACnet/IP.
         log_file = tmp / "logs" / "B-SCHUB.log"
-        udp_free_before = udp_port_free(47808)
         hub = subprocess.Popen([str(exe), "--sc-cert-dir", str(CERTS), "--sc-port", str(free_port())], env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                cwd=tmp, text=True)
-        time.sleep(2)
-        udp_free_during = udp_port_free(47808)
         console = hub.communicate(timeout=60)[0]
-        if udp_free_before:
-            record("no BACnet/IP: UDP port 47808 stays free while the hub runs", udp_free_during)
-        else:
-            print("[SKIP] UDP port 47808 is in use by another program - can't check the hub leaves it alone")
-        record("no BACnet/IP: the start-up says nothing about BACnet/IP or UDP",
+        record("BACnet/IP is off by default: the start-up says nothing about BACnet/IP or UDP",
                "BACnet/IP on UDP" not in console and "UDP port" not in console)
         record("the hub runs and stops by itself", hub.returncode == 0, f"exit {hub.returncode}")
         record("logs/B-SCHUB.log is made in the folder the hub runs in", log_file.is_file())
@@ -125,6 +118,15 @@ def main():
         record("a restart empties the log file first", "OLD RUN MARKER" not in logged and
                logged.startswith("BACnet B-SCHUB (BACnet/SC Hub) Example"), logged.splitlines()[0] if logged else "")
         record("... and it again has the whole run", logged == normalize(proc.stdout + proc.stderr))
+
+        # --port <n> opens the BACnet/IP port.
+        udp = udp_free_port()
+        proc = subprocess.run([str(exe), "--sc-cert-dir", str(CERTS), "--sc-port", str(free_port()), "--port", str(udp)],
+                              env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, cwd=tmp)
+        logged = normalize(log_file.read_text(errors="replace"))
+        said = f"Listening for BACnet/IP on UDP port {udp} (Network Port 1)"
+        record("--port <n>: the start-up says the hub listens on that UDP port", said in proc.stdout, said)
+        record("... and the log file has it too", said in logged)
 
     print(f"\n{sum(RESULTS)}/{len(RESULTS)} checks passed")
     return 0 if all(RESULTS) else 1

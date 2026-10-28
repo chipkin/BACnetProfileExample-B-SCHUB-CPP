@@ -24,6 +24,7 @@ typedef int socklen_t;
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <sys/select.h>
 #define INVALID_SOCK (-1)
 #endif
 
@@ -91,21 +92,10 @@ bool SimpleUDP::Connect(const uint16_t localPort) {
     setsockopt((int)m_socket, SOL_SOCKET, SO_BROADCAST,
                (const char*)&broadcast, sizeof(broadcast));
 
-    // Short receive timeout so Receive() does not block the tick loop for long.
-    // 10 ms keeps the device responsive (the tick loop runs ~90x/sec when idle)
-    // while still yielding the CPU. Note: do NOT use 0 here - for SO_RCVTIMEO a
-    // value of 0 means "block forever", not "return immediately".
-#if defined(_WIN32)
-    const DWORD timeoutMs = 10;
-    setsockopt((int)m_socket, SOL_SOCKET, SO_RCVTIMEO,
-               (const char*)&timeoutMs, sizeof(timeoutMs));
-#else
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 10 * 1000; // 10 ms
-    setsockopt((int)m_socket, SOL_SOCKET, SO_RCVTIMEO,
-               (const char*)&tv, sizeof(tv));
-#endif
+    // No SO_RCVTIMEO. Receive() waits for a datagram with select() instead (see
+    // the comment there): up to common/ 3.4.0 this set a 10 ms SO_RCVTIMEO and
+    // Receive() called a blocking recvfrom(), and on Windows a datagram that
+    // arrives just as that timed receive expires is silently discarded.
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -157,11 +147,50 @@ uint16_t SimpleUDP::Receive(uint8_t* buffer, const uint16_t maxLength,
         return 0;
     }
 
+    // Wait up to RECEIVE_WAIT_MS for the socket to become readable, and call
+    // recvfrom() only when it is. 10 ms keeps the device responsive (the tick
+    // loop runs ~90x/sec when idle) while still yielding the CPU.
+    //
+    // Why select() and not SO_RCVTIMEO: up to common/ 3.4.0 the socket had a
+    // 10 ms SO_RCVTIMEO and this called a blocking recvfrom() every tick. On
+    // Windows, a datagram that arrives just as such a timed receive expires is
+    // silently discarded - the next recvfrom() does not return it either. With
+    // sparse traffic (a client sending one request every second or so) about 8%
+    // of requests were lost on 127.0.0.1.
+    // select() only reports readiness; the datagram stays queued until the
+    // recvfrom() below, which then returns at once. select() is portable
+    // (Winsock and POSIX), so both platforms use the same path.
+    static const long RECEIVE_WAIT_MS = 10;
+    fd_set readSet;
+    FD_ZERO(&readSet);
+#if defined(_WIN32)
+    FD_SET((SOCKET)m_socket, &readSet);
+    const int nfds = 0; // ignored by Winsock
+#else
+    FD_SET((int)m_socket, &readSet);
+    const int nfds = (int)m_socket + 1;
+#endif
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = RECEIVE_WAIT_MS * 1000;
+    if (select(nfds, &readSet, NULL, NULL, &timeout) <= 0) {
+        return 0; // timeout or error - nothing to process this tick
+    }
+
     struct sockaddr_in from;
     socklen_t fromLen = sizeof(from);
     memset(&from, 0, sizeof(from));
 
-    int received = recvfrom((int)m_socket, (char*)buffer, (int)maxLength, 0,
+    // The socket is readable, so this returns at once. On POSIX MSG_DONTWAIT
+    // also guarantees it: Linux can report a UDP socket readable and then drop
+    // the datagram (bad checksum), and a blocking recvfrom() would then wait for
+    // the next one. Winsock has no MSG_DONTWAIT; there readability suffices.
+#if defined(_WIN32)
+    const int recvFlags = 0;
+#else
+    const int recvFlags = MSG_DONTWAIT;
+#endif
+    int received = recvfrom((int)m_socket, (char*)buffer, (int)maxLength, recvFlags,
                             (struct sockaddr*)&from, &fromLen);
     if (received <= 0) {
         return 0; // timeout or error - nothing to process this tick

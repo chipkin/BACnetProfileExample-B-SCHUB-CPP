@@ -194,7 +194,7 @@ and zlib keep their own licences - see
   in the commit, and a comment on the issue when work lands locally.
 - Agent commits use
   `git -c user.name="SWS-Chipkin" -c user.email="sws-dev@chipkin.com" commit ...`
-  and keep the `Co-Authored-By: Claude ...` trailer.
+  and carry no `Co-Authored-By` trailer.
 - This repository is **public**: never commit stack source, keys other than
   the public demo set in `certs/`, or anything from the private product.
 - The series check (`tools/check-series.sh` in the examples workspace)

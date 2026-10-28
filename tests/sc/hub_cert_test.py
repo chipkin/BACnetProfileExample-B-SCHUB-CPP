@@ -275,18 +275,17 @@ def main():
 
         # 4. Options this example doesn't have are refused as unknown: signing,
         # and the production conveniences (HTTP, service, config and log files,
-        # the hub connector, more connections, ...), BACnet/IP (--port) and
-        # --generate-csr (the request is made at start-up).
-        for option in (["--port", "47808"], ["--generate-csr"], ["--generate-certs"], ["--add-client-certs"], ["--sign-csr", "x.zip"],
+        # ...) and --generate-csr (the request is made at start-up).
+        # (--port, --device-name, the network-number options, --sc-hub-uri,
+        # --sc-failover-uri, --sc-max-hub-connections, --sc-rate-limit* and
+        # --sc-accept-hub-without-hello are the example's own: see
+        # ip_port_test.py, hub_options_test.py and connector_test.py.)
+        for option in (["--generate-csr"], ["--generate-certs"], ["--add-client-certs"], ["--sign-csr", "x.zip"],
                        ["--migrate-certs"], ["--inspect", "x.pem"], ["--cert-hub-uri", "wss://h:1/"],
                        ["--config", "x.conf"], ["--http-port", "8080"], ["--http-bind", "0.0.0.0"],
-                       ["--sc-hub-uri", "wss://h:1/"], ["--sc-failover-uri", "wss://h:1/"],
-                       ["--sc-accept-hub-without-hello"], ["--sc-keylog-file", "k.log"],
-                       ["--sc-max-hub-connections", "4"], ["--sc-rate-limit", "5"],
-                       ["--log-file", "hub.log"], ["--service"], ["--install-service"],
-                       ["--device-name", "x"], ["--bacnet-ip", "off"],
-                       ["--ip-network-number", "1"], ["--dcc-password", "x"], ["--demo-stop-after", "5"],
-                       ["--xml"]):
+                       ["--sc-keylog-file", "k.log"], ["--log-file", "hub.log"], ["--service"],
+                       ["--install-service"], ["--bacnet-ip", "off"], ["--dcc-password", "x"],
+                       ["--demo-stop-after", "5"], ["--xml"]):
             rc, out = run(exe, certs, *option)
             record(f"{option[0]} is refused as unknown", rc != 0 and "unknown" in out, last_line(out))
 

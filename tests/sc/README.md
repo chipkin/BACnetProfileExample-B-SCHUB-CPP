@@ -5,9 +5,9 @@ Verification scripts for the B-SCHUB example: the BACnet/SC transport
 procedures, the connection and run limits, the log file and `--help`. CI runs
 all of them on Windows and Linux (see [CI](#ci) below).
 
-The example has **no BACnet/IP port**, so every BACnet test (ReadProperty,
-AtomicReadFile, the certificate procedures, ...) talks to it as a BACnet/SC
-device: `sc_client.py` connects to the hub with a device certificate, sends a
+The hub has **no BACnet/IP port** unless it is started with `--port`, so every
+BACnet test (ReadProperty, AtomicReadFile, the certificate procedures, ...)
+talks to it as a BACnet/SC device: `sc_client.py` connects to the hub with a device certificate, sends a
 Connect-Request, and runs a bacpypes3 application on that connection
 (Encapsulated-NPDU messages through the hub). It finds the hub's own device
 with Who-Is and sends its requests to the VMAC the I-Am came from:
@@ -80,8 +80,8 @@ Starts the executable itself with test certificates and checks:
   Hub and sales@chipkin.com, before the `ready` line;
 - four devices are accepted; a fifth gets a BVLC-Result NAK, and the hub logs
   the connection-limit warning (naming sales@chipkin.com) once;
-- the limit is fixed: `--sc-max-hub-connections 5` is refused as an unknown
-  option.
+- the limit cannot be raised: `--sc-max-hub-connections 5` is refused with the
+  example's "at most 4" message (`hub_options_test.py` checks lowering it).
 
 ```
 python tests/sc/connection_limit_test.py --exe build/BACnetExampleBSCHUB
@@ -104,21 +104,131 @@ so it sets the **test-only** environment variable
 python tests/sc/run_limit_test.py --exe build/BACnetExampleBSCHUB
 ```
 
-## `startup_test.py` (`--help`, the log file, no BACnet/IP)
+## `startup_test.py` (`--help`, the log file, BACnet/IP off by default)
 
 Starts the executable itself, in a temporary folder:
 
 - `--help` links to <https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP>,
   says `hub-cari-request.zip` is created at start-up if it doesn't already
-  exist, names `logs/B-SCHUB.log`, lists neither `--port` nor
-  `--generate-csr`, and doesn't advertise the product;
+  exist, names `logs/B-SCHUB.log`, lists `--port` (the opt-in BACnet/IP port)
+  but not `--generate-csr`, and doesn't advertise the product;
 - a run writes `logs/B-SCHUB.log` (the folder is made), byte for byte what
   the console showed - including libwebsockets' lines - and prints its full
   path at start-up; a restart empties it first;
-- UDP port 47808 stays free while the hub runs, and nothing mentions BACnet/IP.
+- without `--port` nothing in the start-up mentions BACnet/IP or a UDP port;
+  with `--port <n>` the start-up (and the log file) says the hub listens on
+  UDP port `n`. UDP port 47808 is never touched.
 
 ```
 python tests/sc/startup_test.py --exe build/BACnetExampleBSCHUB
+```
+
+## `ip_port_test.py` (the optional BACnet/IP port)
+
+Starts the executable itself and talks to it over plain BACnet/IP (UDP, hand-built
+BVLC/NPDU/APDU; no BACnet library needed). It picks a free UDP port of its own
+and never uses 47808.
+
+- **Default:** without `--port` the start-up says nothing about BACnet/IP.
+- **`--port <n>`:** the hub says it listens on UDP port `n`; Who-Is gets an I-Am
+  from 389022; `Object_List` holds Network Port 1 and 2; Network Port 1 reports
+  `BACnet_IP_UDP_Port` = `n` and a 4-octet `IP_Address`; `Network_Number` is 0;
+  both Network Ports carry their names; every property in the Device's and the
+  Network Ports' `Property_List` reads.
+  The BACnet/SC listener still accepts a device.
+- **Network numbers:** `--ip-network-number 7 --sc-network-number 9` are the
+  ports' `Network_Number`.
+- **Options:** a missing, zero, too large or non-numeric `--port`,
+  `--ip-network-number` without `--port`, out-of-range numbers and equal
+  numbers are refused.
+
+```
+python tests/sc/ip_port_test.py --exe build/BACnetExampleBSCHUB
+```
+
+## `time_sync_test.py` (TimeSynchronization, DM-TS-B)
+
+Starts the executable itself (with `--port`, on test certificates) and checks that
+the Device claims TimeSynchronization, lists
+`Local_Date` and `Local_Time`, and that a directed TimeSynchronization sets the
+clock: 2031-02-28 and the leap day 2028-02-29 over BACnet/IP (UDP), then
+2033-12-31 over BACnet/SC (bacpypes3), each read back with ReadProperty. The
+clock keeps running after a synchronization. Requests for 30 February, for 29
+February in a common year, with an unspecified hour and with an unspecified
+date are ignored (the service is unconfirmed, so there is no reply; the clock
+is unchanged).
+
+```
+python tests/sc/time_sync_test.py --exe build/BACnetExampleBSCHUB
+```
+
+## `utc_time_sync_test.py` (UTCTimeSynchronization, DM-UTC-B)
+
+Starts the executable itself (with `--port`, on test certificates) and checks that
+the Device also claims UTCTimeSynchronization, lists `UTC_Offset` and
+`Daylight_Savings_Status`, and that both start from the host's time zone (the
+standard-time offset in minutes, west of Greenwich positive, and whether daylight
+saving time is in effect; the test is run under several `TZ` values to cover
+it). Over BACnet/IP both properties are written: `UTC_Offset` takes any multiple
+of 15 minutes from -1440 to +1440 (7, 1455, 1500, 2880 and a wrong datatype are
+refused and change nothing), and writing either one moves `Local_Time` but not
+UTC. A directed UTCTimeSynchronization then sets `Local_Date` / `Local_Time` to
+UTC minus `UTC_Offset` (plus one hour while `Daylight_Savings_Status` is TRUE),
+across midnight, a year end and a leap day, at the extremes of +-24 h; the clock
+keeps running; requests for 30 February, for 29 February in a common year, with an
+unspecified hour and with an unspecified date are ignored; a TimeSynchronization
+still sets exactly the local time asked for and a UTCTimeSynchronization for the
+same moment agrees. Over BACnet/SC a UTCTimeSynchronization sets the clock and
+`UTC_Offset` / `Daylight_Savings_Status` read back (bacpypes3).
+
+```
+python tests/sc/utc_time_sync_test.py --exe build/BACnetExampleBSCHUB
+```
+
+## `hub_options_test.py` (`--device-name`, the connection limit, the rate limits)
+
+- **`--device-name`:** the Device's `Object_Name` (read over `--port`) is the name
+  given, the hub's certificate request is for it, and an empty name, a 129-byte
+  name or a missing value is refused.
+- **`--sc-max-hub-connections 2`:** two devices are accepted, the third gets a
+  BVLC-Result NAK and the warning says "at most 2"; 5, 0, -1, `abc`, 70000 and a
+  missing value are refused (5 with the example's "at most 4" message).
+- **`--sc-rate-limit` / `--sc-rate-limit-total`:** a burst of connection attempts
+  past a limit of 2 per address (or 3 in total) is hung up on before the TLS
+  handshake and logged; with the defaults (10 and 50) or with 0 (off) a burst is
+  not; bad values are refused.
+
+```
+python tests/sc/hub_options_test.py --exe build/BACnetExampleBSCHUB
+```
+
+## `connector_test.py` (the hub connector, with `fake_hub_server.py`)
+
+Runs `fake_hub_server.py` in-process as a mutual-TLS BACnet/SC hub and starts the
+executable against it.
+
+- **Primary hub:** `--sc-hub-uri` is dialled with the hub's own certificate; the
+  Connect-Request carries the Hello option; after the Connect-Accept the stack's
+  state machine reaches connected; when the fake hub closes the connection the
+  hub logs it and the stack dials again.
+- **Failover:** with a primary nothing listens on, `--sc-failover-uri` is dialled.
+- **`--sc-accept-hub-without-hello`:** a Connect-Accept without Hello is not
+  accepted by default, and is with the option (which logs a warning).
+- **Revocation list:** an `issuer-crl.pem` that holds no PEM CRL makes the
+  connector refuse every hub (fail closed).
+- **Options:** `--sc-failover-uri` alone, a `ws://` or `http://` URI and a
+  missing value are refused.
+
+```
+python tests/sc/connector_test.py --exe build/BACnetExampleBSCHUB
+```
+
+`fake_hub_server.py` can also be run on its own to look at the connector by hand:
+
+```
+python tests/sc/fake_hub_server.py --port 47940 --cert-dir certs
+# in a separate terminal:
+./build/BACnetExampleBSCHUB --sc-hub-uri wss://127.0.0.1:47940/
 ```
 
 ## `hub_cert_test.py` (the hub's own certificate)
@@ -142,10 +252,9 @@ running. It plays the CA with the `cryptography` package.
   certificate, `iss-1.pem` is the issuer that signed it (even when it is
   listed second in the zip), `iss-2.pem` the other issuer, and the key is
   unchanged. The hub then serves BACnet/SC with the imported certificate.
-- **Options this example doesn't have** - `--port` (no BACnet/IP),
-  `--generate-csr` (the request is made at start-up), certificate signing, and
-  the production conveniences of a production hub (HTTP, service, config
-  and log files, the hub connector, more connections, `--demo-stop-after`, ...)
+- **Options this example doesn't have** - `--generate-csr` (the request is made
+  at start-up), certificate signing, and the production conveniences of a
+  production hub (HTTP, service, config and log files, `--demo-stop-after`, ...)
   - are refused as unknown.
 
 ```
@@ -206,7 +315,7 @@ python tests/sc/segmentation_test.py --sc-port 4443 --cert-dir certs
 ## `discovery_test.py` (every listed property reads as a value)
 
 The series' discovery Wire Test (B-SS-CPP `tests/discovery_test.py`), done over
-BACnet/SC because this example has no BACnet/IP port: what a client such as
+BACnet/SC because the hub has no BACnet/IP port unless started with `--port`: what a client such as
 Chipkin BACnet Explorer does when it discovers a device.
 
 - **Who-Is** for 389022 through the hub -> the I-Am.
@@ -283,7 +392,9 @@ python tests/sc/cert_files_test.py --cert-dir certs        # the committed demo 
 for each pull request and tag: `cert_files_test.py` (on a fresh
 `tools/make_test_certs.py` set and on the committed demo set),
 `hub_cert_test.py`, `connection_limit_test.py`, `run_limit_test.py`,
-`startup_test.py`, `hub_listener_test.py`
+`startup_test.py`, `ip_port_test.py`, `time_sync_test.py`, `utc_time_sync_test.py`,
+`hub_options_test.py`,
+`connector_test.py`, `hub_listener_test.py`
 (against the demo set, and again with `--sc-accept-device-without-hello`),
 `file_object_test.py`, `rpm_test.py`, `segmentation_test.py`,
 `discovery_test.py`, and `cert_procedure_test.py` (on throwaway sets).

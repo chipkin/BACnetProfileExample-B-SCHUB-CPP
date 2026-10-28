@@ -41,7 +41,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "3.4.0";
+static const char* COMMON_VERSION = "3.5.0";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.
@@ -74,8 +74,12 @@ void PrintHelp(const char* appName, const char* appVersion);
 // default-valued addition - it does not remove ParseDccPasswordArg() (still
 // here, still usable by any example that still wants --dcc-password) or
 // change any existing 4-argument call site's behaviour.
+//
+// showDeviceNameCliOption (added common/ 3.5.0, default false so every existing
+// call site prints exactly what it printed before): pass true when the example
+// reads --deviceName with ParseDeviceNameArg() below, and the help lists it.
 bool HandleHelpAndVersionArgs(int argc, char** argv, const char* appName, const char* appVersion,
-                              bool showDccPasswordCliOption = true);
+                              bool showDccPasswordCliOption = true, bool showDeviceNameCliOption = false);
 
 // Return the UDP port to use: the value after "--port" if present, else
 // defaultPort. Common to every example.
@@ -85,6 +89,19 @@ uint16_t ParsePortArg(int argc, char** argv, uint16_t defaultPort);
 // else defaultDeviceId. BACnet requires a device's instance to be configurable.
 // Common to every example.
 uint32_t ParseDeviceIdArg(int argc, char** argv, uint32_t defaultDeviceId);
+
+// Return the Device object's Object_Name to use: the value after "--deviceName"
+// if present and valid, else defaultDeviceName. Object_Name must be unique
+// across the BACnet internetwork (cl. 12.1.1.4 / 12.11), so two units that
+// share a compile-time name are non-conformant the moment both are installed;
+// this makes it per-unit configurable at start-up, the same way --deviceID
+// makes the instance configurable. Valid = 1..MAX_DEVICE_NAME_LENGTH bytes and
+// no control characters (a name must be printable); anything else prints a
+// warning and keeps the default. Returns a pointer into argv or
+// defaultDeviceName itself - the caller does not own it (same contract as
+// ParseDccPasswordArg). Added common/ 3.5.0.
+static const size_t MAX_DEVICE_NAME_LENGTH = 255;
+const char* ParseDeviceNameArg(int argc, char** argv, const char* defaultDeviceName);
 
 // Return the DeviceCommunicationControl (and ReinitializeDevice) password to
 // require: the value after "--dcc-password" if present, else defaultPassword.

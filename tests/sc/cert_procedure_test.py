@@ -295,16 +295,11 @@ async def main():
                "optional-functionality-not-supported" in error_text(response), error_text(response))
 
         # --- Changes_Pending before any write -----------------------------------------------------
-        # Should be FALSE: nothing has been written. The stack reports TRUE on every start
-        # (cas-bacnet-stack#2866: SetBACnetSCCertificateFileObjects leaves its own start-up
-        # binding pending), so this is reported as a known issue rather than failed. When it
-        # reads FALSE, #2866 is fixed: make this a normal record().
+        # FALSE: nothing has been written. The hub activates its own start-up binding of the
+        # certificate Files (BACnetStack_ActivateNetworkPortPendingChanges); without that the stack
+        # reports TRUE on every start.
         pending = await hub.app.read_property(hub.address, ObjectIdentifier(("network-port", SC_NETWORK_PORT)), PROPERTY_CHANGES_PENDING)
-        if pending:
-            print("KNOWN ISSUE: Network Port 2 Changes_Pending is TRUE before any write "
-                  "(#41, cas-bacnet-stack#2866) - not counted as a failure")
-        else:
-            record("Network Port 2 Changes_Pending FALSE before any write (cas-bacnet-stack#2866 fixed)", True)
+        record("Network Port 2 Changes_Pending FALSE before any write", not pending, str(pending))
 
         # --- removing the only issuer ----------------------------------------------------------
         # Slot 2 has no file of its own yet, so it serves slot 1. Emptying slot 1 must not pass
@@ -315,9 +310,7 @@ async def main():
         record("ACTIVATE_CHANGES with no issuer left refused",
                "invalid-configuration-data" in error_text(response), error_text(response))
         record("issuer slot 1 file unchanged", cert_paths.issuer_certificate(hub_dir).stat().st_size > 0)
-        # Put the original back (staged; activated with the next step). Not DISCARD_CHANGES here:
-        # on a fresh hub it also reverts the stack's own start-up pending state (#41,
-        # cas-bacnet-stack#2866), after which Changes_Pending no longer follows certificate writes.
+        # Put the original back (staged; activated with the next step).
         await write_file(hub, FILE_ISSUER_1, cert_paths.issuer_certificate(hub_dir).read_bytes())
 
         # --- add issuer -----------------------------------------------------------------------

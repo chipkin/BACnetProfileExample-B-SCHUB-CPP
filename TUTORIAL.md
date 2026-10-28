@@ -27,9 +27,10 @@ string in `GetPropertyCharString`).
 **Change the device identity before you ship** - vendor ID, vendor name, model
 name, device name and the BACnet/SC device UUID are all in the
 `CHANGE ALL OF THIS BEFORE YOU SHIP` block at the top of `main.cpp`, with a
-per-field note on each saying what to change it to. A real product also makes
-`Object_Name` configurable per unit, as the device instance already is
-(`--deviceID`, default 389022, the series' instance for this example).
+per-field note on each saying what to change it to. The device instance
+(`--deviceID`, default 389022, the series' instance for this example) and the
+`Object_Name` (`--device-name`) are already configurable per unit, so two hubs
+can be given distinct, unique identities without a rebuild.
 
 **Require a password for DeviceCommunicationControl and ReinitializeDevice** -
 the example accepts any request. A real device compares the `password`
@@ -41,12 +42,25 @@ line (it would show in process listings).
 connection and traffic counters `ScTransport` keeps (devices connected,
 connects, refusals, rate-limit rejections, RX/TX).
 
-**The connection limit** - `SC_MAX_HUB_CONNECTIONS` (4) is passed to
-`BACnetStack_SetBACnetSCHubFunctionConfig`. The CAS BACnet Stack enforces it at
+**The connection limit** - `g_scMaxHubConnections` (4, or less with
+`--sc-max-hub-connections`; `SC_MAX_HUB_CONNECTIONS_LIMIT` is the ceiling) is
+passed to `BACnetStack_SetBACnetSCHubFunctionConfig`. The CAS BACnet Stack enforces it at
 the BACnet/SC protocol layer: the WebSocket/TLS connection in
 `sc_transport/ScTransport` still completes, and it is the BVLC-SC
 Connect-Request immediately afterwards that the stack refuses with a NAK. The
 main loop notices the refusal in `ScTransport::GetMetrics()` and logs why.
+
+**Limits on connection attempts** - `--sc-rate-limit` (per address) and
+`--sc-rate-limit-total` are token buckets in `ScTransport::SetConnectionRateLimits`,
+checked before the TLS handshake starts, so a flood of attempts costs the hub
+almost nothing. They bound how fast devices may *try*; the connection limit above
+bounds how many are *connected*.
+
+**Add a BACnet/IP port, or a hub connector** - both are already there, off by
+default. `--port <n>` creates Network Port 1 and binds the UDP socket
+`ScTransportRouter` owns; `--sc-hub-uri` / `--sc-failover-uri` configure the hub
+connector with `BACnetStack_SetBACnetSCHubConnectorForNetworkPort`. The sections
+below say how each works.
 
 **The run limit** - the main loop stops the example after
 `DEMO_RUN_LIMIT_SECONDS` (24 hours), logging why (`RUN_LIMIT_MESSAGE_FORMAT`).
@@ -83,19 +97,30 @@ The transport is real, compiled, and verified against real peers;
 into `sc_transport/ScTransport` - a libwebsockets + OpenSSL wrapper (fetched
 via vcpkg, never vendored) that implements the hub function's **listener**:
 TLS 1.3, mutual authentication, the `hub.bsc.bacnet.org` subprotocol. A hub
-does not dial out, so the example registers no `CallbackInitiateWebsocket`.
+does not need to dial out, but with `--sc-hub-uri` it can: `CallbackInitiateWebsocket`
+forwards to `ScTransport::Connect()`, which opens one TLS 1.3 client connection
+per hub URI with the hub's own certificate (mutual TLS; the other hub's
+certificate is checked against the issuers, and a revocation list that holds no
+CRL makes every connection fail). `ScTransport` never re-dials by itself: the
+stack's own timers decide when to dial again and when to switch to
+`--sc-failover-uri`.
 
 `sc_transport/ScTransportRouter` is the stack&lt;-&gt;transport glue: it
 registers the stack's `ReceiveMessageForPort`/`SendMessageForPort` callbacks
 (the stack holds only ONE pointer per callback slot, so this must happen
 *after* `CASExampleHelper::RegisterCommonCallbacks()`) and moves the BACnet/SC
-Network Port's messages to and from `ScTransport`.
+Network Port's messages to and from `ScTransport` - and, with `--port`, the
+BACnet/IP Network Port's messages to and from its own UDP socket, polling the
+two alternately so neither starves the other.
 
-**There is no BACnet/IP port.** BACnet/SC is the device's only data link, so
-the hub's own device - its objects, the certificate procedures, Who-Is - is
-reached through the hub function: a device connects to the hub, finds the
-hub's device with Who-Is, and sends its requests to the VMAC the I-Am came
-from. `tests/sc/sc_client.py` does exactly that (a bacpypes3 application on a
+**By default there is no BACnet/IP port.** BACnet/SC is then the device's only
+data link, so the hub's own device - its objects, the certificate procedures,
+Who-Is - is reached through the hub function: a device connects to the hub,
+finds the hub's device with Who-Is, and sends its requests to the VMAC the I-Am
+came from. With `--port <n>` the same device is also reachable over BACnet/IP
+(Network Port 1, instance 1): `GetPropertyOctetString` serves its IP address,
+subnet mask and gateway, and an I-Am is broadcast at start-up. The hub function
+is still BACnet/SC only. `tests/sc/sc_client.py` does exactly that (a bacpypes3 application on a
 hub connection). The BACnet/SC Network Port keeps instance 2, because the CARI
 certificate tree names the port (`cert1/device-<n>/port-2/`). One consequence:
 a ReinitializeDevice `ACTIVATE_CHANGES` arrives over the very connection the
@@ -307,6 +332,32 @@ rather than against "it looked fine in the explorer":
    An actual SC device connecting is verifiable, and should be verified, not
    assumed from the configuration calls succeeding alone.
 
+### Time synchronization (DM-TS-B, DM-UTC-B)
+
+To claim DM-TS-B a device must really keep a clock and let the service move it.
+In `main.cpp`: enable `SERVICE_TIME_SYNCHRONIZATION`; answer the Device's
+`Local_Date` and `Local_Time` from `GetPropertyDate` / `GetPropertyTime` (the
+stack lists them in `Property_List` as soon as the service is enabled and
+returns an error for them if you do not); and register `SetSystemTime`, which the
+stack calls after it has refused a request with an unspecified field or an
+impossible date. Here the clock is the host's plus an in-memory correction
+(`g_clockOffsetSeconds`), also given to the stack through `GetSystemTime`; a
+device with a real-time clock would set that clock. `tests/sc/time_sync_test.py`
+sends the service and reads the clock back.
+
+To claim DM-UTC-B as well, enable `SERVICE_UTC_TIME_SYNCHRONIZATION` and give the
+Device a real `UTC_Offset` (`GetPropertySignedInteger`) and `Daylight_Savings_Status`
+(`GetPropertyBool`): the stack reads both, subtracts the offset from the UTC in
+the request (an hour less while daylight saving applies) and hands `SetSystemTime`
+the resulting LOCAL time, the same callback TimeSynchronization uses. So the
+clock must be UTC plus a time zone, not a local clock: here `g_utcOffsetMinutes`
+and `g_daylightSavings` start from the host's time zone and
+`Local_Date` / `Local_Time` are UTC - offset (+1 h). The offset is west-positive
+(UTC-8 is 480) and, per the standard, "configurable", so it is made writable
+(`SetPropertySignedInteger`, multiples of 15 minutes from -1440 to +1440) together
+with `Daylight_Savings_Status` (`SetPropertyWritable`). `tests/sc/utc_time_sync_test.py`
+sends both services with several zones and reads the local time back.
+
 ### Keeping the PICS honest
 
 `docs/PICS.md` is partly generated. `docs/objects.json` describes each object and
@@ -338,8 +389,9 @@ not in `accepted`, comes out as a ⚠ row - that is a defect, not a feature.
 | `CASBACnetStackDLL.h: No such file or directory` | Same - submodules not checked out. |
 | Windows: *"No CMAKE_CXX_COMPILER could be found"* | Install Visual Studio with the "Desktop development with C++" workload, then re-run from a fresh terminal. |
 | First build seems stuck for minutes | Normal - it's compiling ~600 stack files. Only the first build is slow. |
-| A BACnet/IP tool can't find the hub | Expected: the example has no BACnet/IP port. Connect to the hub over BACnet/SC (`wss://<this computer>:4443/`) with a device certificate, and send Who-Is there. |
+| A BACnet/IP tool can't find the hub | Expected unless the hub was started with `--port <n>`: by default it has no BACnet/IP port. Either add `--port` (the tool then finds Device 389022 on UDP `n`), or connect to the hub over BACnet/SC (`wss://<this computer>:4443/`) with a device certificate, and send Who-Is there. |
+| The hub never connects to the hub named in `--sc-hub-uri` | The "dialing out to ..." line says it tried; the line after it (or the "Connect(...) failed" line) says why. The other hub must trust the issuer of this hub's certificate, and this hub must trust the other hub's. A hub that leaves out the Hello option of its Connect-Accept needs `--sc-accept-hub-without-hello`. An `issuer-crl.pem` that holds no CRL stops every connection. `tests/sc/connector_test.py` and `fake_hub_server.py` show a working connection. |
 | *"could not create the log file"* | Another copy of the example is already running in the same folder (on Windows it holds `logs/B-SCHUB.log`), or the folder isn't writable. The example still runs, logging to the console only; run each copy from its own folder. |
 | The example stopped after 24 hours | Expected: the run limit. Start it again; for a hub that keeps running, see the Chipkin BACnet SC Hub. |
 | DeviceCommunicationControl `disable` returns an error | Expected. The plain `disable` value is deprecated at Protocol_Revision >= 20; use `disable-initiation` instead. |
-| Client sends Who-Is but sees no I-Am | The client must be connected to the hub over BACnet/SC and send Who-Is through it (there is no BACnet/IP). Check the device's Connect-Request was accepted (the "SC audit" lines). |
+| Client sends Who-Is but sees no I-Am | Without `--port` the client must be connected to the hub over BACnet/SC and send Who-Is through it (there is no BACnet/IP). Check the device's Connect-Request was accepted (the "SC audit" lines). With `--port`, check the UDP port and that the client's broadcast reaches this computer's network. |

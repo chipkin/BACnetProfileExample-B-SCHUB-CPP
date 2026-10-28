@@ -8,29 +8,41 @@
 // transport BACnet/SC needs. The CAS BACnet Stack owns the BACnet/SC PROTOCOL
 // (Hello handshake, the hub function's state machine, BVLC framing) - see
 // main.cpp's file header - and asks the host for a transport through
-// callbacks. This class IS that transport for the one role a B-SCHUB hub
-// needs: the hub function's LISTENER ("accept" role).
+// callbacks. This class IS that transport, for the two roles of a hub:
 //
-// StartListening()/StopListening() open/close a server lws_context that
-// accepts mutually-authenticated TLS 1.3 WebSocket connections offering the
-// "hub.bsc.bacnet.org" subprotocol (135-2024 AB.7.1 - see sc_transport/README.md
-// fact 1).
+//   * Listener  (hub function "accept" role). StartListening()/StopListening()
+//     open/close a server lws_context that accepts mutually-authenticated TLS
+//     1.3 WebSocket connections offering the "hub.bsc.bacnet.org" subprotocol
+//     (135-2024 AB.7.1 - see sc_transport/README.md fact 1).
+//   * Connector (hub "initiate" role, only with --sc-hub-uri). Connect()/
+//     Disconnect() open/close ONE client lws_context PER CONNECTION
+//     (CONTEXT_PORT_NO_LISTEN), keyed by the exact URI string the stack passed
+//     to the initiate callback. Same subprotocol, same TLS 1.3-only
+//     restriction, same mutual-TLS identity (this device's own cert/key from
+//     Configure()) as the listener: a BACnet/SC device presents ONE identity
+//     regardless of which role a given socket plays.
 //
 // THREADING / RE-ENTRANCY (README fact 6): every method here runs on the
 // caller's thread (the main loop's thread, single-threaded in this example)
 // and every libwebsockets callback also runs synchronously on that SAME thread,
-// inside Service(). HandleServerCallback below never calls BACnetStack_* - it
-// only touches the queues (m_rxQueue, m_statusQueue) and lws itself. The stack
-// is told about received frames and status changes only when the MAIN LOOP
-// later drains those queues via PopReceived()/PopStatusEvent() - never
-// synchronously from inside a callback.
+// inside Service() or - for the connector - synchronously from INSIDE Connect()
+// itself (lws can invoke CLIENT_CONNECTION_ERROR before
+// lws_client_connect_via_info even returns). Neither HandleServerCallback nor
+// HandleClientCallback below call BACnetStack_* - they only touch the queues
+// (m_rxQueue, m_statusQueue) and lws itself. The stack is told about received
+// frames and status changes only when the MAIN LOOP later drains those queues
+// via PopReceived()/PopStatusEvent() - never synchronously from inside a
+// callback.
 //
-// NON-BLOCKING SERVICE: Service() pumps the listener's lws_context with
+// NON-BLOCKING SERVICE: Service() pumps each live lws_context (the listener's,
+// plus one per live connector connection) with
 // `lws_cancel_service(ctx); lws_service(ctx, 0);`, which returns at once on
 // Windows and Linux.
 //
-// NO TIMERS OF ITS OWN (README fact 7): the stack owns every timer - heartbeat,
-// Connect-Request timeouts. This class only moves bytes and reports closes.
+// NO TIMERS OF ITS OWN, NO AUTO-RECONNECT (README fact 7): the stack owns every
+// timer - heartbeat, Connect-Request timeouts, reconnect and failover. This
+// class only moves bytes and reports closes; it dials only when the stack calls
+// Connect() again (Connect() replaces any previous context for the same URI).
 //
 // INGRESS CEILING (README fact 8): BACNET_INTERFACE_MAX_INPUT_BUFFER_LENGTH is
 // 1600 bytes, ANSI/ASHRAE 135 Annex AB's minimum BVLC-SC relay size. A
@@ -64,13 +76,14 @@ struct ScTlsFiles {
     std::string caCertPath;    // the trusted issuers - validate the PEER's certificate
     std::string certPath;      // this device's own operational certificate
     std::string keyPath;       // this device's own private key (never shared)
-    // Optional certificate revocation list(s), PEM. When this file exists, the
-    // listener's TLS context loads it and checks the peer's certificate
-    // against it (X509_V_FLAG_CRL_CHECK): a revoked certificate is refused,
-    // and so is a certificate whose issuer has no CRL in the file, or whose
-    // CRL has expired - revocation checking fails closed. A file that exists
-    // but holds no parsable CRL stops the listener from starting (logged)
-    // until it is fixed. Empty or missing = no revocation checking.
+    // Optional certificate revocation list(s), PEM. When this file exists,
+    // every TLS context (the listener's and each hub connection's) loads it and
+    // checks the peer's certificate against it (X509_V_FLAG_CRL_CHECK): a
+    // revoked certificate is refused, and so is a certificate whose issuer has
+    // no CRL in the file, or whose CRL has expired - revocation checking fails
+    // closed. A file that exists but holds no parsable CRL stops the listener
+    // from starting (logged) and makes the connector refuse every hub, until
+    // it is fixed. Empty or missing = no revocation checking.
     std::string crlPath;
 };
 
@@ -82,7 +95,8 @@ struct ScTlsFiles {
 //                                 and later as the address to Send() a reply to
 //                                 (README fact 2; matches DoesConfiguredUriMatch
 //                                 in source/BACnetDataLinkSC.cpp).
-//   destinationConnectionString - the bare accept URI.
+//   destinationConnectionString - the bare accept URI (listener) or empty
+//                                 (connector).
 struct ScReceivedFrame {
     std::string sourceConnectionString;
     std::string destinationConnectionString;
@@ -99,6 +113,13 @@ struct ScReceivedFrame {
 // Connecting/Connected): an accepted socket does not become a "connection" the
 // stack tracks until its own Connect-Request/Accept exchange finishes, which
 // the stack, not this transport, is responsible for.
+//
+// For an OUTBOUND (connector) connection this class queues Connected(2) on
+// LWS_CALLBACK_CLIENT_ESTABLISHED (the WebSocket upgrade completing - the
+// connector's own Connect-Request/Accept exchange over that socket is, again,
+// the stack's job), Error(4) on LWS_CALLBACK_CLIENT_CONNECTION_ERROR (TLS/
+// handshake/upgrade failure) and Disconnected(3) on LWS_CALLBACK_CLIENT_CLOSED
+// (any later close, clean or not).
 struct ScStatusEvent {
     std::string uri;
     uint8_t status;      // BACnetSCConstants::BACnetSCWebsocketStatus (Connecting=1..Error=4)
@@ -197,14 +218,33 @@ public:
     // to call every tick.
     ScTransportMetrics GetMetrics() const;
 
-    // Closes the accepted peer identified by `connStr` ("<acceptUri>|client=N").
-    // Safe to call for an unknown/already-closed connString (no-op). Does not
-    // itself push a status event - the resulting LWS_CALLBACK_CLOSED callback
-    // does that once the close completes.
+    // --- Connector (client) half ----------------------------------------
+    //
+    // Opens (or, if one is already open/opening/closed-but-not-yet-retried for
+    // this exact URI, tears down and REPLACES) an outbound TLS WebSocket client
+    // connection to `uri` (wss://host:port/path), using ONE dedicated client
+    // lws_context for this connection. Requires Configure() to have been
+    // called with valid, readable cert/key/CA files - this device presents the
+    // SAME identity as the listener. Returns false (logs) immediately if not
+    // configured, the cert files are missing/unreadable, `uri` does not parse,
+    // or lws fails to create the context/start the connection attempt. A
+    // `true` return means the connection ATTEMPT started, not that it
+    // succeeded - watch for a queued Connected(2)/Error(4) ScStatusEvent. This
+    // class never calls Connect() again on its own after a failure/close
+    // (README fact 7) - the stack's own retry timer does.
+    bool Connect(const std::string& uri);
+
+    // Closes a connection identified by `connStr`, which may be either an
+    // outbound URI (as passed to Connect()) or an accepted-peer
+    // "<acceptUri>|client=N" string (the listener half). Safe to call for an
+    // unknown/already-closed connString (no-op). Does not itself push a status
+    // event - the resulting LWS_CALLBACK_CLIENT_CLOSED/LWS_CALLBACK_CLOSED
+    // callback does that once the close completes.
     void Disconnect(const std::string& connStr);
 
     // Enqueues `data` (len bytes) for the peer identified by `connStr` (an
-    // accepted-peer string "<acceptUri>|client=N") and asks lws to call back
+    // accepted-peer string "<acceptUri>|client=N", or the URI of a connector
+    // connection) and asks lws to call back
     // when the socket is writable. Returns false immediately (0 bytes queued)
     // if connStr names no live peer - ScTransportRouter's SendMessageForPort
     // callback returns 0 to the stack in that case, per CASBACnetStackDLL.h's
@@ -214,7 +254,7 @@ public:
     // close is reported to the stack like any other.
     bool Send(const std::string& connStr, const uint8_t* data, uint16_t len);
 
-    // Pumps the listener's lws_context non-blockingly. Call once per main-loop
+    // Pumps every live lws_context non-blockingly. Call once per main-loop
     // tick, after BACnetStack_Tick(). May populate the receive/status queues
     // below; never calls BACnetStack_*.
     void Service();
@@ -225,11 +265,15 @@ public:
     // Pops one status event (FIFO). Returns false if the queue is empty.
     bool PopStatusEvent(ScStatusEvent* outEvent);
 
-    // --- lws callback trampoline entry point -------------------------------
-    // Public only because it must be reachable from a free (non-member) C
+    // --- lws callback trampoline entry points -----------------------------
+    // Public only because each must be reachable from a free (non-member) C
     // function pointer handed to lws (struct lws_protocols::callback); not
-    // meant to be called by application code. See ScTransport.cpp.
+    // meant to be called by application code. See ScTransport.cpp. Two entry
+    // points (not one) because the listener's lws_context and every connector
+    // lws_context are distinct contexts - reasons like ESTABLISHED/CLOSED mean
+    // different things (accept vs. dial) on each.
     int HandleServerCallback(lws* wsi, int reason, void* user, void* in, std::size_t len);
+    int HandleClientCallback(lws* wsi, int reason, void* user, void* in, std::size_t len);
 
 private:
     // A close this class asked for. lws only closes a connection when one of
@@ -258,6 +302,30 @@ private:
         std::string uuid;
         bool accepted = false;             // the stack sent it a Connect-Accept
     };
+
+    // One outbound (connector-role) connection: its own dedicated lws_context,
+    // keyed by the URI string Connect() was called with (m_clients' key). The
+    // same shape as PeerConnection, reused via HandleIncomingFragment below.
+    struct ClientConnection {
+        lws_context* context = nullptr;
+        lws* wsi = nullptr;                // null before ESTABLISHED and after CLOSED/error
+        std::string uri;
+        std::string peerAddress;           // "ip:port" the URI actually connected to - best-effort
+        std::vector<uint8_t> rxAssembly;
+        bool rxOverflow = false;
+        std::deque<std::vector<uint8_t>> txQueue;
+        uint16_t lastCloseCode = 0;
+        CloseRequest closeRequest;
+    };
+
+    // Builds m_clientProtocols on first use (every ClientConnection's
+    // lws_context shares this one read-only table).
+    void EnsureClientProtocolsTable();
+    // Destroys `conn`'s lws_context if it has one. Only ever called OUTSIDE
+    // that context's own callback (from Connect(), replacing a stale entry for
+    // the same URI, or from ~ScTransport()) - lws_context_destroy is not
+    // reentrant-safe from inside its own callback.
+    void DestroyClientContext(ClientConnection& conn);
 
     void LogListenFailureOnce(const std::string& reason);
     void DestroyListenerContext();
@@ -339,10 +407,19 @@ private:
     // DestroyListenerContext(); must outlive m_listenerContext (lws keeps the
     // pointer for the vhost's lifetime).
     lws_protocols* m_protocols = nullptr;
-    std::string m_protocolNameStorage;  // backing storage for m_protocols[0].name
+    // The connector's table is allocated once in EnsureClientProtocolsTable(),
+    // freed in ~ScTransport() and shared by every ClientConnection's context.
+    lws_protocols* m_clientProtocols = nullptr;
+    // Backing storage for m_protocols[0].name AND m_clientProtocols[0].name -
+    // set once, in Configure().
+    std::string m_protocolNameStorage;
 
     std::map<lws*, PeerConnection> m_peers;              // keyed by lws*
     std::map<std::string, lws*> m_connStringToWsi;        // connStr -> wsi, for Send()/Disconnect() lookup
+    // uri -> connection (connector half). std::map keeps references stable
+    // across inserts elsewhere in the map, which is why Connect() can hand lws
+    // a pointer to a map value as opaque_user_data.
+    std::map<std::string, ClientConnection> m_clients;
 
     std::deque<ScReceivedFrame> m_rxQueue;
     std::deque<ScStatusEvent> m_statusQueue;

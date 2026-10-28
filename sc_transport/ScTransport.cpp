@@ -79,9 +79,13 @@ bool FileReadable(const std::string& path) {
 // Parses "wss://host:port/path...". Only wss:// is accepted (BACnet/SC
 // requires it - AddBACnetSCAcceptUri's own doc comment). host may be empty
 // (e.g. "wss://:4443/") or "0.0.0.0", both of which mean "bind all
-// interfaces" - both map to a NULL lws iface. The path is not used: the stack
-// does not route by path.
-bool ParseWssUri(const std::string& uri, std::string* outHost, uint16_t* outPort) {
+// interfaces" - both map to a NULL lws iface (listener use only). The listener
+// does not use the path (the stack does not route by path); outPath is
+// optional (nullptr for the listener) and, when given, is set to the path
+// component, "/" when the URI has none - Connect() needs it for
+// lws_client_connect_info::path.
+bool ParseWssUri(const std::string& uri, std::string* outHost, uint16_t* outPort,
+                 std::string* outPath = nullptr) {
     static const char kScheme[] = "wss://";
     const std::size_t schemeLen = sizeof(kScheme) - 1;
     if (uri.compare(0, schemeLen, kScheme) != 0) {
@@ -92,6 +96,9 @@ bool ParseWssUri(const std::string& uri, std::string* outHost, uint16_t* outPort
     std::string authority = (pathSlash == std::string::npos)
         ? uri.substr(hostStart)
         : uri.substr(hostStart, pathSlash - hostStart);
+    if (outPath != nullptr) {
+        *outPath = (pathSlash == std::string::npos) ? "/" : uri.substr(pathSlash);
+    }
     if (authority.empty()) {
         return false;
     }
@@ -648,12 +655,36 @@ int LwsServerCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* use
     return self->HandleServerCallback(wsi, static_cast<int>(reason), user, in, len);
 }
 
+// Connector-half sibling of the above - every ClientConnection's lws_context
+// also sets info.user = this (Connect(), below), so the same "context user
+// pointer, not a static singleton" pattern applies here too.
+int LwsClientCallbackTrampoline(lws* wsi, lws_callback_reasons reason, void* user, void* in, std::size_t len) {
+    lws_context* ctx = wsi != nullptr ? lws_get_context(wsi) : nullptr;
+    if (ctx == nullptr) {
+        return 0;
+    }
+    ScTransport* self = static_cast<ScTransport*>(lws_context_user(ctx));
+    if (self == nullptr) {
+        return 0;
+    }
+    return self->HandleClientCallback(wsi, static_cast<int>(reason), user, in, len);
+}
+
 }  // namespace
 
 ScTransport::ScTransport() {}
 
 ScTransport::~ScTransport() {
     DestroyListenerContext();
+    // Outside of any lws callback (this is the destructor) - safe to destroy
+    // every client context directly, unlike HandleClientCallback (see
+    // DestroyClientContext's comment).
+    for (auto& kv : m_clients) {
+        DestroyClientContext(kv.second);
+    }
+    m_clients.clear();
+    delete[] m_clientProtocols;
+    m_clientProtocols = nullptr;
 }
 
 // -----------------------------------------------------------------------------
@@ -964,19 +995,198 @@ void ScTransport::ReloadCredentials() {
                    "every %d s\n", uri.c_str(), (int)kListenRetryInterval.count());
         }
     }
+    // The hub connections use the old files too: close them, and the stack's
+    // own retry timer dials them again with the new ones.
+    for (auto& kv : m_clients) {
+        if (kv.second.wsi != nullptr) {
+            printf("BACnet/SC: reloading certificates - closing hub connection %s (the stack re-dials it)\n",
+                   kv.first.c_str());
+            Disconnect(kv.first);
+        }
+    }
 }
 
 bool ScTransport::IsListening() const {
     return m_listenerContext != nullptr;
 }
 
+void ScTransport::EnsureClientProtocolsTable() {
+    if (m_clientProtocols != nullptr) {
+        return;
+    }
+    // Shared by every ClientConnection's context. Uses m_protocolNameStorage,
+    // the SAME backing string the listener's table uses, so both halves always
+    // offer the identical subprotocol name.
+    m_clientProtocols = new lws_protocols[2];
+    std::memset(m_clientProtocols, 0, sizeof(lws_protocols) * 2);
+    m_clientProtocols[0].name = m_protocolNameStorage.c_str();
+    m_clientProtocols[0].callback = &LwsClientCallbackTrampoline;
+    m_clientProtocols[0].per_session_data_size = 0;  // per-connection state lives in ClientConnection, reached via lws_get_opaque_user_data
+    m_clientProtocols[0].rx_buffer_size = 4096;
+    // m_clientProtocols[1] stays all-zero - the required NULL-callback terminator.
+}
+
+void ScTransport::DestroyClientContext(ClientConnection& conn) {
+    if (conn.context != nullptr) {
+        // Synchronously closes the wsi if still open, re-entering
+        // HandleClientCallback with LWS_CALLBACK_CLIENT_CLOSED - harmless here:
+        // a status event for a connection this method's own caller is already
+        // tearing down is not useful, but queuing it costs nothing.
+        lws_context_destroy(conn.context);
+        conn.context = nullptr;
+    }
+    conn.wsi = nullptr;
+}
+
+bool ScTransport::Connect(const std::string& uri) {
+    if (!m_configured) {
+        fprintf(stderr, "BACnet/SC: Connect(\"%s\") requested before Configure()\n", uri.c_str());
+        return false;
+    }
+    {
+        // Names which of cert/key/ca is missing, as StartListening() does.
+        const std::string missing = DescribeMissingTlsFiles(m_tls);
+        if (!missing.empty()) {
+            fprintf(stderr,
+                    "BACnet/SC: cannot Connect(\"%s\"): certificate file(s) missing/unreadable: %s. "
+                    "Get the hub certificate: have your Certificate Authority sign hub-cari-request.zip "
+                    "(made at start-up), then --import-cari <response.zip>\n",
+                    uri.c_str(), missing.c_str());
+            return false;
+        }
+    }
+    // The same start-up self-diagnosis as StartListening(): the connector
+    // presents the SAME identity certificate (this device has one identity
+    // regardless of role). A confirmed mismatch skips this attempt; the stack's
+    // reconnect timer calls Connect() again.
+    if (!LogCertificateDiagnostics(m_tls)) {
+        fprintf(stderr,
+                "BACnet/SC: cannot Connect(\"%s\"): certificate/private key mismatch (see the "
+                "\"DOES NOT MATCH\" line above). Fix the cert/key pair under --sc-cert-dir.\n",
+                uri.c_str());
+        return false;
+    }
+
+    std::string host;
+    std::string path;
+    uint16_t port = 0;
+    if (!ParseWssUri(uri, &host, &port, &path) || host.empty()) {
+        // Unlike the listener, an empty/omitted host is NOT valid here - a
+        // connector must dial a specific hub, never "0.0.0.0" (that is a bind
+        // address, meaningless as a dial target).
+        fprintf(stderr, "BACnet/SC: cannot Connect(): \"%s\" is not a valid wss://host:port/path URI\n",
+                uri.c_str());
+        return false;
+    }
+
+    // A fresh dial every time Connect() is called for this URI - tear down any
+    // stale context first (a previous attempt that already closed/errored; this
+    // class never re-dials on its own, so reaching this line again for the same
+    // URI only happens because the stack's own retry/reconnect timer asked).
+    auto existing = m_clients.find(uri);
+    if (existing != m_clients.end()) {
+        // Detach the old attempt from its ClientConnection first, so tearing it
+        // down queues no Error/Disconnected event: those would carry the SAME
+        // URI as the attempt the stack is starting now, and could abort it or
+        // double-count a failover. Its callbacks then see a null
+        // opaque_user_data and do nothing.
+        if (existing->second.wsi != nullptr) {
+            lws_set_opaque_user_data(existing->second.wsi, nullptr);
+        }
+        DestroyClientContext(existing->second);
+        m_clients.erase(existing);
+    }
+
+    EnsureClientProtocolsTable();
+
+    // std::map<std::string, ClientConnection>::operator[] gives a reference that
+    // stays valid across later inserts/erases of OTHER keys (see the header's
+    // comment on m_clients) - safe to hand its address to lws as
+    // opaque_user_data below and keep using it after this call returns.
+    ClientConnection& conn = m_clients[uri];
+    conn.uri = uri;
+
+    lws_context_creation_info info;
+    std::memset(&info, 0, sizeof(info));
+    info.port = CONTEXT_PORT_NO_LISTEN;  // connector role only - this context is never a server
+    info.protocols = m_clientProtocols;
+    info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    info.client_ssl_ca_filepath = m_tls.caCertPath.c_str();          // validates the HUB's certificate
+    info.client_ssl_cert_filepath = m_tls.certPath.c_str();          // this device's own operational cert (mutual TLS)
+    info.client_ssl_private_key_filepath = m_tls.keyPath.c_str();
+    // Asked for once at start-up (KeyPassword.h); without it OpenSSL prompted on every connect attempt.
+    info.client_ssl_private_key_password = KeyPassword::Get();
+    // TLS 1.3 only, same restriction as the listener (135-2024 AB.5.2).
+    info.ssl_client_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_SSLv3;
+    info.user = this;
+    info.gid = static_cast<gid_t>(-1);
+    info.uid = static_cast<uid_t>(-1);
+
+    lws_context* ctx = lws_create_context(&info);
+    if (ctx == nullptr) {
+        fprintf(stderr, "BACnet/SC: Connect(\"%s\"): lws_create_context failed\n", uri.c_str());
+        m_clients.erase(uri);
+        return false;
+    }
+    conn.context = ctx;
+
+    lws_client_connect_info ccinfo;
+    std::memset(&ccinfo, 0, sizeof(ccinfo));
+    ccinfo.context = ctx;
+    ccinfo.address = host.c_str();
+    ccinfo.port = port;
+    ccinfo.path = path.c_str();
+    ccinfo.host = host.c_str();
+    ccinfo.origin = host.c_str();
+    ccinfo.protocol = m_acceptSubprotocol.c_str();  // "hub.bsc.bacnet.org" - README fact 1, NOT "hub.bacnet.org"
+    // LCCSCF_USE_SSL: TLS on. LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK: the CA
+    // chain is STILL fully verified (client_ssl_ca_filepath above requires a
+    // valid chain to m_tls.caCertPath) - only the hostname-in-certificate check
+    // is skipped. BACnet/SC certificates identify a DEVICE (by its UUID/VMAC-
+    // derived identity, 135-2024 AB.1.5.3), not a DNS hostname the way an
+    // ordinary HTTPS server certificate does, so requiring the SAN to list the
+    // hub's address would reject a conformant BACnet/SC hub whose certificate
+    // (correctly) does not encode that. This hub's certificate policy is
+    // CA-chain validation only: no hostname or UUID-in-SAN binding.
+    ccinfo.ssl_connection = LCCSCF_USE_SSL | LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
+    ccinfo.opaque_user_data = &conn;
+    lws* wsi = nullptr;
+    ccinfo.pwsi = &wsi;
+
+    if (lws_client_connect_via_info(&ccinfo) == nullptr) {
+        // A hard, immediate failure (bad address, etc.) - lws may ALSO have
+        // already called HandleClientCallback synchronously with
+        // LWS_CALLBACK_CLIENT_CONNECTION_ERROR for this same attempt; that
+        // queues its own Error(4) status event, which is fine - an extra
+        // queued event for a connection we are about to erase here is
+        // harmless (DrainStatusEvents' "not accepted" case).
+        fprintf(stderr, "BACnet/SC: Connect(\"%s\"): lws_client_connect_via_info failed immediately\n",
+                uri.c_str());
+        lws_context_destroy(ctx);
+        m_clients.erase(uri);
+        return false;
+    }
+    conn.wsi = wsi;
+    printf("BACnet/SC: dialing out to %s (subprotocol \"%s\", TLS 1.3, mutual auth)\n",
+           uri.c_str(), m_acceptSubprotocol.c_str());
+    return true;
+}
+
 void ScTransport::Disconnect(const std::string& connStr) {
+    // Case 1: an accepted server peer ("<acceptUri>|client=N").
     auto serverIt = m_connStringToWsi.find(connStr);
     if (serverIt != m_connStringToWsi.end()) {
         PeerConnection* peer = FindPeerByWsi(serverIt->second);
         if (peer != nullptr) {
             RequestClose(peer->wsi, &peer->closeRequest, LWS_CLOSE_STATUS_NORMAL, std::string());
         }
+        return;
+    }
+    // Case 2: an outbound connector URI.
+    auto clientIt = m_clients.find(connStr);
+    if (clientIt != m_clients.end() && clientIt->second.wsi != nullptr) {
+        RequestClose(clientIt->second.wsi, &clientIt->second.closeRequest, LWS_CLOSE_STATUS_NORMAL, std::string());
+        return;
     }
     // Unknown/already-closed connString - no-op, matching the header's contract.
 }
@@ -1036,17 +1246,29 @@ ScTransport::PeerConnection* ScTransport::FindPeerByWsi(lws* wsi) {
 }
 
 bool ScTransport::Send(const std::string& connStr, const uint8_t* data, uint16_t len) {
+    // Case 1: an accepted server peer ("<acceptUri>|client=N").
     auto serverIt = m_connStringToWsi.find(connStr);
-    if (serverIt == m_connStringToWsi.end()) {
-        return false;  // unknown/closed peer - caller (the router) returns 0 to the stack
+    if (serverIt != m_connStringToWsi.end()) {
+        PeerConnection* peer = FindPeerByWsi(serverIt->second);
+        if (peer == nullptr) {
+            return false;
+        }
+        AuditSentFrame(peer, data, len);
+        return EnqueueFrame(peer->wsi, &peer->txQueue, &peer->closeRequest,
+                            "\"" + peer->connectionString + "\" (" + peer->peerAddress + ")", data, len);
     }
-    PeerConnection* peer = FindPeerByWsi(serverIt->second);
-    if (peer == nullptr) {
-        return false;
+
+    // Case 2: an outbound connector connection, keyed by the URI Connect() was
+    // called with. A connString that names a connector entry whose wsi is
+    // currently null (never established, or already closed) is treated as
+    // unknown.
+    auto clientIt = m_clients.find(connStr);
+    if (clientIt != m_clients.end() && clientIt->second.wsi != nullptr) {
+        ClientConnection& conn = clientIt->second;
+        return EnqueueFrame(conn.wsi, &conn.txQueue, &conn.closeRequest, "hub \"" + conn.uri + "\"", data, len);
     }
-    AuditSentFrame(peer, data, len);
-    return EnqueueFrame(peer->wsi, &peer->txQueue, &peer->closeRequest,
-                        "\"" + peer->connectionString + "\" (" + peer->peerAddress + ")", data, len);
+
+    return false;  // unknown/closed peer - caller (the router) returns 0 to the stack
 }
 
 void ScTransport::Service() {
@@ -1061,6 +1283,13 @@ void ScTransport::Service() {
     if (m_listenerContext != nullptr) {
         lws_cancel_service(m_listenerContext);
         lws_service(m_listenerContext, 0);
+    }
+    // One client lws_context per connector connection - pumped the same way.
+    for (auto& kv : m_clients) {
+        if (kv.second.context != nullptr) {
+            lws_cancel_service(kv.second.context);
+            lws_service(kv.second.context, 0);
+        }
     }
 }
 
@@ -1446,6 +1675,140 @@ bool ScTransport::HandleIncomingFragment(lws* wsi, const void* in, std::size_t l
         *rxOverflow = false;
     }
     return false;
+}
+int ScTransport::HandleClientCallback(lws* wsi, int reasonInt, void* user, void* in, std::size_t len) {
+    const lws_callback_reasons reason = static_cast<lws_callback_reasons>(reasonInt);
+    if (reason == LWS_CALLBACK_OPENSSL_LOAD_EXTRA_CLIENT_VERIFY_CERTS) {
+        // The connector's SSL_CTX (in `user`), as lws creates it, on a fake wsi
+        // with only the context set - so handled before the per-connection
+        // lookup below. Load the CRL so the hub we dial is checked too. Fail
+        // closed like the listener: a CRL file that exists but can't be used
+        // must not silently skip revocation. lws ignores this callback's return
+        // value on the client side, so instead turn CRL checking on with no CRL
+        // loaded - OpenSSL then refuses every peer certificate ("unable to get
+        // certificate CRL") until the file is fixed or removed.
+        SSL_CTX* sslCtx = static_cast<SSL_CTX*>(user);
+        if (!LoadRevocationList(sslCtx, m_tls.crlPath, "connector") && sslCtx != nullptr) {
+            X509_STORE_set_flags(SSL_CTX_get_cert_store(sslCtx), X509_V_FLAG_CRL_CHECK);
+        }
+        return 0;
+    }
+    // Every reason below fires on a wsi lws created from THIS connection's own
+    // Connect() call, which set ccinfo.opaque_user_data = &conn (a stable
+    // reference into m_clients - see the header's comment on that map) - so this
+    // lookup is valid for every case, including one that fires synchronously
+    // from inside Connect() itself.
+    ClientConnection* conn = static_cast<ClientConnection*>(lws_get_opaque_user_data(wsi));
+
+    switch (reason) {
+        case LWS_CALLBACK_CLIENT_ESTABLISHED: {
+            if (conn == nullptr) {
+                break;
+            }
+            conn->wsi = wsi;
+            // The resolved remote address/port: useful when the URI names a
+            // hostname rather than a bare IP, or when failover has several A
+            // records.
+            conn->peerAddress = PeerAddressPort(wsi);
+            CASExampleHelper::Log(CASExampleHelper::LogLevel::Info,
+                "SC audit: connected to hub \"%s\" (%s), certificate \"%s\"", conn->uri.c_str(),
+                conn->peerAddress.c_str(), PeerCertificateSubject(wsi).c_str());
+            ScStatusEvent evt;
+            evt.uri = conn->uri;
+            evt.status = 2;  // WebsocketStatus_Connected (README fact 3)
+            evt.closeCode = 0;
+            m_statusQueue.push_back(evt);
+            if (!conn->txQueue.empty()) {
+                lws_callback_on_writable(wsi);  // a Send() may have queued before ESTABLISHED fired
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
+            if (conn == nullptr) {
+                break;
+            }
+            const std::string detail = (in != nullptr) ? std::string(static_cast<const char*>(in), len) : std::string();
+            // Best-effort only - a connection error can fire before the socket
+            // is far enough along for lws_get_peer_simple()/getpeername() to
+            // know anything (e.g. a DNS failure), in which case PeerAddressPort()
+            // honestly reports "?:?" rather than fabricating an address.
+            const std::string peerAddr = (wsi != nullptr) ? PeerAddressPort(wsi) : std::string("?:?");
+            fprintf(stderr, "BACnet/SC: Connect(\"%s\") failed (peer %s): %s\n", conn->uri.c_str(),
+                    peerAddr.c_str(), SafeForLog(detail).c_str());
+            ScStatusEvent evt;
+            evt.uri = conn->uri;
+            evt.status = 4;  // WebsocketStatus_Error (README fact 3)
+            evt.closeCode = 0;
+            m_statusQueue.push_back(evt);
+            conn->wsi = nullptr;
+            break;
+        }
+
+        case LWS_CALLBACK_WS_PEER_INITIATED_CLOSE: {
+            // Same generic (non-CLIENT_-prefixed) reason the listener uses -
+            // fires for a client-role wsi too. Recorded only for the log line
+            // below; the connector does not branch Disconnected-vs-Error on it.
+            if (conn != nullptr && in != nullptr && len >= 2) {
+                const uint8_t* bytes = static_cast<const uint8_t*>(in);
+                conn->lastCloseCode = static_cast<uint16_t>((bytes[0] << 8) | bytes[1]);
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_RECEIVE: {
+            if (conn == nullptr) {
+                break;
+            }
+            // destConnStr is empty for a connector-side frame - see
+            // ScReceivedFrame's header comment.
+            if (HandleIncomingFragment(wsi, in, len, conn->uri, std::string(),
+                                       &conn->rxAssembly, &conn->rxOverflow)) {
+                return -1;
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_WRITEABLE: {
+            if (conn == nullptr) {
+                break;
+            }
+            if (ApplyRequestedClose(wsi, conn->closeRequest, conn->txQueue)) {
+                return -1;
+            }
+            if (FlushOneQueuedFrame(wsi, &conn->txQueue, "hub \"" + conn->uri + "\"")) {
+                return -1;
+            }
+            if (conn->closeRequest.requested) {
+                lws_callback_on_writable(wsi);  // close once the queue has gone out
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_CLOSED: {
+            if (conn == nullptr) {
+                break;
+            }
+            // EVERY close (clean or not) reports Disconnected(3) here;
+            // LWS_CALLBACK_CLIENT_CONNECTION_ERROR above is the only path that
+            // reports Error(4) for the connector.
+            ScStatusEvent evt;
+            evt.uri = conn->uri;
+            evt.status = 3;  // WebsocketStatus_Disconnected (README fact 3)
+            evt.closeCode = conn->lastCloseCode;
+            m_statusQueue.push_back(evt);
+            // Reuses the address captured at CLIENT_ESTABLISHED - the socket may
+            // already be gone by CLOSED.
+            printf("BACnet/SC: hub connection \"%s\" (%s) closed (closeCode=%u)\n",
+                   conn->uri.c_str(), conn->peerAddress.c_str(), (unsigned)conn->lastCloseCode);
+            conn->wsi = nullptr;
+            break;
+        }
+
+        default:
+            break;
+    }
+    return 0;
 }
 
 }  // namespace CASSc

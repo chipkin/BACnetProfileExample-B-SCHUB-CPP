@@ -9,12 +9,17 @@ Secure Connect Hub)** device profile in C++ with the
 [CAS BACnet Stack](https://store.chipkin.com/services/stacks/bacnet-stack).
 BACnet/SC devices connect to it over TLS 1.3 WebSockets with mutual
 certificate authentication, and it relays their BACnet traffic - the way a
-BACnet/IP broadcast domain does for UDP devices. It has **no BACnet/IP port**:
-the hub's own device is reachable only over BACnet/SC, through the hub.
+BACnet/IP broadcast domain does for UDP devices. By default it has **no
+BACnet/IP port**: the hub's own device is reachable only over BACnet/SC,
+through the hub. `--port <n>` adds a BACnet/IP port (Network Port 1) on request,
+for finding and managing the hub over plain BACnet/IP.
 
 It is reduced to what the B-SCHUB profile requires: the hub function, the
 objects and services the profile needs, and the BACnet/SC certificate
-procedures. It accepts **at most 4 BACnet/SC devices** and **stops after 24
+procedures - plus a few options for a hub in a larger network: the optional
+BACnet/IP port, a hub connector with a failover hub, limits on connection
+attempts, a lower connection limit, a configurable device name and the BACnet
+network numbers. It accepts **at most 4 BACnet/SC devices** and **stops after 24
 hours** (restart it to continue).
 
 **[Download a prebuilt binary](https://github.com/chipkin/BACnetProfileExample-B-SCHUB-CPP/releases)**
@@ -26,9 +31,9 @@ licence, see [Build](#build).
 - **[docs/PICS.md](docs/PICS.md)** - the Protocol Implementation Conformance
   Statement: every object, every property, and who answers it.
 
-> **Versions:** this document describes **example v1.7.1**, built and verified
-> against **CAS BACnet Stack 6.0.23** (`6.x` @ `64b2cfac5`), at
-> **Protocol_Revision 30**, with the vendored `common/` helper at **v3.4.0**.
+> **Versions:** this document describes **example v1.8.0**, built and verified
+> against **CAS BACnet Stack 6.0.23** (`6.x` @ `69b6249f`), at
+> **Protocol_Revision 30**, with the vendored `common/` helper at **v3.5.0**.
 > Running the example prints all three - if what it prints disagrees with this
 > line, trust the program and check `CHANGELOG.md`.
 
@@ -51,7 +56,8 @@ Certificate Authority.
 A B-SCHUB device is still a full BACnet device: it has a Device object, a
 Network Port object, and answers ReadProperty, ReadPropertyMultiple,
 Who-Is/Who-Has and DeviceCommunicationControl - here over BACnet/SC: a device
-connected to the hub sends its requests through the hub function.
+connected to the hub sends its requests through the hub function. With `--port`
+the same requests are also answered over BACnet/IP.
 
 ## The device this example creates
 
@@ -59,6 +65,7 @@ connected to the hub sends its requests through the hub function.
 Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Systems)
     │
     ├── Analog Input 1   "Bronze"                       Present_Value 21.5 (REAL, degrees Celsius)
+    ├── Network Port 1   "BACnet IP"                    only with --port <n>: the optional BACnet/IP port (UDP)
     ├── Network Port 2   "BACnet SC"                    the BACnet/SC port: the hub function (wss://...:4443/)
     ├── File 1           "Operational Certificate"      the hub's certificate (writable, clause 19.8.3)
     ├── File 2           "Certificate Signing Request"  the hub's CSR (read-only)
@@ -68,8 +75,9 @@ Device 389022  "Chipkin Example B-SCHUB"   (Vendor 389 - Chipkin Automation Syst
 
 The Network Port and File objects are named for what they are rather than
 with a colour, so it is obvious which port is the SC one and which File is
-the CSR. There is no Network Port 1: the BACnet/SC port keeps instance 2, the
-port the CARI certificate tree names (`cert1/device-<n>/port-2/`).
+the CSR. Network Port 1 exists only when `--port` is given; the BACnet/SC port
+keeps instance 2 either way, the port the CARI certificate tree names
+(`cert1/device-<n>/port-2/`).
 
 ## What this example supports
 
@@ -82,6 +90,8 @@ port the CARI certificate tree names (`cert1/device-<n>/port-2/`).
 | DM-DDB-B | Device Management - Dynamic Device Binding - B | ✅ |
 | DM-DOB-B | Device Management - Dynamic Object Binding - B | ✅ |
 | DM-DCC-B | Device Management - DeviceCommunicationControl - B | ✅ (no password) |
+| DM-TS-B | Device Management - TimeSynchronization - B | ✅ |
+| DM-UTC-B | Device Management - UTCTimeSynchronization - B | ✅ |
 | NM-SCH-B | Network Management - BACnet/SC Hub Function - B | ✅ (at most 4 devices) |
 
 ### Services (executed / B-side)
@@ -89,18 +99,22 @@ port the CARI certificate tree names (`cert1/device-<n>/port-2/`).
 | Service | Notes |
 |---------|-------|
 | ReadProperty, ReadPropertyMultiple | Every property of every object (DS-RP-B, DS-RPM-B). Segmented in both directions. |
-| Who-Is / I-Am, Who-Has / I-Have | Discovery, through the hub (DM-DDB-B, DM-DOB-B). No I-Am at start-up: no device is connected yet. |
+| Who-Is / I-Am, Who-Has / I-Have | Discovery, through the hub (DM-DDB-B, DM-DOB-B), and over BACnet/IP with `--port`. An I-Am is broadcast at start-up only with `--port`: otherwise no device is connected yet. |
 | DeviceCommunicationControl | DM-DCC-B. |
+| TimeSynchronization | DM-TS-B. Sets the Device's clock (`Local_Date`, `Local_Time`); a request with an unspecified field or a day the month does not have is ignored. The correction is kept in memory only. |
+| UTCTimeSynchronization | DM-UTC-B. Sets the same clock from UTC: the local time is the UTC minus `UTC_Offset`, plus an hour while `Daylight_Savings_Status` is TRUE. Ignored the same way. |
 | AtomicReadFile | The four certificate File objects (never the private key). |
-| WriteProperty, AtomicWriteFile, ReinitializeDevice | Only for the BACnet/SC certificate procedures (clause 19.8.3): `File_Size` and AtomicWriteFile into Files 1, 3 and 4, applied by ReinitializeDevice `ACTIVATE_CHANGES`. |
+| WriteProperty, AtomicWriteFile, ReinitializeDevice | The BACnet/SC certificate procedures (clause 19.8.3): `File_Size` and AtomicWriteFile into Files 1, 3 and 4, applied by ReinitializeDevice `ACTIVATE_CHANGES`; and the File objects' `Archive` flag (cl. 12.13). |
 | Network Port `Command` | `DISCARD_CHANGES` and `GENERATE_CSR_FILE` (a new key pair and CSR for the hub). |
+
+**The clock and the time zone.** The Device keeps UTC (the host's clock plus the correction the last time synchronization applied) and a time zone: `UTC_Offset` (minutes between local standard time and UTC, west of Greenwich positive, so a host at UTC-8 reads 480) and `Daylight_Savings_Status`. They start from the host's time zone when the example starts (0 and FALSE if it cannot be determined) and are **writable**: `UTC_Offset` takes any multiple of 15 minutes from -1440 to +1440, anything else is refused (value-out-of-range). Writing either one changes `Local_Date` / `Local_Time`, not UTC. The example does not follow a daylight saving transition by itself: write `Daylight_Savings_Status` when it happens. Nothing is kept across a restart.
 
 ### Objects and properties
 
 <!-- OBJECTS-PROPERTIES:BEGIN (generated by tools/gen-objects-properties.py from docs/objects.json - do not edit here) -->
 Every object this example creates, and every REQUIRED property of each (per ANSI/ASHRAE 135-2024 clause 12 and the stack's `docs/property-profile-reference.md`), plus the optional properties the example turns on. **Served by** says who answers a ReadProperty: the **stack** generates it, or the **app** serves it from a `GetProperty*` callback in `main.cpp`. A ⚠ row is a required property the app does not serve and the stack would fill with a default - that is a defect, not a feature.
 
-### Device 389022 "Chipkin Example B-SCHUB" - vendor 389 (Chipkin Automation Systems); the series' device instance for B-SCHUB. The stack rows are device-wide facts only the stack knows - the protocol version and revision it implements, the services and object types it was configured with, the live object list and address-binding table. The accepted rows are the stack's configured defaults for APDU limits, segmentation, system status and database revision; an application that answered them from its own constants could contradict the stack, so the example does not. Segmentation_Supported is segmented-both, the CAS BACnet Stack's segmentation configuration (6.x default, cas-bacnet-stack#2992); with it the stack also serves Max_Segments_Accepted (16) and APDU_Segment_Timeout (5000 ms) - see section 5
+### Device 389022 "Chipkin Example B-SCHUB" - vendor 389 (Chipkin Automation Systems); the series' device instance for B-SCHUB; instance configurable with --deviceID and name with --device-name. The stack rows are device-wide facts only the stack knows - the protocol version and revision it implements, the services and object types it was configured with, the live object list and address-binding table. The accepted rows are the stack's configured defaults for APDU limits, segmentation, system status and database revision; an application that answered them from its own constants could contradict the stack, so the example does not. Segmentation_Supported is segmented-both, the CAS BACnet Stack's segmentation configuration (6.x default, cas-bacnet-stack#2992); with it the stack also serves Max_Segments_Accepted (16) and APDU_Segment_Timeout (5000 ms) - see section 5
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -114,6 +128,10 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Firmware_Revision | CharacterString | app | no |
 | Application_Software_Version | CharacterString | app | no |
 | Description *(optional, enabled)* | CharacterString | app | no |
+| Local_Date *(present because TimeSynchronization is executed)* | Date | app (the host clock plus the last TimeSynchronization correction) | no |
+| Local_Time *(present because TimeSynchronization is executed)* | Time | app (as Local_Date) | no |
+| UTC_Offset *(present because UTCTimeSynchronization is executed)* | Integer | app (minutes between local standard time and UTC, west of Greenwich positive; the host's time zone at start-up) | yes |
+| Daylight_Savings_Status *(present because UTCTimeSynchronization is executed)* | Boolean | app (the host's daylight saving status at start-up) | yes |
 | Protocol_Version | Unsigned | stack | no |
 | Protocol_Revision | Unsigned | stack | no |
 | Protocol_Services_Supported | BACnetServicesSupported | stack | no |
@@ -142,7 +160,30 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | Units | BACnetEngineeringUnits | app | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
 
-### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); the device's only Network Port - there is no BACnet/IP port, so the device is reachable only over BACnet/SC. Hosts the NM-SCH-B hub function (listener, at most 4 devices); the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown; the device is not a router. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
+### Network Port 1 "BACnet IP" - BACnet/IP; present only when the example is started with --port <n> (BACnet/SC is the only data link otherwise). Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments (IPv4, BACnet Application) at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. IP_Address and IP_Subnet_Mask are read from the computer's primary interface at start-up, IP_Default_Gateway is 0.0.0.0, BACnet_IP_UDP_Port is the --port value. Reliability has no fault condition this example detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown unless --ip-network-number sets it (then quality configured); the device is not a router. Command (cl. 12.56.16) is present and writable, executed by the stack (DISCARD_CHANGES reverts the port's pending changes)
+
+| Property | Datatype | Served by | Writable |
+|---|---|---|:---:|
+| Object_Identifier | BACnetObjectIdentifier | stack | no |
+| Object_Name | CharacterString | app | no |
+| Object_Type | BACnetObjectType | stack | no |
+| Description *(optional, enabled)* | CharacterString | app | no |
+| Status_Flags | BACnetStatusFlags | stack | no |
+| Reliability | BACnetReliability | stack default, accepted (Generic Enumerated default: `0`) | no |
+| Out_Of_Service | Boolean | app | no |
+| Network_Type | BACnetNetworkType | app | no |
+| Protocol_Level | BACnetProtocolLevel | app | no |
+| Changes_Pending | Boolean | app | no |
+| APDU_Length | Unsigned | app | no |
+| IP_Address | OCTET STRING | app | no |
+| IP_Subnet_Mask | OCTET STRING | app | no |
+| IP_Default_Gateway | OCTET STRING | app | no |
+| BACnet_IP_Mode | BACnetIPMode | app | no |
+| BACnet_IP_UDP_Port | Unsigned16 | app | no |
+| Command *(optional, enabled)* | BACnetNetworkPortCommand | stack default (Generic Enumerated default: `0`) | yes |
+| Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
+
+### Network Port 2 "BACnet SC" - BACnet/SC (Network_Type = secureConnect(11)); the device's only Network Port unless the example is started with --port (then Network Port 1 is the BACnet/IP port). Hosts the NM-SCH-B hub function (listener, at most 4 devices) and, with --sc-hub-uri, the hub connector; the WebSocket/TLS transport is sc_transport/ScTransport. Network_Type and Protocol_Level are set from BACnetStack_AddNetworkPortObject()'s arguments at start-up, not a GetProperty callback like the object's other app-served rows; Changes_Pending is likewise computed and answered natively by the stack's Network Port object. Reliability has no fault condition the hub detects, so it is accepted at the generic default (normal). Network_Number is 0 with Network_Number_Quality unknown unless --sc-network-number sets it (then quality configured); the device is not a router. Command (cl. 12.56.16) is writable: DISCARD_CHANGES also drops staged certificate writes, and GENERATE_CSR_FILE makes a new key pair and Certificate Signing Request (File 2) - the NetworkPortCommand callback in main.cpp
 
 | Property | Datatype | Served by | Writable |
 |---|---|---|:---:|
@@ -170,7 +211,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Type | CharacterString | app | no |
 | File_Size | Unsigned | app | yes |
 | Modification_Date | BACnetDateTime | app | no |
-| Archive | Boolean | app | no |
+| Archive | Boolean | app | yes |
 | Read_Only | Boolean | app | no |
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
@@ -186,7 +227,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Type | CharacterString | app | no |
 | File_Size | Unsigned | app | no |
 | Modification_Date | BACnetDateTime | app | no |
-| Archive | Boolean | app | no |
+| Archive | Boolean | app | yes |
 | Read_Only | Boolean | app | no |
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
@@ -202,7 +243,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Type | CharacterString | app | no |
 | File_Size | Unsigned | app | yes |
 | Modification_Date | BACnetDateTime | app | no |
-| Archive | Boolean | app | no |
+| Archive | Boolean | app | yes |
 | Read_Only | Boolean | app | no |
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
@@ -218,7 +259,7 @@ Every object this example creates, and every REQUIRED property of each (per ANSI
 | File_Type | CharacterString | app | no |
 | File_Size | Unsigned | app | yes |
 | Modification_Date | BACnetDateTime | app | no |
-| Archive | Boolean | app | no |
+| Archive | Boolean | app | yes |
 | Read_Only | Boolean | app | no |
 | File_Access_Method | BACnetFileAccessMethod | stack | no |
 | Property_List | BACnetARRAY[N] of BACnetPropertyIdentifier | stack | no |
@@ -275,9 +316,9 @@ it finds `./certs`.)
 Expected output:
 
 ```
-BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.7.1
+BACnet B-SCHUB (BACnet/SC Hub) Example - C++ v1.8.0
 CAS BACnet Stack version: 6.0.23.0
-Common helper (common/) version: 3.4.0
+Common helper (common/) version: 3.5.0
 
 ================================================================================
 This is an example of using the CAS BACnet Stack to build a BACnet/SC hub (B-SCHUB profile). It is for evaluation and testing only, not for production. It accepts at most 4 BACnet/SC devices and stops after 24 hours. For a production-ready BACnet/SC hub, the Chipkin BACnet SC Hub: Contact Chipkin sales@chipkin.com
@@ -297,7 +338,7 @@ the demo device certificates, `certs/clients/client-01-cari.zip` ...
 `client-03-cari.zip` (each zip holds the device's certificate, its private key
 and the issuer, with a note on how to install them), and talk to the hub's own
 device (389022) through the hub. Allow TCP 4443 through your firewall - it is
-the only port the example opens.
+the only port the example opens (unless you give it `--port`, which opens a UDP port too).
 
 > **The demo certificates are public, not secret.** Every private key in
 > `certs/`, including the CA's, is published with this example, so anyone can
@@ -330,20 +371,60 @@ start it again to continue.
 |--------|---------|---------|
 | `--sc-cert-dir <dir>` | `./certs` | The certificate folder (a CARI tree - see [Certificates](#certificates)). |
 | `--deviceID <n>` | `389022` | Device instance; give each device on a BACnet network a unique one. |
+| `--device-name <name>` | `Chipkin Example B-SCHUB` | The Device's `Object_Name` (1 to 128 bytes of UTF-8, ASCII on Windows), which must be unique on the BACnet internetwork. Also the name in the hub's certificate request. |
+| `--port <n>` | off | Also open a BACnet/IP port - Network Port 1 on UDP port `n` (47808 is the usual one) - for finding and managing the hub over plain BACnet/IP. Without it the hub is reachable only over BACnet/SC and opens no UDP socket. See [BACnet/IP (optional)](#bacnetip-optional). |
+| `--ip-network-number <n>`, `--sc-network-number <n>` | none | The BACnet network number (1 to 65534) of Network Port 1 (only with `--port`) and of the BACnet/SC port, reported as configured; they must differ. This device is not a router, so the number is informational. |
 | `--sc-port <n>` | `4443` | BACnet/SC (WebSocket/TLS) port devices connect to. |
+| `--sc-max-hub-connections <n>` | `4` | Accept at most `n` BACnet/SC devices (1 to 4). The limit can only be lowered: a larger value is refused. |
+| `--sc-rate-limit <n>`, `--sc-rate-limit-total <n>` | `10`, `50` | New BACnet/SC connection attempts accepted per second from one address, and in total; `0` turns a limit off. A refused attempt is cut off before the TLS handshake and logged (at most one line every 10 seconds). |
+| `--sc-hub-uri <wss://host:port/path>` | none | Also connect to another BACnet/SC hub - the hub connector - with this hub's certificate. See [Connecting to another hub](#connecting-to-another-hub). |
+| `--sc-failover-uri <wss://host:port/path>` | none | The failover hub, dialled when the primary hub (`--sc-hub-uri`) can't be reached. |
 | `--sc-accept-device-without-hello [on\|off]` | off | Accept a device whose Connect-Request leaves out the Hello option ANSI/ASHRAE 135 AB.2.2 requires. YABE needs it - see [Testing with YABE](#testing-with-yabe). |
+| `--sc-accept-hub-without-hello [on\|off]` | off | The hub connector accepts a Connect-Accept without the Hello option, from a hub that leaves it out. |
 | `--import-cari <zip>` | - | Install a CA's CARI response (the hub's certificate and issuers) in the certificate folder; then exit. |
 | `--help`, `-h` | - | Show usage and exit. |
 | `--version` | - | Print the example, stack and `common/` versions, then exit. |
 
-Any other option is refused. The connection limit (4 BACnet/SC devices) and
-the run limit (24 hours) are fixed. `--help` also names the files the example
+Any other option is refused, and so is an option with no value or a bad one.
+The connection limit (4 BACnet/SC devices) can be lowered but not raised, and
+the run limit (24 hours) is fixed. `--help` also names the files the example
 writes and links to this repository.
 
 **For automated tests only**, the environment variable
 `BSCHUB_TEST_RUN_LIMIT_SECONDS=<n>` shortens the run limit to `n` seconds (1
 to 86400; it can't raise it), so a test can watch the example stop. The
 start-up says when it is set. It is deliberately not a command-line option.
+
+## BACnet/IP (optional)
+
+The hub is BACnet/SC-only unless you ask for more. `--port 47808` (any UDP
+port) adds **Network Port 1 "BACnet IP"**: the hub opens a UDP socket, answers
+Who-Is, ReadProperty and ReadPropertyMultiple for its own device over
+BACnet/IP, and broadcasts an I-Am when it starts. It is for finding and
+managing the hub with the tools you already have; the hub function, which
+relays the BACnet/SC devices' traffic, is still BACnet/SC only - a BACnet/IP
+device is not relayed to them. `--ip-network-number` gives the BACnet/IP port a
+network number.
+
+```bash
+./BACnetExampleBSCHUB --port 47808
+```
+
+Allow UDP `n` through your firewall in addition to TCP 4443.
+
+## Connecting to another hub
+
+`--sc-hub-uri wss://other-hub:4443/` makes this hub also connect, as a node, to
+another BACnet/SC hub (the hub connector, BACnet/SC Annex AB): the hub dials
+the other hub with its own certificate and checks the other hub's certificate
+against its issuers. `--sc-failover-uri` names a second hub that is dialled
+when the primary can't be reached. The BACnet stack owns the timers: it
+re-dials after a close and switches between the two hubs. A hub that leaves out
+the Hello option of its Connect-Accept needs `--sc-accept-hub-without-hello`
+(a deliberate deviation from ANSI/ASHRAE 135 AB.2.2; the hub logs a warning).
+If `issuer-crl.pem` exists but holds no certificate revocation list, the hub
+connects to no hub until it is fixed. `tests/sc/fake_hub_server.py` is a fake hub for trying
+it out.
 
 ## Certificates
 
@@ -437,18 +518,26 @@ incremental. To use a stack outside the submodule:
 | Script | Checks |
 |---|---|
 | `hub_listener_test.py` | TLS 1.3 and subprotocol negotiation, refusal of bad clients, Connect-Request/Accept, the Hello option (and `--sc-accept-device-without-hello`). |
-| `connection_limit_test.py` | The start-up banner; 4 devices accepted, the 5th refused and logged. |
-| `startup_test.py` | `--help` (repository link, the request-file note), `logs/B-SCHUB.log` (everything, emptied at start-up), no BACnet/IP. |
+| `connection_limit_test.py` | The start-up banner; 4 devices accepted, the 5th refused and logged; the limit can't be raised. |
+| `startup_test.py` | `--help` (repository link, the request-file note, `--port`), `logs/B-SCHUB.log` (everything, emptied at start-up), BACnet/IP off unless `--port`. |
+| `ip_port_test.py` | The optional BACnet/IP port: Who-Is/I-Am, `Object_List`, Network Port 1's addressing and network numbers over UDP; the option checks. |
+| `hub_options_test.py` | `--device-name`, `--sc-max-hub-connections` (lowering only) and the rate limits. |
+| `connector_test.py` | The hub connector against a fake hub: dial-out, reconnect, failover, `--sc-accept-hub-without-hello`, an unusable revocation list, the option checks. |
+| `time_sync_test.py` | TimeSynchronization (DM-TS-B): the service sets `Local_Date` / `Local_Time` (over BACnet/IP and over BACnet/SC), the clock keeps running, and bad requests are ignored. |
+| `utc_time_sync_test.py` | UTCTimeSynchronization (DM-UTC-B): `UTC_Offset` and `Daylight_Savings_Status` start from the host's time zone and are writable (bad `UTC_Offset` values refused); the service sets `Local_Date` / `Local_Time` to UTC minus `UTC_Offset` (plus an hour for daylight saving) over BACnet/IP and BACnet/SC, across midnight, a year end and a leap day; bad requests are ignored. |
 | `run_limit_test.py` | The 24-hour run limit, with the test-only shorter limit. |
-| `hub_cert_test.py` | The start-up certificate request (made once, never overwritten, the key never replaced), `--import-cari` and its refusals; removed options refused. |
+| `hub_cert_test.py` | The start-up certificate request (made once, never overwritten, the key never replaced), `--import-cari` and its refusals; options the example doesn't have refused. |
 | `file_object_test.py` | The certificate File objects over BACnet/SC; the private key is never served. |
 | `cert_procedure_test.py` | The clause 19.8.3 certificate procedures over BACnet/SC. |
-| `rpm_test.py`, `segmentation_test.py` | ReadPropertyMultiple, `Object_List` (one Network Port), and segmentation in both directions - over BACnet/SC. |
+| `rpm_test.py`, `segmentation_test.py` | ReadPropertyMultiple, `Object_List` (one Network Port without `--port`), and segmentation in both directions - over BACnet/SC. |
 | `discovery_test.py` | The series' discovery Wire Test over BACnet/SC: every property in every object's `Property_List` reads as a value. |
 | `cert_files_test.py` | The device CARI zips `tools/make_test_certs.py` writes. |
 
 The BACnet tests connect to the hub as a BACnet/SC device (`tests/sc/sc_client.py`,
-a bacpypes3 application on a hub connection) - there is no BACnet/IP to use.
+a bacpypes3 application on a hub connection); only `ip_port_test.py` uses the
+optional BACnet/IP port. `tests/veribacnet/` is the VeriBACnet project for
+Chipkin's BTL conformance tool, run over that BACnet/IP port - see its
+[README](tests/veribacnet/README.md) for what it can and can't measure.
 
 ## Licensing
 

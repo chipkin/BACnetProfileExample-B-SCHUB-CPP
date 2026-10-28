@@ -1,0 +1,1644 @@
+{
+  "capturedAt": "2026-10-27T23:51:04.650Z",
+  "derivedBibbs": [
+    "DM-BR-B (partial)",
+    "DM-DCC-B",
+    "DM-DDB-B",
+    "DM-DOB-B",
+    "DM-RD-B",
+    "DM-TS-B",
+    "DM-UTC-B",
+    "DS-RP-B",
+    "DS-RPM-B",
+    "DS-WP-B"
+  ],
+  "errors": [],
+  "iam": {
+    "deviceInstance": 389022,
+    "maxApdu": 1476,
+    "segmentation": "both",
+    "vendorId": 389
+  },
+  "identity": {
+    "applicationSoftwareVersion": "1.8.0",
+    "firmwareRevision": "6.0.23.0",
+    "modelName": "CAS BACnet Stack Example - B-SCHUB",
+    "objectName": "Chipkin Example B-SCHUB",
+    "protocolRevision": 30,
+    "protocolVersion": 1,
+    "vendorId": 389,
+    "vendorName": "Chipkin Automation Systems"
+  },
+  "maxApduLengthAccepted": 1476,
+  "objectTypesSupported": [
+    "analogInput",
+    "device",
+    "file",
+    "networkPort"
+  ],
+  "objects": [
+    {
+      "objectIdentifier": {
+        "instance": 1,
+        "type": "analogInput"
+      },
+      "properties": {
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Example sensor value in degrees C, showing a hub serving its own data. Change it with the up/down arrow keys in the console."
+          }
+        },
+        "eventState": {
+          "status": "ok",
+          "value": {
+            "name": "normal",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 1,
+              "type": "analogInput"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Bronze"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "analogInput",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "outOfService": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "presentValue": {
+          "status": "ok",
+          "value": {
+            "tag": "real",
+            "value": 21.5
+          }
+        },
+        "statusFlags": {
+          "status": "ok",
+          "value": {
+            "tag": "bitString",
+            "value": [
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        },
+        "units": {
+          "status": "ok",
+          "value": {
+            "name": "degreesCelsius",
+            "tag": "enumerated",
+            "value": 62
+          }
+        }
+      },
+      "propertyList": [
+        "description",
+        "eventState",
+        "outOfService",
+        "presentValue",
+        "statusFlags",
+        "units"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 389022,
+        "type": "device"
+      },
+      "properties": {
+        "apduSegmentTimeout": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 5000
+          }
+        },
+        "apduTimeout": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 10000
+          }
+        },
+        "applicationSoftwareVersion": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "1.8.0"
+          }
+        },
+        "databaseRevision": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 8
+          }
+        },
+        "daylightSavingsStatus": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": true
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile), with a BACnet/IP port (--port). For evaluation and testing only."
+          }
+        },
+        "deviceAddressBinding": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": []
+          }
+        },
+        "deviceUuid": {
+          "status": "ok",
+          "value": {
+            "hex": "53434855422d44454d4f2d3338393032",
+            "tag": "octetString"
+          }
+        },
+        "firmwareRevision": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "6.0.23.0"
+          }
+        },
+        "localDate": {
+          "status": "ok",
+          "value": {
+            "tag": "date",
+            "value": {
+              "day": 27,
+              "month": 10,
+              "weekday": 2,
+              "year": 2026
+            }
+          }
+        },
+        "localTime": {
+          "status": "ok",
+          "value": {
+            "tag": "time",
+            "value": {
+              "hour": 15,
+              "hundredths": 0,
+              "minute": 49,
+              "second": 45
+            }
+          }
+        },
+        "maxApduLengthAccepted": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 1476
+          }
+        },
+        "maxSegmentsAccepted": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 16
+          }
+        },
+        "modelName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "CAS BACnet Stack Example - B-SCHUB"
+          }
+        },
+        "numberOfApduRetries": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 3
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 389022,
+              "type": "device"
+            }
+          }
+        },
+        "objectList": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 1,
+                  "type": "analogInput"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 389022,
+                  "type": "device"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 1,
+                  "type": "file"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 2,
+                  "type": "file"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 3,
+                  "type": "file"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 4,
+                  "type": "file"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 1,
+                  "type": "networkPort"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 2,
+                  "type": "networkPort"
+                }
+              }
+            ]
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Chipkin Example B-SCHUB"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "device",
+            "tag": "enumerated",
+            "value": 8
+          }
+        },
+        "protocolObjectTypesSupported": {
+          "status": "ok",
+          "value": {
+            "tag": "bitString",
+            "value": [
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        },
+        "protocolRevision": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 30
+          }
+        },
+        "protocolServicesSupported": {
+          "status": "ok",
+          "value": {
+            "tag": "bitString",
+            "value": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              true,
+              true,
+              false,
+              true,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              true,
+              false,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        },
+        "protocolVersion": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 1
+          }
+        },
+        "segmentationSupported": {
+          "status": "ok",
+          "value": {
+            "name": "segmentedBoth",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "systemStatus": {
+          "status": "ok",
+          "value": {
+            "name": "operational",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "utcOffset": {
+          "status": "ok",
+          "value": {
+            "tag": "signedInt",
+            "value": 480
+          }
+        },
+        "vendorIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 389
+          }
+        },
+        "vendorName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Chipkin Automation Systems"
+          }
+        }
+      },
+      "propertyList": [
+        "apduSegmentTimeout",
+        "apduTimeout",
+        "applicationSoftwareVersion",
+        "daylightSavingsStatus",
+        "description",
+        "deviceAddressBinding",
+        "firmwareRevision",
+        "localDate",
+        "localTime",
+        "maxApduLengthAccepted",
+        "modelName",
+        "numberOfApduRetries",
+        "objectList",
+        "protocolObjectTypesSupported",
+        "protocolServicesSupported",
+        "protocolVersion",
+        "segmentationSupported",
+        "systemStatus",
+        "utcOffset",
+        "vendorIdentifier",
+        "vendorName",
+        "protocolRevision",
+        "databaseRevision",
+        "maxSegmentsAccepted",
+        "deviceUuid"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 1,
+        "type": "file"
+      },
+      "properties": {
+        "archive": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "This hub's operational certificate (PEM), presented in every BACnet/SC TLS handshake. Replace it over BACnet (clause 19.8.3), then ACTIVATE_CHANGES."
+          }
+        },
+        "fileAccessMethod": {
+          "status": "ok",
+          "value": {
+            "name": "streamAccess",
+            "tag": "enumerated",
+            "value": 1
+          }
+        },
+        "fileSize": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 912
+          }
+        },
+        "fileType": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "application/x-pem-file"
+          }
+        },
+        "modificationDate": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "date",
+                "value": {
+                  "day": 27,
+                  "month": 10,
+                  "weekday": 2,
+                  "year": 2026
+                }
+              },
+              {
+                "tag": "time",
+                "value": {
+                  "hour": 21,
+                  "hundredths": 0,
+                  "minute": 10,
+                  "second": 35
+                }
+              }
+            ]
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 1,
+              "type": "file"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Operational Certificate"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "file",
+            "tag": "enumerated",
+            "value": 10
+          }
+        },
+        "readOnly": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        }
+      },
+      "propertyList": [
+        "archive",
+        "description",
+        "fileAccessMethod",
+        "fileSize",
+        "fileType",
+        "modificationDate",
+        "readOnly"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 2,
+        "type": "file"
+      },
+      "properties": {
+        "archive": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Certificate signing request (PEM) for this hub's private key. Have your CA sign it, then write the certificate to File 1."
+          }
+        },
+        "fileAccessMethod": {
+          "status": "ok",
+          "value": {
+            "name": "streamAccess",
+            "tag": "enumerated",
+            "value": 1
+          }
+        },
+        "fileSize": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 477
+          }
+        },
+        "fileType": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "application/x-pem-file"
+          }
+        },
+        "modificationDate": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "date",
+                "value": {
+                  "day": 27,
+                  "month": 10,
+                  "weekday": 2,
+                  "year": 2026
+                }
+              },
+              {
+                "tag": "time",
+                "value": {
+                  "hour": 21,
+                  "hundredths": 0,
+                  "minute": 10,
+                  "second": 35
+                }
+              }
+            ]
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 2,
+              "type": "file"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Certificate Signing Request"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "file",
+            "tag": "enumerated",
+            "value": 10
+          }
+        },
+        "readOnly": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": true
+          }
+        }
+      },
+      "propertyList": [
+        "archive",
+        "description",
+        "fileAccessMethod",
+        "fileSize",
+        "fileType",
+        "modificationDate",
+        "readOnly"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 3,
+        "type": "file"
+      },
+      "properties": {
+        "archive": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Issuer (CA) certificate, slot 1 (PEM). Devices connecting to this hub must be signed by the issuer in slot 1 or slot 2."
+          }
+        },
+        "fileAccessMethod": {
+          "status": "ok",
+          "value": {
+            "name": "streamAccess",
+            "tag": "enumerated",
+            "value": 1
+          }
+        },
+        "fileSize": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 806
+          }
+        },
+        "fileType": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "application/x-pem-file"
+          }
+        },
+        "modificationDate": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "date",
+                "value": {
+                  "day": 27,
+                  "month": 10,
+                  "weekday": 2,
+                  "year": 2026
+                }
+              },
+              {
+                "tag": "time",
+                "value": {
+                  "hour": 21,
+                  "hundredths": 0,
+                  "minute": 10,
+                  "second": 35
+                }
+              }
+            ]
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 3,
+              "type": "file"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Issuer Certificate Slot 1"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "file",
+            "tag": "enumerated",
+            "value": 10
+          }
+        },
+        "readOnly": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        }
+      },
+      "propertyList": [
+        "archive",
+        "description",
+        "fileAccessMethod",
+        "fileSize",
+        "fileType",
+        "modificationDate",
+        "readOnly"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 4,
+        "type": "file"
+      },
+      "properties": {
+        "archive": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Issuer (CA) certificate, slot 2 (PEM). Write a second CA here to trust it alongside slot 1. Shows slot 1's certificate until one is written."
+          }
+        },
+        "fileAccessMethod": {
+          "status": "ok",
+          "value": {
+            "name": "streamAccess",
+            "tag": "enumerated",
+            "value": 1
+          }
+        },
+        "fileSize": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 806
+          }
+        },
+        "fileType": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "application/x-pem-file"
+          }
+        },
+        "modificationDate": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "date",
+                "value": {
+                  "day": 27,
+                  "month": 10,
+                  "weekday": 2,
+                  "year": 2026
+                }
+              },
+              {
+                "tag": "time",
+                "value": {
+                  "hour": 21,
+                  "hundredths": 0,
+                  "minute": 10,
+                  "second": 35
+                }
+              }
+            ]
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 4,
+              "type": "file"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "Issuer Certificate Slot 2"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "file",
+            "tag": "enumerated",
+            "value": 10
+          }
+        },
+        "readOnly": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        }
+      },
+      "propertyList": [
+        "archive",
+        "description",
+        "fileAccessMethod",
+        "fileSize",
+        "fileType",
+        "modificationDate",
+        "readOnly"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 1,
+        "type": "networkPort"
+      },
+      "properties": {
+        "apduLength": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 1476
+          }
+        },
+        "bacnetIpMode": {
+          "status": "ok",
+          "value": {
+            "name": "normal",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "bacnetIpUdpPort": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 47848
+          }
+        },
+        "changesPending": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "command": {
+          "status": "ok",
+          "value": {
+            "name": "idle",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "commandValidationResult": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "constructed",
+                "value": [
+                  {
+                    "tag": "date",
+                    "value": {
+                      "day": 255,
+                      "month": 255,
+                      "weekday": 255,
+                      "year": 2155
+                    }
+                  },
+                  {
+                    "tag": "time",
+                    "value": {
+                      "hour": 255,
+                      "hundredths": 255,
+                      "minute": 255,
+                      "second": 255
+                    }
+                  }
+                ]
+              },
+              {
+                "tag": "constructed",
+                "value": [
+                  {
+                    "name": "object",
+                    "tag": "enumerated",
+                    "value": 1
+                  },
+                  {
+                    "name": "success",
+                    "tag": "enumerated",
+                    "value": 84
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "BACnet/IP port (UDP), so this hub can also be found and managed over plain BACnet/IP."
+          }
+        },
+        "fdBbmdAddress": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "fdSubscriptionLifetime": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 0
+          }
+        },
+        "ipAddress": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "ipDefaultGateway": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "ipDnsServer": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "ipSubnetMask": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "linkSpeed": {
+          "status": "ok",
+          "value": {
+            "tag": "real",
+            "value": 0
+          }
+        },
+        "macAddress": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "networkNumber": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 0
+          }
+        },
+        "networkNumberQuality": {
+          "status": "ok",
+          "value": {
+            "name": "unknown",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "networkType": {
+          "status": "ok",
+          "value": {
+            "name": "ipv4",
+            "tag": "enumerated",
+            "value": 5
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 1,
+              "type": "networkPort"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "BACnet IP"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "networkPort",
+            "tag": "enumerated",
+            "value": 56
+          }
+        },
+        "outOfService": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "protocolLevel": {
+          "status": "ok",
+          "value": {
+            "name": "bacnetApplication",
+            "tag": "enumerated",
+            "value": 2
+          }
+        },
+        "reliability": {
+          "status": "ok",
+          "value": {
+            "name": "noFaultDetected",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "statusFlags": {
+          "status": "ok",
+          "value": {
+            "tag": "bitString",
+            "value": [
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        }
+      },
+      "propertyList": [
+        "description",
+        "outOfService",
+        "reliability",
+        "statusFlags",
+        "apduLength",
+        "ipAddress",
+        "ipDefaultGateway",
+        "ipDnsServer",
+        "bacnetIpMode",
+        "ipSubnetMask",
+        "bacnetIpUdpPort",
+        "changesPending",
+        "command",
+        "fdBbmdAddress",
+        "fdSubscriptionLifetime",
+        "linkSpeed",
+        "macAddress",
+        "networkNumber",
+        "networkNumberQuality",
+        "networkType",
+        "protocolLevel",
+        "commandValidationResult"
+      ]
+    },
+    {
+      "objectIdentifier": {
+        "instance": 2,
+        "type": "networkPort"
+      },
+      "properties": {
+        "apduLength": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 1476
+          }
+        },
+        "certificateSigningRequestFile": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 2,
+              "type": "file"
+            }
+          }
+        },
+        "changesPending": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "command": {
+          "status": "ok",
+          "value": {
+            "name": "idle",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "commandValidationResult": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "constructed",
+                "value": [
+                  {
+                    "tag": "date",
+                    "value": {
+                      "day": 255,
+                      "month": 255,
+                      "weekday": 255,
+                      "year": 2155
+                    }
+                  },
+                  {
+                    "tag": "time",
+                    "value": {
+                      "hour": 255,
+                      "hundredths": 255,
+                      "minute": 255,
+                      "second": 255
+                    }
+                  }
+                ]
+              },
+              {
+                "tag": "constructed",
+                "value": [
+                  {
+                    "name": "object",
+                    "tag": "enumerated",
+                    "value": 1
+                  },
+                  {
+                    "name": "success",
+                    "tag": "enumerated",
+                    "value": 84
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "description": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "BACnet/SC port: the hub function (the wss:// listener that devices connect to) and, if configured, the hub connector. Its certificates are File objects 1-4."
+          }
+        },
+        "issuerCertificateFiles": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": [
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 3,
+                  "type": "file"
+                }
+              },
+              {
+                "tag": "objectIdentifier",
+                "value": {
+                  "instance": 4,
+                  "type": "file"
+                }
+              }
+            ]
+          }
+        },
+        "macAddress": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "host-specific (not recorded)"
+          }
+        },
+        "maxBvlcLengthAccepted": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 6144
+          }
+        },
+        "maxNpduLengthAccepted": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 1497
+          }
+        },
+        "networkNumber": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 0
+          }
+        },
+        "networkNumberQuality": {
+          "status": "ok",
+          "value": {
+            "name": "unknown",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "networkType": {
+          "status": "ok",
+          "value": {
+            "name": "secure-connect",
+            "tag": "enumerated",
+            "value": 11
+          }
+        },
+        "objectIdentifier": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 2,
+              "type": "networkPort"
+            }
+          }
+        },
+        "objectName": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "BACnet SC"
+          }
+        },
+        "objectType": {
+          "status": "ok",
+          "value": {
+            "name": "networkPort",
+            "tag": "enumerated",
+            "value": 56
+          }
+        },
+        "operationalCertificateFile": {
+          "status": "ok",
+          "value": {
+            "tag": "objectIdentifier",
+            "value": {
+              "instance": 1,
+              "type": "file"
+            }
+          }
+        },
+        "outOfService": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": false
+          }
+        },
+        "protocolLevel": {
+          "status": "ok",
+          "value": {
+            "name": "bacnetApplication",
+            "tag": "enumerated",
+            "value": 2
+          }
+        },
+        "reliability": {
+          "status": "ok",
+          "value": {
+            "name": "noFaultDetected",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "scConnectWaitTimeout": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 10
+          }
+        },
+        "scDisconnectWaitTimeout": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 10
+          }
+        },
+        "scFailedConnectionRequests": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": []
+          }
+        },
+        "scFailoverHubUri": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": ""
+          }
+        },
+        "scHeartbeatTimeout": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 30
+          }
+        },
+        "scHubConnectorState": {
+          "status": "ok",
+          "value": {
+            "name": "noHubConnection",
+            "tag": "enumerated",
+            "value": 0
+          }
+        },
+        "scHubFunctionAcceptUris": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "wss://0.0.0.0:47924/"
+          }
+        },
+        "scHubFunctionBinding": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": "wss://0.0.0.0:47924/"
+          }
+        },
+        "scHubFunctionConnectionStatus": {
+          "status": "ok",
+          "value": {
+            "tag": "constructed",
+            "value": []
+          }
+        },
+        "scHubFunctionEnable": {
+          "status": "ok",
+          "value": {
+            "tag": "boolean",
+            "value": true
+          }
+        },
+        "scMaximumReconnectTime": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 600
+          }
+        },
+        "scMinimumReconnectTime": {
+          "status": "ok",
+          "value": {
+            "tag": "unsignedInt",
+            "value": 10
+          }
+        },
+        "scPrimaryHubConnectionStatus": {
+          "detail": {
+            "kind": "decode",
+            "message": "ReadPropertyMultiple-ACK for networkPort:2 scPrimaryHubConnectionStatus has a PropertyValue shape the decoder does not handle: {\"_context\":\"4\",\"SCHubConnection\":{\"ConnectionState\":{\"_text\":\"Unknown Enumeration Value (0)\",\"_context\":\"0\",\"_datatype\":\"9\",\"_datatypeLabel\":\"Enumerated\",\"_value\":\"0\"},\"ConnectTimestamp\":{\"_context\":\"1\",\"Date\":{\"_text\":\"Unspecified Month, Unspecified Day, Unspecified Year, Unspecified Day of Week\",\"_datatype\":\"10\",\"_datatypeLabel\":\"Date\",\"_day\":\"255\",\"_month\":\"255\",\"_weekday\":\"255\",\"_year\":\"255\"},\"Time\":{\"_text\":\"*:*:*.*\",\"_datatype\":\"11\",\"_datatypeLabel\":\"Time\",\"_hour\":\"255\",\"_hundredthSeconds\":\"255\",\"_minute\":\"255\",\"_second\":\"255\"}},\"DisconnectTimestamp\":{\"_context\":\"2\",\"Date\":{\"_text\":\"Uns…",
+            "path": "rpm"
+          },
+          "reason": "decode failed: ReadPropertyMultiple-ACK for networkPort:2 scPrimaryHubConnectionStatus has a PropertyValue shape the decoder does not handle: {\"_context\":\"4\",\"SCHubConnection\":{\"ConnectionState\":{\"_text\":\"Unknown Enumeration Value (0)\",\"_context\":\"0\",\"_datatype\":\"9\",\"_datatypeLabel\":\"Enumerated\",\"_value\":\"0\"},\"ConnectTimestamp\":{\"_context\":\"1\",\"Date\":{\"_text\":\"Unspecified Month, Unspecified Day, Unspecified Year, Unspecified Day of Week\",\"_datatype\":\"10\",\"_datatypeLabel\":\"Date\",\"_day\":\"255\",\"_month\":\"255\",\"_weekday\":\"255\",\"_year\":\"255\"},\"Time\":{\"_text\":\"*:*:*.*\",\"_datatype\":\"11\",\"_datatypeLabel\":\"Time\",\"_hour\":\"255\",\"_hundredthSeconds\":\"255\",\"_minute\":\"255\",\"_second\":\"255\"}},\"DisconnectTimestamp\":{\"_context\":\"2\",\"Date\":{\"_text\":\"Uns…",
+          "status": "error"
+        },
+        "scPrimaryHubUri": {
+          "status": "ok",
+          "value": {
+            "tag": "characterString",
+            "value": ""
+          }
+        },
+        "statusFlags": {
+          "status": "ok",
+          "value": {
+            "tag": "bitString",
+            "value": [
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        }
+      },
+      "propertyList": [
+        "description",
+        "outOfService",
+        "reliability",
+        "statusFlags",
+        "apduLength",
+        "changesPending",
+        "command",
+        "macAddress",
+        "networkNumber",
+        "networkNumberQuality",
+        "networkType",
+        "protocolLevel",
+        "certificateSigningRequestFile",
+        "commandValidationResult",
+        "issuerCertificateFiles",
+        "maxBvlcLengthAccepted",
+        "maxNpduLengthAccepted",
+        "operationalCertificateFile",
+        "scConnectWaitTimeout",
+        "scDisconnectWaitTimeout",
+        "scFailedConnectionRequests",
+        "scFailoverHubUri",
+        "scHubConnectorState",
+        "scHubFunctionAcceptUris",
+        "scHubFunctionBinding",
+        "scHubFunctionConnectionStatus",
+        "scHubFunctionEnable",
+        "scHeartbeatTimeout",
+        "scPrimaryHubConnectionStatus",
+        "scPrimaryHubUri",
+        "scMaximumReconnectTime",
+        "scMinimumReconnectTime"
+      ]
+    }
+  ],
+  "pollPath": "rpm-all",
+  "pollWarnings": [],
+  "segmentationSupported": "both",
+  "servicesSupported": [
+    "atomicReadFile",
+    "atomicWriteFile",
+    "readProperty",
+    "readPropertyMultiple",
+    "writeProperty",
+    "deviceCommunicationControl",
+    "reinitializeDevice",
+    "iAm",
+    "iHave",
+    "timeSynchronization",
+    "whoHas",
+    "whoIs",
+    "utcTimeSynchronization"
+  ],
+  "target": {
+    "address": "127.0.0.1",
+    "deviceInstance": 389022,
+    "port": 47848
+  }
+}

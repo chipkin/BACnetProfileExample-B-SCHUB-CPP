@@ -1888,7 +1888,7 @@ void PrintHelp(const char* appName, const char* appVersion) {
 }
 
 bool HandleHelpAndVersionArgs(const int argc, char** argv, const char* appName, const char* appVersion,
-                              const bool showDccPasswordCliOption) {
+                              const bool showDccPasswordCliOption, const bool showDeviceNameCliOption) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0 ||
             strcmp(argv[i], "/?") == 0) {
@@ -1902,6 +1902,14 @@ bool HandleHelpAndVersionArgs(const int argc, char** argv, const char* appName, 
             printf("  --deviceID <n>    BACnet device instance (0..4194302). Each example in\n");
             printf("                    this series has its own default so several can run on\n");
             printf("                    one subnet at once.\n");
+            if (showDeviceNameCliOption) {
+                printf("  --deviceName <text>\n");
+                printf("                    The Device object's Object_Name (1..%u bytes, no\n",
+                       (unsigned)MAX_DEVICE_NAME_LENGTH);
+                printf("                    control characters). It must be unique across the\n");
+                printf("                    BACnet internetwork, so give every unit its own.\n");
+                printf("                    Default: this example's own name.\n");
+            }
             printf("  --port <n>        BACnet/IP UDP port (1..65535). Default 47808 (0xBAC0).\n");
             printf("                    Use a non-default port to avoid clashing with another\n");
             printf("                    BACnet device already on 47808 on this host.\n");
@@ -1984,6 +1992,26 @@ uint32_t ParseDeviceIdArg(const int argc, char** argv, const uint32_t defaultDev
         }
     }
     return defaultDeviceId;
+}
+
+const char* ParseDeviceNameArg(const int argc, char** argv, const char* defaultDeviceName) {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (strcmp(argv[i], "--deviceName") == 0) {
+            const char* name = argv[i + 1];
+            const size_t length = strlen(name);
+            bool printable = length > 0 && length <= MAX_DEVICE_NAME_LENGTH;
+            for (size_t c = 0; printable && c < length; ++c) {
+                const unsigned char octet = (unsigned char)name[c];
+                printable = octet >= 0x20 && octet != 0x7F; // UTF-8 multi-byte octets are >= 0x80
+            }
+            if (printable) {
+                return name; // argv's own storage outlives main() - safe to return directly
+            }
+            printf("Warning: ignoring invalid --deviceName (want 1..%u bytes, no control characters); "
+                   "using \"%s\".\n", (unsigned)MAX_DEVICE_NAME_LENGTH, defaultDeviceName);
+        }
+    }
+    return defaultDeviceName;
 }
 
 bool SetupUDP(const uint16_t port, const uint32_t networkPortInstance) {

@@ -4,7 +4,92 @@ All notable changes to this project are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.7.1] - unreleased
+## [Unreleased]
+
+## [1.8.0] - 2026-10-27
+
+Built on CAS BACnet Stack 6.x (`69b6249f`), Protocol_Revision 30, vendored
+`common/` 3.5.0.
+
+This release keeps what 1.6.0 and 1.7.x cut the example down to - BACnet/SC only
+by default, at most 4 BACnet/SC devices, a 24-hour run limit, the demo
+certificates, the certificate request at start-up, `--import-cari` and the log
+file - and adds back the options a hub in a larger network needs. The hub still
+starts exactly as before when none of them is given.
+
+### Added
+
+- **An optional BACnet/IP port**: `--port <n>` opens a UDP socket on `n` and adds
+  Network Port 1 "BACnet IP", so the hub can also be found and managed over
+  plain BACnet/IP (Who-Is/I-Am, ReadProperty, ReadPropertyMultiple), and
+  broadcasts an I-Am when it starts. **Without `--port`
+  the hub is BACnet/SC-only, as in 1.7.x: no UDP socket and no Network Port 1.**
+  The hub function does not relay between BACnet/IP and BACnet/SC.
+- **A hub connector with a failover hub**: `--sc-hub-uri <wss://...>` makes the
+  hub also connect, as a node, to another BACnet/SC hub with its own certificate
+  (mutual TLS 1.3); `--sc-failover-uri` is the hub it connects to when the
+  primary can't be reached. `--sc-accept-hub-without-hello` accepts a
+  Connect-Accept without the Hello option, from a hub that leaves it out (off by
+  default; deviates from ANSI/ASHRAE 135 AB.2.2, and the hub says so). An
+  `issuer-crl.pem` that holds no certificate revocation list makes the hub
+  connect to no hub until it is fixed.
+- **`--sc-rate-limit` and `--sc-rate-limit-total`**: how many new BACnet/SC
+  connection attempts the hub accepts a second from one address (default 10) and
+  in total (default 50); 0 turns a limit off. A refused attempt is cut off before
+  the TLS handshake and logged, at most once every 10 seconds.
+- **`--sc-max-hub-connections <n>`** lowers the limit of 4 BACnet/SC devices (1 to
+  4). The limit can't be raised: a larger value is refused.
+- **`--device-name`** sets the Device's `Object_Name` (1 to 128 bytes of UTF-8;
+  ASCII on Windows), which must be unique on the BACnet internetwork. It is also
+  the name in the hub's certificate request.
+- **`--ip-network-number` and `--sc-network-number`** give the Network Ports a
+  BACnet network number (reported as configured; the device is not a router).
+- Self-tests under `tests/sc/`: `ip_port_test.py`, `hub_options_test.py` and
+  `connector_test.py` (with `fake_hub_server.py`, a fake hub), run by the release
+  workflow. `tests/veribacnet/` is a VeriBACnet project for Chipkin's BTL
+  conformance tool, run over the BACnet/IP port.
+- **TimeSynchronization (DM-TS-B)**: the hub executes the TimeSynchronization
+  service and sets its clock; the Device now serves `Local_Date` and `Local_Time`
+  (the host's local time with the correction the last synchronization applied).
+  A request with an unspecified field or a day the month does not have is
+  ignored. This is the "at least one time synchronization method" the NM-SCH-B
+  options of the BTL Test Plan ask for. New self-test `tests/sc/time_sync_test.py`
+  (over BACnet/IP and BACnet/SC), run by the release workflow.
+- **UTCTimeSynchronization (DM-UTC-B)**: the hub also executes the
+  UTCTimeSynchronization service. The Device serves `UTC_Offset` (minutes, west of
+  Greenwich positive) and `Daylight_Savings_Status`, which start from the host's
+  time zone (0 and FALSE when it cannot be determined) and are writable (any
+  multiple of 15 minutes from -1440 to +1440 for `UTC_Offset`); `Local_Date` and
+  `Local_Time` are the UTC minus `UTC_Offset`, plus an hour while daylight saving
+  applies, and both time synchronization services move that clock. New self-test
+  `tests/sc/utc_time_sync_test.py`, run by the release workflow.
+- `TODO.md` lists the known gaps.
+
+### Changed
+
+- CAS BACnet Stack updated to `6.x` @ `69b6249f`; vendored `common/` updated to
+  3.5.0.
+- Every option is checked at start-up: a bad number, a missing value, a URI that
+  isn't `wss://` or a network number used twice is refused instead of ignored.
+- The release workflow is read-only by default (only the publishing job may
+  write), takes the branch name from the environment instead of pasting it into
+  a script, builds with a bounded parallelism so a Linux runner doesn't run out
+  of memory, waits for the real ready line in the smoke test, cancels a pull
+  request's earlier run when it is pushed again, and skips the build for a
+  documentation-only pull request.
+
+### Fixed
+
+- **`Archive` of the File objects was not writable.** ANSI/ASHRAE 135-2024 clause
+  12.13 makes it writable (conformance code W), but a WriteProperty to it was
+  refused with write-access-denied. A client can now set it on Files 1 to 4; the
+  hub only stores the flag.
+- **Changes_Pending was TRUE on a hub that had just started.** The stack leaves
+  the hub's own start-up binding of the certificate files pending, so Network
+  Port 2 read `Changes_Pending` TRUE before anything had been written. The hub
+  now activates its start-up configuration; a fresh hub reports FALSE.
+
+## [1.7.1] - 2026-10-16
 
 Verified against CAS BACnet Stack 6.0.23 (`6.x` @ `64b2cfac5`), Protocol_Revision
 30, vendored `common/` 3.4.0.

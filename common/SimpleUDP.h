@@ -37,7 +37,8 @@ public:
                   const uint8_t* data, const uint16_t length);
 
     // Try to receive one datagram into buffer (up to maxLength bytes).
-    // Non-blocking-ish: waits up to the socket receive timeout. Returns the
+    // Non-blocking-ish: waits up to 10 ms for a datagram (select(), common/
+    // 3.4.1 - not SO_RCVTIMEO, which loses datagrams on Windows). Returns the
     // number of bytes received (0 if none / timeout). On success, fills
     // fromIpAddress[4] and *fromPort with the sender's address.
     // (Named Receive, not GetMessage, to avoid the Win32 GetMessage macro.)

@@ -3,7 +3,7 @@
 # Public-domain example code (CC0) - see ../../LICENSE.
 """A BACnet client over BACnet/SC, for the tests that read and write the hub.
 
-The example has no BACnet/IP port, so every BACnet test talks to it the way a
+The hub has no BACnet/IP port unless started with --port, so these tests talk to it the way a
 real BACnet/SC device does: it connects to the hub function (WebSocket + TLS 1.3
 with a device certificate, subprotocol hub.bsc.bacnet.org), sends a
 Connect-Request, and then exchanges BVLC-SC Encapsulated-NPDU messages

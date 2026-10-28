@@ -1,0 +1,327 @@
+{
+  "capabilities": {
+    "maxApduLength": 1476,
+    "maxSegmentsAccepted": 16,
+    "objectTypesSupported": [
+      "analogInput",
+      "device",
+      "file",
+      "networkPort"
+    ],
+    "segmentation": "both",
+    "servicesExecuted": [
+      "readProperty",
+      "readPropertyMultiple",
+      "writeProperty",
+      "atomicReadFile",
+      "atomicWriteFile",
+      "deviceCommunicationControl",
+      "reinitializeDevice",
+      "timeSynchronization",
+      "utcTimeSynchronization",
+      "whoHas",
+      "whoIs"
+    ],
+    "servicesSupported": [
+      "readProperty",
+      "readPropertyMultiple",
+      "writeProperty",
+      "atomicReadFile",
+      "atomicWriteFile",
+      "deviceCommunicationControl",
+      "reinitializeDevice",
+      "timeSynchronization",
+      "utcTimeSynchronization",
+      "iAm",
+      "iHave",
+      "whoHas",
+      "whoIs"
+    ]
+  },
+  "conflicts": [],
+  "declared": {
+    "bibbs": [
+      "DS-RP-B",
+      "DS-RPM-B",
+      "DM-DDB-B",
+      "DM-DOB-B",
+      "DM-DCC-B",
+      "DM-TS-B",
+      "DM-UTC-B",
+      "NM-SCH-B"
+    ],
+    "options": {
+      "3.61::Supports BACnet/SC Certificate Exchange": "File 1, 3 and 4 take the clause 19.8.3 certificate writes (File_Size and AtomicWriteFile, applied by ReinitializeDevice); File 2 holds the CSR (PICS section 3).",
+      "8.14::Supports receiving a DeviceCommunicationControl service request with an indefinite duration": "The DeviceCommunicationControl callback accepts a request with no Time_Duration; the stack runs the state machine.",
+      "9.9::Supports B/SC over IPv4": "The hub function listens on wss://0.0.0.0:<sc-port>/ (IPv4); PICS section 7.",
+      "9.9::Supports DM-TS-B": "TimeSynchronization is executed: SetSystemTime moves the clock behind Local_Date and Local_Time (PICS section 4).",
+      "9.9::Supports DM-UTC-B": "UTCTimeSynchronization is executed: the clock behind Local_Date and Local_Time is UTC less the writable UTC_Offset (plus an hour while Daylight_Savings_Status is TRUE), both starting from the host's time zone (PICS section 4).",
+      "9.9::Supports Non-hierarchical Network Port objects": "Both Network Ports have Reference_Port = none (4194303).",
+      "9.9::Supports the DISCARD_CHANGES command": "Network Port Command DISCARD_CHANGES drops staged certificate writes (PICS section 3).",
+      "9.9::Supports the GENERATE_CSR_FILE command": "Network Port 2 Command GENERATE_CSR_FILE makes a new key pair and CSR (File 2) (PICS section 3).",
+      "9.9::Supports the Network Port Object Command property": "Command is writable on both Network Ports (cl. 12.56.16).",
+      "9.9::Supports the Network Port object": "Network Port 2 (BACnet/SC), and Network Port 1 (BACnet/IP) when started with --port."
+    },
+    "source": "operator"
+  },
+  "discovered": {
+    "capturedAt": "2026-10-27T21:52:04.433Z",
+    "readDeviceProperties": {
+      "applicationSoftwareVersion": "1.8.0",
+      "firmwareRevision": "6.0.23.0",
+      "modelName": "CAS BACnet Stack Example - B-SCHUB",
+      "objectName": "Chipkin Example B-SCHUB",
+      "protocolRevision": 30,
+      "protocolVersion": 1,
+      "vendorId": 389,
+      "vendorName": "Chipkin Automation Systems"
+    },
+    "whoIsResults": [
+      {
+        "deviceInstance": 389022,
+        "maxApdu": 1476,
+        "segmentation": "both",
+        "vendorId": 389
+      }
+    ]
+  },
+  "identity": {
+    "applicationSoftwareVersion": "1.8.0",
+    "deviceInstance": 389022,
+    "firmwareRevision": "6.0.23.0",
+    "modelName": "CAS BACnet Stack Example - B-SCHUB",
+    "objectName": "Chipkin Example B-SCHUB",
+    "protocolRevision": 30,
+    "protocolVersion": 1,
+    "vendorId": 389,
+    "vendorName": "Chipkin Automation Systems"
+  },
+  "network": {
+    "address": {
+      "ip": "127.0.0.1",
+      "port": 47848
+    },
+    "transport": "bacnetIp"
+  },
+  "objects": [
+    {
+      "objectIdentifier": {
+        "instance": 1,
+        "type": "analogInput"
+      },
+      "objectName": "Bronze",
+      "properties": {
+        "outOfService": {
+          "tag": "boolean",
+          "value": false
+        },
+        "units": {
+          "name": "degreesCelsius",
+          "tag": "enumerated",
+          "value": 62
+        }
+      }
+    },
+    {
+      "objectIdentifier": {
+        "instance": 389022,
+        "type": "device"
+      },
+      "objectName": "Chipkin Example B-SCHUB",
+      "properties": {
+        "maxApduLengthAccepted": {
+          "tag": "unsignedInt",
+          "value": 1476
+        },
+        "protocolRevision": {
+          "tag": "unsignedInt",
+          "value": 30
+        },
+        "protocolVersion": {
+          "tag": "unsignedInt",
+          "value": 1
+        },
+        "vendorIdentifier": {
+          "tag": "unsignedInt",
+          "value": 389
+        }
+      }
+    },
+    {
+      "objectIdentifier": {
+        "instance": 1,
+        "type": "file"
+      },
+      "objectName": "Operational Certificate",
+      "properties": {}
+    },
+    {
+      "objectIdentifier": {
+        "instance": 2,
+        "type": "file"
+      },
+      "objectName": "Certificate Signing Request",
+      "properties": {}
+    },
+    {
+      "objectIdentifier": {
+        "instance": 3,
+        "type": "file"
+      },
+      "objectName": "Issuer Certificate Slot 1",
+      "properties": {}
+    },
+    {
+      "objectIdentifier": {
+        "instance": 4,
+        "type": "file"
+      },
+      "objectName": "Issuer Certificate Slot 2",
+      "properties": {}
+    },
+    {
+      "objectIdentifier": {
+        "instance": 1,
+        "type": "networkPort"
+      },
+      "objectName": "BACnet IP",
+      "properties": {
+        "apduLength": {
+          "tag": "unsignedInt",
+          "value": 1476
+        },
+        "networkType": {
+          "name": "ipv4",
+          "tag": "enumerated",
+          "value": 5
+        },
+        "outOfService": {
+          "tag": "boolean",
+          "value": false
+        },
+        "protocolLevel": {
+          "name": "bacnetApplication",
+          "tag": "enumerated",
+          "value": 2
+        }
+      }
+    },
+    {
+      "objectIdentifier": {
+        "instance": 2,
+        "type": "networkPort"
+      },
+      "objectName": "BACnet SC",
+      "properties": {
+        "apduLength": {
+          "tag": "unsignedInt",
+          "value": 1476
+        },
+        "networkType": {
+          "name": "secureConnect",
+          "tag": "enumerated",
+          "value": 11
+        },
+        "outOfService": {
+          "tag": "boolean",
+          "value": false
+        },
+        "protocolLevel": {
+          "name": "bacnetApplication",
+          "tag": "enumerated",
+          "value": 2
+        }
+      }
+    }
+  ],
+  "provenance": {
+    "epicsHeader": {
+      "characterSetsSupported": "derived",
+      "dataLinkOptions": "derived",
+      "deviceProfile": "user-entered",
+      "productDescription": "user-entered",
+      "specialFunctionality": "derived"
+    },
+    "generatedAt": "2026-10-27T21:52:21.896Z",
+    "testPoints": 0
+  },
+  "testDatabase": {
+    "commandableTestPoints": [],
+    "deviceConfigurationScenario": {
+      "notes": "The Device object is the only object whose identity can change, and only by start-up configuration: restart the example with --deviceID <n> or --device-name <text>. A WriteProperty to the Device's Object_Name or Object_Identifier is refused (write-access-denied), so nothing changes over the network.",
+      "objectNameChangeMethod": "replaceConfiguration",
+      "safeAlternateObjectIdentifier": {
+        "instance": 389922,
+        "type": "device"
+      },
+      "safeAlternateObjectName": "Chipkin Example B-SCHUB Alt"
+    },
+    "identityMutationTestPoints": [
+      {
+        "notes": "The Device object is the only object whose identity can change, and only by start-up configuration: restart the example with --deviceID <n> or --device-name <text>. A WriteProperty to the Device's Object_Name or Object_Identifier is refused (write-access-denied), so nothing changes over the network.",
+        "objectIdentifier": {
+          "instance": 389022,
+          "type": "device"
+        },
+        "safeAlternateObjectIdentifier": {
+          "instance": 389922,
+          "type": "device"
+        },
+        "safeAlternateObjectName": "Chipkin Example B-SCHUB Alt"
+      }
+    ],
+    "networkPort": {
+      "activeOne": {
+        "objectIdentifier": {
+          "instance": 1,
+          "type": "networkPort"
+        }
+      }
+    },
+    "objectDeletion": "none",
+    "passwords": {},
+    "rebootWindow": {
+      "activateChangesMs": 30000,
+      "coldstartMs": 60000,
+      "warmstartMs": 30000
+    },
+    "remoteWhoHasExecution": {
+      "allowedResponseNpdus": [
+        {
+          "destination": {
+            "dnet": 65535
+          }
+        },
+        {
+          "destination": {
+            "dnet": 99
+          }
+        },
+        {
+          "destination": {
+            "dadr": "01",
+            "dnet": 99
+          }
+        }
+      ],
+      "notes": [
+        "TD-side choice for the remote-network Who-Has / Who-Is rows (135.1 9.32.2.x, 9.33.2.x): remote network X = 99, source address Y = 01. The allowed response paths are the clause three: global broadcast, remote broadcast to X, the TD on X."
+      ],
+      "requestNpdu": {
+        "destination": {
+          "dnet": "globalBroadcast"
+        },
+        "source": {
+          "sadr": "01",
+          "snet": 99
+        }
+      }
+    },
+    "timeouts": {
+      "apdu": 3000,
+      "reply": 1000,
+      "segment": 1000
+    },
+    "writableTestPoints": []
+  }
+}

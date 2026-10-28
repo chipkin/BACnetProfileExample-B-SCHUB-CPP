@@ -11,8 +11,8 @@ and checks:
      sales@chipkin.com - before the "ready" line.
   2. Four devices are accepted; a fifth gets a BVLC-Result NAK, and the hub
      logs the connection-limit warning naming sales@chipkin.com.
-  3. The limit is fixed: --sc-max-hub-connections is refused as an unknown
-     option.
+  3. The limit cannot be raised: --sc-max-hub-connections may only lower it, and
+     5 is refused (hub_options_test.py checks the lowering).
 
     python tests/sc/connection_limit_test.py --exe build/BACnetExampleBSCHUB
 
@@ -132,12 +132,13 @@ def main():
         record("the warning is logged once (at most once a minute)", output.count(LIMIT_MESSAGE) == 1,
                f"{output.count(LIMIT_MESSAGE)} time(s)")
 
-        # 3. The limit is fixed.
-        proc = subprocess.run([str(exe), "--sc-max-hub-connections", "5"], capture_output=True, text=True,
-                              timeout=60, stdin=subprocess.DEVNULL, cwd=tmp)
+        # 3. The limit cannot be raised.
+        proc = subprocess.run([str(exe), "--sc-cert-dir", str(certs), "--sc-max-hub-connections", "5"],
+                              capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, cwd=tmp)
         out = proc.stdout + proc.stderr
-        record("--sc-max-hub-connections 5 is refused as an unknown option",
-               proc.returncode != 0 and "unknown option" in out, out.strip().splitlines()[-1] if out.strip() else "")
+        record("--sc-max-hub-connections 5 is refused: the example accepts at most 4",
+               proc.returncode != 0 and "accepts at most 4 BACnet/SC devices" in out and "can only lower" in out,
+               out.strip().splitlines()[-1] if out.strip() else "")
 
     print(f"\n{sum(RESULTS)}/{len(RESULTS)} checks passed")
     return 0 if all(RESULTS) else 1

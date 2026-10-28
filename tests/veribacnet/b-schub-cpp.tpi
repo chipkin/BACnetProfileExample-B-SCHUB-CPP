@@ -1,0 +1,251 @@
+PICS 0
+BACnet Protocol Implementation Conformance Statement
+Vendor Name: "Chipkin Automation Systems"
+Product Name: "CAS BACnet Stack Example - B-SCHUB"
+Product Model Number: "CAS BACnet Stack Example - B-SCHUB"
+Product Description: "A BACnet Secure Connect hub built on the CAS BACnet Stack. BACnet/SC devices connect to it over TLS 1.3 WebSockets with mutual certificate authentication, and it relays their traffic. It can also connect out to another hub as a node (--sc-hub-uri). A BACnet/IP port for discovery and management is available when it is started with --port. Its certificates can be replaced over BACnet with the BACnet/SC certificate procedures."
+
+BACnet Standardized Device Profiles Supported:
+{
+B-SCHUB - BACnet Secure Connect Hub
+}
+
+BIBBs Supported:
+{
+DS-RP-B
+DS-RPM-B
+DM-DDB-B
+DM-DOB-B
+DM-DCC-B
+DM-TS-B
+DM-UTC-B
+NM-SCH-B
+}
+
+BACnet Standard Application Services Supported:
+{
+ReadProperty Execute
+ReadPropertyMultiple Execute
+WriteProperty Execute
+AtomicReadFile Execute
+AtomicWriteFile Execute
+DeviceCommunicationControl Execute
+ReinitializeDevice Execute
+TimeSynchronization Execute
+UTCTimeSynchronization Execute
+IAm Initiate
+IHave Initiate
+WhoHas Execute
+WhoIs Execute
+}
+
+Standard Object Types Supported:
+{
+Analog Input
+Device
+File
+Network Port
+}
+
+Data Link Layer Option:
+{
+BACnet IP, (Annex J)
+BACnet Secure Connect (Annex AB)
+}
+
+Character Sets Supported:
+{
+ISO 10646 (UTF-8) / ANSI X3.4
+}
+
+Special Functionality:
+{
+Maximum APDU size in octets: 1476
+Segmented Requests Supported, window size: 1
+Segmented Responses Supported, window size: 1
+}
+
+Default Property Value Restrictions:
+{
+unsigned-integer: <minimum: 0; maximum: 65535>
+signed-integer: <minimum: -2147483648; maximum: 2147483647>
+real: <minimum: -3.4e+38; maximum: 3.4e+38; resolution: 0.01>
+character-string: <maximum length string: 64>
+octet-string: <maximum length string: 256>
+list: <maximum length list: 10>
+}
+
+Fail Times:
+{
+Notification Fail Time: 60
+Internal Processing Fail Time: 2
+Minimum ON/OFF Time: 2
+Schedule Evaluation Fail Time: 2
+External Command Fail Time: 5
+Program Object State Change Fail Time: 5
+Acknowledgement Fail Time: 2
+Slave Proxy Confirm Interval: 6
+Unconfirmed Response Fail Time: 4
+Activate Changes Fail Time: 30
+Auto Negotiation Fail Time: 15
+Foreign Device Registration Fail Time: 10
+Channel Write Fail Time: 30
+}
+
+List of Objects in test device:
+{
+{
+object-identifier: (analog-input, 1)
+object-name: "Bronze"
+object-type: ANALOG_INPUT
+description: "Example sensor value in degrees C, showing a hub serving its own data. Change it with the up/down arrow keys in the console."
+event-state: ?
+out-of-service: FALSE
+present-value: ?
+status-flags: ?
+units: DEGREES-CELSIUS
+},
+{
+object-identifier: (device, 389022)
+object-name: "Chipkin Example B-SCHUB"
+object-type: DEVICE
+apdu-segment-timeout: 5000
+apdu-timeout: 10000
+application-software-version: "1.8.0"
+daylight-savings-status: ? W
+description: "CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile), with a BACnet/IP port (--port). For evaluation and testing only."
+device-address-binding: ?
+firmware-revision: "6.0.23.0"
+local-date: ?
+local-time: ?
+max-apdu-length-accepted: 1476
+model-name: "CAS BACnet Stack Example - B-SCHUB"
+number-of-apdu-retries: 3
+object-list: {(analog-input, 1), (device, 389022), (file, 1), (file, 2), (file, 3), (file, 4), (network-port, 1), (network-port, 2)}
+protocol-object-types-supported: (T,F,F,F,F,F,F,F,T,F,T,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,F,T,F,F,F,F,F,F,F,F)
+protocol-services-supported: (F,F,F,F,F,F,T,T,F,F,F,F,T,F,T,T,F,T,F,F,T,F,F,F,F,F,T,T,F,F,F,F,T,T,T,F,T,F,F,F,F,F,F,F,F,F,F,F,F,F)
+protocol-version: 1
+segmentation-supported: SEGMENTED-BOTH
+system-status: OPERATIONAL
+utc-offset: ? W
+vendor-identifier: 389
+vendor-name: "Chipkin Automation Systems"
+protocol-revision: 30
+database-revision: ?
+max-segments-accepted: 16
+device-uuid: X'53434855422d44454d4f2d3338393032'
+},
+{
+object-identifier: (file, 1)
+object-name: "Operational Certificate"
+object-type: FILE
+archive: FALSE
+description: "This hub's operational certificate (PEM), presented in every BACnet/SC TLS handshake. Replace it over BACnet (clause 19.8.3), then ACTIVATE_CHANGES."
+file-access-method: STREAM-ACCESS
+file-size: ? W
+file-type: "application/x-pem-file"
+modification-date: ?
+read-only: FALSE
+},
+{
+object-identifier: (file, 2)
+object-name: "Certificate Signing Request"
+object-type: FILE
+archive: FALSE
+description: "Certificate signing request (PEM) for this hub's private key. Have your CA sign it, then write the certificate to File 1."
+file-access-method: STREAM-ACCESS
+file-size: ?
+file-type: "application/x-pem-file"
+modification-date: ?
+read-only: TRUE
+},
+{
+object-identifier: (file, 3)
+object-name: "Issuer Certificate Slot 1"
+object-type: FILE
+archive: FALSE
+description: "Issuer (CA) certificate, slot 1 (PEM). Devices connecting to this hub must be signed by the issuer in slot 1 or slot 2."
+file-access-method: STREAM-ACCESS
+file-size: ? W
+file-type: "application/x-pem-file"
+modification-date: ?
+read-only: FALSE
+},
+{
+object-identifier: (file, 4)
+object-name: "Issuer Certificate Slot 2"
+object-type: FILE
+archive: FALSE
+description: "Issuer (CA) certificate, slot 2 (PEM). Write a second CA here to trust it alongside slot 1. Shows slot 1's certificate until one is written."
+file-access-method: STREAM-ACCESS
+file-size: ? W
+file-type: "application/x-pem-file"
+modification-date: ?
+read-only: FALSE
+},
+{
+object-identifier: (network-port, 1)
+object-name: "BACnet IP"
+object-type: NETWORK_PORT
+description: "BACnet/IP port (UDP), so this hub can also be found and managed over plain BACnet/IP."
+out-of-service: FALSE
+reliability: NO-FAULT-DETECTED
+status-flags: ?
+apdu-length: 1476
+ip-address: ?
+ip-default-gateway: ?
+ip-dns-server: ?
+bacnet-ip-mode: NORMAL
+ip-subnet-mask: ?
+bacnet-ip-udp-port: 47848
+changes-pending: ?
+command: IDLE W
+fd-bbmd-address: ?
+fd-subscription-lifetime: 0
+link-speed: 0
+mac-address: ?
+network-number: 0
+network-number-quality: UNKNOWN
+network-type: IPV4
+protocol-level: BACNET-APPLICATION
+command-validation-result: ?
+},
+{
+object-identifier: (network-port, 2)
+object-name: "BACnet SC"
+object-type: NETWORK_PORT
+description: "BACnet/SC port: the hub function (the wss:// listener that devices connect to) and, if configured, the hub connector. Its certificates are File objects 1-4."
+out-of-service: FALSE
+reliability: NO-FAULT-DETECTED
+status-flags: ?
+apdu-length: 1476
+changes-pending: ?
+command: IDLE W
+mac-address: ?
+network-number: 0
+network-number-quality: UNKNOWN
+network-type: SECURE-CONNECT
+protocol-level: BACNET-APPLICATION
+certificate-signing-request-file: (file, 2)
+command-validation-result: ?
+issuer-certificate-files: {(file, 3), (file, 4)}
+max-bvlc-length-accepted: 6144
+max-npdu-length-accepted: 1497
+operational-certificate-file: (file, 1)
+sc-connect-wait-timeout: 10
+sc-disconnect-wait-timeout: 10
+sc-failed-connection-requests: ?
+sc-failover-hub-uri: ""
+sc-hub-connector-state: ?
+sc-hub-function-accept-uris: "wss://0.0.0.0:47924/"
+sc-hub-function-binding: ?
+sc-hub-function-connection-status: ?
+sc-hub-function-enable: TRUE
+sc-heartbeat-timeout: 30
+sc-primary-hub-connection-status: ?
+sc-primary-hub-uri: ""
+sc-maximum-reconnect-time: 600
+sc-minimum-reconnect-time: 10
+},
+}
+End of BACnet Protocol Implementation Conformance Statement
