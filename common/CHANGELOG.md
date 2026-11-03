@@ -12,6 +12,36 @@ entry here, and must then be re-copied into **every** example in the series.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the folder adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] - unreleased
+
+### Fixed
+
+- **The peer copy of 3.6.0 was too wide.** `HelperSendMessage` unicast every
+  stringless frame to the last peer on another UDP port. That duplicated a
+  stringless broadcast UnconfirmedEventNotification to the workstation (B-EC-CPP
+  Wire Tests: the workstation saw it before the confirmed one), and duplicated a
+  BBMD's Forwarded-NPDU local re-broadcast to the foreign device that sent it
+  (B-BBMD-CPP: "F1 gets its own broadcast back, 2 copies", against Annex J.4.5).
+  The copy is now made only for a frame the stack addresses itself, in an
+  Original-Unicast-NPDU (0x0A) or Original-Broadcast-NPDU (0x0B): a network layer
+  message, or an unconfirmed I-Am / I-Have (`IsStackChosenBroadcast`). A
+  Forwarded-NPDU is never copied.
+
+## [3.6.0] - unreleased
+
+### Changed
+
+- **A stringless broadcast also reaches a peer on another UDP port.** Stack 6.x
+  (`1e7dffe2b`) leaves the address of a broadcast it chooses itself (the I-Am
+  answering a Who-Is, I-Have, I-Am-Router-To-Network, Network-Number-Is) to the
+  host: the send callback gets `broadcast = true` and no connection string. A
+  BACnet/IP broadcast reaches only the bound UDP port, so a tool on the same
+  host on another port never heard the answer. `HelperReceiveMessage` now
+  remembers the last peer that sent from a port other than the bound one, and
+  `HelperSendMessage` sends the same frame unicast to it after the subnet
+  broadcast (logged with `(peer on another port)`). String-carrying sends are
+  unchanged.
+
 ## [3.5.0] - unreleased
 
 ### Added

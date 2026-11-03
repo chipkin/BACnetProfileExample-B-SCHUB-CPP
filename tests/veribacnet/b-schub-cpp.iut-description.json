@@ -67,7 +67,7 @@
   "discovered": {
     "capturedAt": "2026-10-27T21:52:04.433Z",
     "readDeviceProperties": {
-      "applicationSoftwareVersion": "1.8.0",
+      "applicationSoftwareVersion": "1.8.1",
       "firmwareRevision": "6.0.23.0",
       "modelName": "CAS BACnet Stack Example - B-SCHUB",
       "objectName": "Chipkin Example B-SCHUB",
@@ -86,7 +86,7 @@
     ]
   },
   "identity": {
-    "applicationSoftwareVersion": "1.8.0",
+    "applicationSoftwareVersion": "1.8.1",
     "deviceInstance": 389022,
     "firmwareRevision": "6.0.23.0",
     "modelName": "CAS BACnet Stack Example - B-SCHUB",

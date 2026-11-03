@@ -1,8 +1,8 @@
 # BACnet Protocol Implementation Conformance Statement (PICS)
 
-**BACnet B-SCHUB (BACnet/SC Hub) Example - C++, version 1.8.0**
+**BACnet B-SCHUB (BACnet/SC Hub) Example - C++, version 1.8.1**
 
-Date: 2026-10-27. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
+Date: 2026-11-02. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 
 > This is the conformance statement of an **example**, for evaluation and
 > testing only. It accepts at most 4 BACnet/SC devices and stops after 24
@@ -18,7 +18,7 @@ Date: 2026-10-27. Chipkin Automation Systems Inc., <https://store.chipkin.com/>.
 | **Vendor Identifier** | 389 |
 | **Product Name** | BACnet B-SCHUB (BACnet/SC Hub) Example - C++ |
 | **Product Model Number** | CAS BACnet Stack Example - B-SCHUB |
-| **Application Software Version** | 1.8.0 |
+| **Application Software Version** | 1.8.1 |
 | **Firmware Revision** | 6.0.23.0 (the CAS BACnet Stack version) |
 | **BACnet Protocol Version** | 1 |
 | **BACnet Protocol Revision** | 30 |

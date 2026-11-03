@@ -16,14 +16,9 @@ Known gaps in this example. Each line says what is missing and why.
   Network Port 1's addressing; segmentation is tested over BACnet/SC
   (`segmentation_test.py`), where the same stack code runs.
 - **VeriBACnet (the BTL conformance tool) has no BACnet/SC transport yet**
-  (tracker: chipkin/chipkin-bacnet-testing-tool#713), so `tests/veribacnet/`
+  so `tests/veribacnet/`
   can only measure the hub's BACnet/IP side (`--port 47848`). The hub function
   itself (clause 12.5 hub rows of 135.1) is covered only by `tests/sc/`.
-- **VeriBACnet does not select the DM-TS-B and DM-UTC-B base tests for this example.**
-  The hub executes both time synchronization services (the NM-SCH-B "at least one time
-  synchronization method" option), but the test tool's `tests select` only ticks the
-  option and leaves out 9.30.1.1, 9.30.1.2, 9.31.1.1 and 9.31.1.2; they pass when run by hand
-  (`tests/veribacnet/RESULTS.md`). Tracker: chipkin/chipkin-bacnet-testing-tool#744.
 - **Daylight saving is not followed automatically.** `UTC_Offset` and
   `Daylight_Savings_Status` start from the host's time zone and are state; a
   transition needs a write of `Daylight_Savings_Status`. A device with a time-zone

@@ -20,7 +20,7 @@
     "vendorId": 389
   },
   "identity": {
-    "applicationSoftwareVersion": "1.8.0",
+    "applicationSoftwareVersion": "1.8.1",
     "firmwareRevision": "6.0.23.0",
     "modelName": "CAS BACnet Stack Example - B-SCHUB",
     "objectName": "Chipkin Example B-SCHUB",
@@ -151,7 +151,7 @@
           "status": "ok",
           "value": {
             "tag": "characterString",
-            "value": "1.8.0"
+            "value": "1.8.1"
           }
         },
         "databaseRevision": {
@@ -1500,7 +1500,7 @@
           "status": "ok",
           "value": {
             "tag": "unsignedInt",
-            "value": 30
+            "value": 300
           }
         },
         "scHubConnectorState": {

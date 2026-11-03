@@ -41,7 +41,7 @@ namespace CASExampleHelper {
 // version). Bump it whenever anything in common/ changes, and record the
 // change in common/CHANGELOG.md - every example in the series must then be
 // re-synced to the same common/ version.
-static const char* COMMON_VERSION = "3.5.0";
+static const char* COMMON_VERSION = "3.6.1";
 
 // Print the example's name + version, the linked CAS BACnet Stack version,
 // and the common/ helper version.

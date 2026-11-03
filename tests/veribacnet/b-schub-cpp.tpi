@@ -111,7 +111,7 @@ object-name: "Chipkin Example B-SCHUB"
 object-type: DEVICE
 apdu-segment-timeout: 5000
 apdu-timeout: 10000
-application-software-version: "1.8.0"
+application-software-version: "1.8.1"
 daylight-savings-status: ? W
 description: "CAS BACnet Stack example: a BACnet/SC hub (B-SCHUB profile), with a BACnet/IP port (--port). For evaluation and testing only."
 device-address-binding: ?
@@ -241,7 +241,7 @@ sc-hub-function-accept-uris: "wss://0.0.0.0:47924/"
 sc-hub-function-binding: ?
 sc-hub-function-connection-status: ?
 sc-hub-function-enable: TRUE
-sc-heartbeat-timeout: 30
+sc-heartbeat-timeout: 300
 sc-primary-hub-connection-status: ?
 sc-primary-hub-uri: ""
 sc-maximum-reconnect-time: 600

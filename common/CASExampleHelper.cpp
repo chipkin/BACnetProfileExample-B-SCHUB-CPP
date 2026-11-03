@@ -70,6 +70,12 @@ struct UdpBinding {
     uint16_t port = 0;
     uint32_t networkPortInstance = 0;
     bool bound = false;
+    // The last peer that sent to this socket from a UDP port other than the
+    // bound one (for example a test tool on this same PC, which cannot share
+    // our port). See HelperSendMessage.
+    uint8_t peerIp[4] = { 0, 0, 0, 0 };
+    uint16_t peerPort = 0;
+    bool hasPeer = false;
 };
 
 // Generous headroom over B-RTR's two ports; a small fixed table avoids a heap
@@ -161,6 +167,19 @@ uint16_t HelperReceiveMessage(uint8_t* message, const uint16_t maxMessageLength,
            (unsigned)servicedInstance);
     CASExampleHelper::LogBacnetFrame(message, bytesRead);
 
+    // Remember the last peer that is NOT on our bound UDP port. A BACnet/IP
+    // broadcast reaches only the bound UDP port, so a tool on the same host on
+    // another (ephemeral) port would never hear the answer to its Who-Is; the
+    // send callback uses this to also unicast those answers to it.
+    for (size_t i = 0; i < n; ++i) {
+        UdpBinding& b = g_udpBindings[i];
+        if (b.bound && b.networkPortInstance == servicedInstance && fromPort != b.port) {
+            memcpy(b.peerIp, fromIp, 4);
+            b.peerPort = fromPort;
+            b.hasPeer = true;
+        }
+    }
+
     // Fill the 6-byte BACnet/IP connection string: IP[4] + port[2] (big-endian).
     sourceConnectionString[0] = fromIp[0];
     sourceConnectionString[1] = fromIp[1];
@@ -219,6 +238,48 @@ void GetLocalBroadcastIPv4(uint8_t broadcastIp[4]);
 // either frame (stack issue #3933). Since common/ 3.4.0 that one case goes to
 // the local subnet broadcast instead; every other address is sent to as given.
 // ---------------------------------------------------------------------------
+// True when the BVLC frame is an answer the stack addresses itself: a network
+// layer message (I-Am-Router-To-Network, Network-Number-Is), or an unconfirmed
+// I-Am / I-Have. Other stringless broadcasts (an UnconfirmedEventNotification to
+// a broadcast recipient, for one) are not answers to a tool and must not be
+// duplicated to a peer, or the peer sees them twice with the wrong PDU type.
+// Only an Original-Unicast-NPDU (0x0A) or Original-Broadcast-NPDU (0x0B) is ever
+// copied: a Forwarded-NPDU (0x04, a BBMD's local re-broadcast, Annex J.4.5) must
+// reach its subnet exactly once, so the originator never gets it back twice.
+static bool IsStackChosenBroadcast(const uint8_t* message, const uint16_t length) {
+    if (length < 6 || message[0] != 0x81) {
+        return false;
+    }
+    if (message[1] != 0x0A && message[1] != 0x0B) {
+        return false; // Forwarded-NPDU and every other BVLC function: never copied
+    }
+    uint16_t i = 4; // past the BVLC header (Original-Unicast / Original-Broadcast)
+    if (i + 2 > length || message[i] != 0x01) {
+        return false;
+    }
+    const uint8_t control = message[i + 1];
+    i += 2;
+    if (control & 0x20) { // destination specifier: DNET(2) DLEN(1) DADR(DLEN)
+        if (i + 3 > length) {
+            return false;
+        }
+        i += 3 + message[i + 2];
+    }
+    if (control & 0x08) { // source specifier: SNET(2) SLEN(1) SADR(SLEN)
+        if (i + 3 > length) {
+            return false;
+        }
+        i += 3 + message[i + 2];
+    }
+    if (control & 0x20) { // hop count
+        i += 1;
+    }
+    if (control & 0x80) { // network layer message
+        return true;
+    }
+    return i + 2 <= length && (message[i] >> 4) == 1 && (message[i + 1] == 0 || message[i + 1] == 1);
+}
+
 uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
                            const uint8_t* connectionString,
                            const uint8_t connectionStringLength,
@@ -236,7 +297,9 @@ uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
     uint8_t ip[4];
     uint16_t port;
     bool isBroadcast = broadcast;
+    bool stringless = false;
     if (connectionString == NULL || connectionStringLength == 0) {
+        stringless = true;
         // No destination address: broadcast on this Network Port's link.
         GetLocalBroadcastIPv4(ip);
         port = binding->port;
@@ -262,6 +325,22 @@ uint16_t HelperSendMessage(const uint8_t* message, const uint16_t messageLength,
            ip[0], ip[1], ip[2], ip[3], (unsigned)port,
            isBroadcast ? " (broadcast)" : "", (unsigned)networkPortInstance);
     CASExampleHelper::LogBacnetFrame(message, messageLength);
+
+    // Stack 6.x (1e7dffe2b) leaves the address of a broadcast it chooses itself
+    // (the I-Am answering a Who-Is, I-Have, I-Am-Router-To-Network,
+    // Network-Number-Is) to the host, and we sent it to the subnet broadcast
+    // above. A BACnet/IP broadcast reaches only the bound UDP port, so a tool
+    // on this same host on another port (it cannot share ours) would never see
+    // the answer. Also send the same frame unicast to the last such peer.
+    if (stringless && binding->hasPeer && IsStackChosenBroadcast(message, messageLength)) {
+        const uint16_t peerSent = binding->udp.Send(binding->peerIp, binding->peerPort,
+                                                    message, messageLength);
+        printf("TX %u bytes to %u.%u.%u.%u:%u (peer on another port) (Network Port %u)",
+               (unsigned)peerSent, binding->peerIp[0], binding->peerIp[1],
+               binding->peerIp[2], binding->peerIp[3], (unsigned)binding->peerPort,
+               (unsigned)networkPortInstance);
+        CASExampleHelper::LogBacnetFrame(message, messageLength);
+    }
     return sent;
 }
 

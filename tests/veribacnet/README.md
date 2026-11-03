@@ -12,18 +12,20 @@ Nothing in here is needed to build or run the example itself.
 ## How to run it
 
 The project tests the hub over its **BACnet/IP port**, which is opt-in. Start
-the example with `--port 47848` (the project's target is `127.0.0.1`, UDP port
-47848, device instance 389022), then run VeriBACnet against the project:
+the example from the repository folder (so it finds `./certs`) with `--port 47848`
+and `--sc-port 47924` (the project's target is `127.0.0.1`, UDP port 47848, device
+instance 389022; the EPICS declares the hub's accept URI `wss://0.0.0.0:47924/`),
+then run VeriBACnet against the project:
 
 ```
-./build/BACnetExampleBSCHUB --port 47848                 # Linux
-.\build\Release\BACnetExampleBSCHUB.exe --port 47848     # Windows
+./build/BACnetExampleBSCHUB --port 47848 --sc-port 47924     # Linux
+.\build\Release\BACnetExampleBSCHUB.exe --port 47848 --sc-port 47924     # Windows
 
 veribacnet run --project tests/veribacnet/b-schub-cpp.project.json
 ```
 
 `veribacnet tests select --project tests/veribacnet/b-schub-cpp.project.json`
-re-chooses the tests (93 at the time of writing) and `veribacnet run ... --dry-run`
+re-chooses the tests (113 at the time of writing) and `veribacnet run ... --dry-run`
 shows what would run without sending anything.
 
 ## What this project can and cannot measure
@@ -61,7 +63,7 @@ What the project format cannot say yet, and so is not in these files:
 ## The tests
 
 `veribacnet tests select --profile B-SCHUB` chose the tests saved in the
-project (93 at the time of writing): ReadProperty, dynamic device and object
+project (113 at the time of writing): ReadProperty, dynamic device and object
 binding, DeviceCommunicationControl, the Network Port object, and the
 BACnet/SC hub tests of ANSI/ASHRAE 135.1 clause 12.5. The example executes
 TimeSynchronization (DM-TS-B) and UTCTimeSynchronization (DM-UTC-B), either of which

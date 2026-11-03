@@ -179,6 +179,12 @@ uint16_t ScTransportRouter::ReceiveFromIp(uint8_t* message, const uint16_t maxMe
            fromIp[0], fromIp[1], fromIp[2], fromIp[3], (unsigned)fromPort,
            (unsigned)m_ipNetworkPortInstance);
 
+    if (fromPort != m_udpPort) {
+        memcpy(m_peerIp, fromIp, 4);
+        m_peerPort = fromPort;
+        m_hasPeer = true;
+    }
+
     sourceConnectionString[0] = fromIp[0];
     sourceConnectionString[1] = fromIp[1];
     sourceConnectionString[2] = fromIp[2];
@@ -233,20 +239,89 @@ uint16_t ScTransportRouter::ReceiveFromSc(uint8_t* message, const uint16_t maxMe
     return (uint16_t)frame.data.size();
 }
 
+// True when the BVLC frame is an answer the stack addresses itself: a network layer
+// message (I-Am-Router-To-Network, Network-Number-Is), or an unconfirmed I-Am / I-Have.
+// Only an Original-Unicast-NPDU (0x0A) or Original-Broadcast-NPDU (0x0B) is ever copied
+// to the peer on another port; a Forwarded-NPDU (0x04, Annex J.4.5) and other stringless
+// broadcasts (an UnconfirmedEventNotification, for one) are not. Same rule as
+// IsStackChosenBroadcast() in common/CASExampleHelper.cpp (common/ 3.6.1).
+static bool IsStackChosenBroadcast(const uint8_t* message, const uint16_t length) {
+    if (length < 6 || message[0] != 0x81 || (message[1] != 0x0A && message[1] != 0x0B)) {
+        return false;
+    }
+    uint16_t i = 4; // past the BVLC header
+    if (i + 2 > length || message[i] != 0x01) {
+        return false;
+    }
+    const uint8_t control = message[i + 1];
+    i += 2;
+    if (control & 0x20) { // destination specifier: DNET(2) DLEN(1) DADR(DLEN)
+        if (i + 3 > length) {
+            return false;
+        }
+        i += 3 + message[i + 2];
+    }
+    if (control & 0x08) { // source specifier: SNET(2) SLEN(1) SADR(SLEN)
+        if (i + 3 > length) {
+            return false;
+        }
+        i += 3 + message[i + 2];
+    }
+    if (control & 0x20) { // hop count
+        i += 1;
+    }
+    if (control & 0x80) { // network layer message
+        return true;
+    }
+    return i + 2 <= length && (message[i] >> 4) == 1 && (message[i + 1] == 0 || message[i + 1] == 1);
+}
+
 uint16_t ScTransportRouter::HandleSendMessage(const uint8_t* message, const uint16_t messageLength,
                                               const uint8_t* connectionString, const uint8_t connectionStringLength,
                                               const uint32_t networkPortInstance, const bool broadcast) {
     if (networkPortInstance == m_ipNetworkPortInstance) {
-        if (!m_udpBound || connectionStringLength < 6) {
+        if (!m_udpBound) {
             return 0;
         }
-        const uint8_t ip[4] = { connectionString[0], connectionString[1], connectionString[2], connectionString[3] };
-        const uint16_t port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
+        uint8_t ip[4];
+        uint16_t port;
+        bool stringless = false;
+        bool isBroadcast = broadcast;
+        if (connectionString == NULL || connectionStringLength == 0) {
+            // Stack 6.x (1e7dffe2b): no destination address means "broadcast on
+            // this Network Port's link" (the I-Am answering a Who-Is, I-Have,
+            // and the like). Send it to the local subnet broadcast on our UDP port.
+            uint8_t localIp[4], localMask[4];
+            if (CASExampleHelper::GetLocalIPv4(localIp, localMask)) {
+                for (int i = 0; i < 4; ++i) {
+                    ip[i] = (uint8_t)(localIp[i] | ~localMask[i]);
+                }
+            } else {
+                memset(ip, 255, 4);
+            }
+            port = m_udpPort;
+            stringless = true;
+            isBroadcast = true;
+        } else if (connectionStringLength < 6) {
+            return 0;
+        } else {
+            memcpy(ip, connectionString, 4);
+            port = (uint16_t)((connectionString[4] << 8) | connectionString[5]);
+        }
         const uint16_t sent = m_udp.Send(ip, port, message, messageLength);
         // Same TX log line format as common/CASExampleHelper.cpp's HelperSendMessage.
         printf("TX %u bytes to %u.%u.%u.%u:%u%s (Network Port %u)\n", (unsigned)sent,
-               ip[0], ip[1], ip[2], ip[3], (unsigned)port, broadcast ? " (broadcast)" : "",
+               ip[0], ip[1], ip[2], ip[3], (unsigned)port, isBroadcast ? " (broadcast)" : "",
                (unsigned)networkPortInstance);
+        // A BACnet/IP broadcast reaches only the bound UDP port, so a tool on
+        // this same host on another port would never see the answer: also send
+        // the frame unicast to the last such peer (as common/ 3.6.0 does).
+        if (stringless && m_hasPeer && IsStackChosenBroadcast(message, messageLength)) {
+            const uint16_t peerSent = m_udp.Send(m_peerIp, m_peerPort, message, messageLength);
+            printf("TX %u bytes to %u.%u.%u.%u:%u (peer on another port) (Network Port %u)\n", (unsigned)peerSent,
+                   m_peerIp[0], m_peerIp[1], m_peerIp[2], m_peerIp[3], (unsigned)m_peerPort,
+                   (unsigned)networkPortInstance);
+        }
         return sent;
     }
 

@@ -99,6 +99,14 @@ private:
     uint16_t m_udpPort = 0;
     bool m_udpBound = false;
 
+    // The last peer that sent to the BACnet/IP port from a UDP port other than
+    // the bound one (for example a test tool on this same PC, which cannot
+    // share our port). A stringless broadcast is also sent to it; see
+    // HandleSendMessage.
+    uint8_t m_peerIp[4] = { 0, 0, 0, 0 };
+    uint16_t m_peerPort = 0;
+    bool m_hasPeer = false;
+
     // Alternates which transport is polled first on each call to
     // HandleReceiveMessage, so neither one can starve the other
     bool m_pollIpFirst = true;

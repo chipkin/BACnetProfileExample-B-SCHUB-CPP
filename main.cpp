@@ -142,7 +142,7 @@ using namespace CASBACnetStackExampleConstants;
 // 1. Example + device configuration
 // -----------------------------------------------------------------------------
 static const char* APP_NAME = "BACnet B-SCHUB (BACnet/SC Hub) Example - C++";
-static const char* APP_VERSION = "1.8.0";
+static const char* APP_VERSION = "1.8.1";
 
 // The device instance - this example's entry in the series' device-instance
 // table, so several examples can run on one subnet at once.

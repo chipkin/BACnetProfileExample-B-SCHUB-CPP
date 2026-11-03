@@ -6,6 +6,36 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-11-02
+
+Built on CAS BACnet Stack 6.x (`1e7dffe2b`), Protocol_Revision 30, vendored
+`common/` 3.6.1.
+
+### Changed
+
+- **CAS BACnet Stack updated** to 6.x (`1e7dffe2b`). At this version the stack
+  no longer gives the example an address for a broadcast it sends on its own,
+  such as the I-Am that answers a Who-Is; the example chooses it (next items).
+  Network Port 2's `SC_Heartbeat_Timeout` now reads 300, the stack's default at
+  this version (it was 30).
+- **BACnet/IP port (`--port`): the hub addresses those broadcasts itself.**
+  The hub's own send callback now broadcasts such a frame on the subnet and
+  also sends it unicast to the last client heard from on another UDP port of
+  the same host, so a tool running beside the hub still hears the I-Am. Only
+  frames the stack addresses itself (a network layer message, or an unconfirmed
+  I-Am or I-Have) are copied that way; event notifications and BBMD-forwarded
+  messages are not. Without this change the I-Am answering a Who-Is would not
+  leave the hub at this stack version.
+- **Vendored `common/` updated to 3.6.1**, which does the same for the
+  examples that use its send helper (see `common/CHANGELOG.md`).
+- **README**: the profile example table is the same in every example; the five
+  blocked examples are marked with their open stack issue.
+- **TODO.md** brought up to date for this version.
+- **VeriBACnet project** (`tests/veribacnet/`): the tests are re-selected (113),
+  now including the time synchronization tests; the run command adds
+  `--sc-port 47924`, the port the EPICS declares in
+  SC_Hub_Function_Accept_URIs, and is run from the repository folder.
+
 ## [1.8.0] - 2026-10-27
 
 Built on CAS BACnet Stack 6.x (`69b6249f`), Protocol_Revision 30, vendored
